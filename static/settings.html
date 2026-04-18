@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Studio — Settings</title>
+    <link rel="stylesheet" href="/content-studio-static/studio.css">
+    <link rel="stylesheet" href="/content-studio-static/settings.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="settings-page">
+        <!-- Header -->
+        <header class="settings-header">
+            <div class="settings-header-left">
+                <a href="/content-studio" class="btn btn-ghost btn-icon" title="Back to Studio">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                </a>
+                <span class="settings-icon">⚙️</span>
+                <h1 class="settings-title">Content Studio Settings</h1>
+            </div>
+            <div class="settings-header-right">
+                <button class="btn" onclick="resetDefaults()">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Reset Defaults
+                </button>
+                <button class="btn btn-primary" onclick="saveSettings()">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                    Save Settings
+                </button>
+            </div>
+        </header>
+
+        <!-- Body -->
+        <div class="settings-body">
+            <!-- AI Provider -->
+            <section class="settings-section">
+                <div class="section-head">
+                    <div class="section-icon">🤖</div>
+                    <div>
+                        <h2 class="section-title">AI Provider</h2>
+                        <p class="section-desc">Configure which AI model powers Content Studio</p>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <!-- Source selector -->
+                    <div class="radio-group" id="aiSourceGroup">
+                        <label class="radio-card">
+                            <input type="radio" name="aiSource" value="global" checked onchange="updateAISource()">
+                            <div class="radio-card-body">
+                                <span class="radio-card-title">🌐 Global (TubeCLI Default)</span>
+                                <span class="radio-card-desc">Use the default AI model from TubeCLI settings</span>
+                            </div>
+                        </label>
+                        <label class="radio-card">
+                            <input type="radio" name="aiSource" value="cloud_api" onchange="updateAISource()">
+                            <div class="radio-card-body">
+                                <span class="radio-card-title">☁️ Cloud API Key</span>
+                                <span class="radio-card-desc">Use a specific cloud provider (OpenAI, Gemini, Claude...)</span>
+                            </div>
+                        </label>
+                        <label class="radio-card">
+                            <input type="radio" name="aiSource" value="ollama" onchange="updateAISource()">
+                            <div class="radio-card-body">
+                                <span class="radio-card-title">🖥️ Ollama (Local)</span>
+                                <span class="radio-card-desc">Use a locally running Ollama model</span>
+                            </div>
+                        </label>
+                        <label class="radio-card">
+                            <input type="radio" name="aiSource" value="custom" onchange="updateAISource()">
+                            <div class="radio-card-body">
+                                <span class="radio-card-title">🔧 Custom Endpoint</span>
+                                <span class="radio-card-desc">OpenAI-compatible custom API</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <!-- Cloud API config -->
+                    <div class="config-panel" id="cloudConfig" style="display:none">
+                        <div class="field-row">
+                            <label class="field">
+                                <span class="field-label">Provider</span>
+                                <select id="cloudProvider" class="input" onchange="loadCloudModels()">
+                                    <option value="openai">OpenAI</option>
+                                    <option value="gemini">Google Gemini</option>
+                                    <option value="claude">Anthropic Claude</option>
+                                    <option value="deepseek">DeepSeek</option>
+                                    <option value="grok">xAI Grok</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span class="field-label">Model</span>
+                                <input id="cloudModel" class="input" placeholder="e.g. gpt-4o" />
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Ollama config -->
+                    <div class="config-panel" id="ollamaConfig" style="display:none">
+                        <div class="field-row">
+                            <label class="field">
+                                <span class="field-label">Ollama Model</span>
+                                <select id="ollamaModel" class="input">
+                                    <option value="">Loading models...</option>
+                                </select>
+                            </label>
+                            <div class="field" style="justify-content:flex-end">
+                                <span class="tag" id="ollamaStatus">Checking...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Custom config -->
+                    <div class="config-panel" id="customConfig" style="display:none">
+                        <label class="field">
+                            <span class="field-label">Base URL</span>
+                            <input id="customBaseUrl" class="input" placeholder="https://api.example.com/v1" />
+                        </label>
+                        <div class="field-row">
+                            <label class="field">
+                                <span class="field-label">API Key</span>
+                                <input id="customApiKey" class="input" type="password" placeholder="sk-..." />
+                            </label>
+                            <label class="field">
+                                <span class="field-label">Model</span>
+                                <input id="customModel" class="input" placeholder="model-name" />
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Temperature -->
+                    <div class="field-row" style="margin-top:12px">
+                        <label class="field">
+                            <span class="field-label">Temperature</span>
+                            <div class="range-group">
+                                <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7" class="range-input" oninput="document.getElementById('tempVal').textContent=this.value">
+                                <span class="range-val" id="tempVal">0.7</span>
+                            </div>
+                        </label>
+                        <label class="field">
+                            <span class="field-label">Max Tokens</span>
+                            <input id="maxTokens" class="input" type="number" value="8192" min="512" max="32768" />
+                        </label>
+                    </div>
+
+                    <button class="btn btn-sm" onclick="testAI()" id="btnTestAI" style="margin-top:8px">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        Test Connection
+                    </button>
+                    <span class="test-result" id="testResult"></span>
+                </div>
+            </section>
+
+            <!-- Script Language -->
+            <section class="settings-section">
+                <div class="section-head">
+                    <div class="section-icon">🌐</div>
+                    <div>
+                        <h2 class="section-title">Script Language</h2>
+                        <p class="section-desc">Default language for AI-generated content</p>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <label class="field">
+                        <span class="field-label">Default Language</span>
+                        <select id="defaultLanguage" class="input">
+                            <option value="vi">🇻🇳 Tiếng Việt</option>
+                            <option value="en">🇺🇸 English</option>
+                            <option value="zh">🇨🇳 中文</option>
+                            <option value="ko">🇰🇷 한국어</option>
+                            <option value="ja">🇯🇵 日本語</option>
+                            <option value="th">🇹🇭 ภาษาไทย</option>
+                            <option value="id">🇮🇩 Bahasa Indonesia</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Google Drive (stub) -->
+            <section class="settings-section">
+                <div class="section-head">
+                    <div class="section-icon">📁</div>
+                    <div>
+                        <h2 class="section-title">Google Drive Export</h2>
+                        <p class="section-desc">Connect Google Drive to export scripts to Sheets/Docs</p>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="drive-status">
+                        <span class="tag">🔴 Not connected</span>
+                        <span class="drive-hint">Google Drive integration coming in Phase 2</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Agent Configs -->
+            <section class="settings-section">
+                <div class="section-head">
+                    <div class="section-icon">🎭</div>
+                    <div>
+                        <h2 class="section-title">Agent Settings</h2>
+                        <p class="section-desc">Per-agent temperature and enable/disable</p>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="agent-grid" id="agentGrid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Toast -->
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+
+    <script src="/content-studio-static/settings.js"></script>
+</body>
+</html>

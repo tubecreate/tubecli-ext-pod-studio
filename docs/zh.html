@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Studio AI - 使用指南</title>
+    <style>
+        :root {
+            --bg-body: #0c0e14;
+            --bg-card: #12151e;
+            --text-main: #c8cdd8;
+            --text-heading: #f0f2f8;
+            --accent: #6366f1;
+            --accent-bg: rgba(99, 102, 241, 0.12);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-body);
+            color: var(--text-main);
+            line-height: 1.6;
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1, h2, h3 {
+            color: var(--text-heading);
+            margin-top: 2em;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-top: 0;
+            text-align: center;
+        }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        .step {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .step-number {
+            width: 32px;
+            height: 32px;
+            background: var(--accent);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+        .step-content h3 {
+            margin: 0 0 8px 0;
+        }
+        code {
+            background: var(--accent-bg);
+            color: #a5b4fc;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        .highlight {
+            color: var(--accent);
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Content Studio AI</h1>
+        <p style="text-align: center; font-size: 1.1rem;">终极的AI驱动剧本和分镜处理工作流。</p>
+
+        <div class="card">
+            <h2>概述</h2>
+            <p>Content Studio 是 TubeCLI 内置的高级 AI 扩展，专为自动化将文学作品或粗略想法转换为专业的剧本和分镜而设计。它使用多智能体架构（AI Agents）来拆解原始内容、提取角色、映射场景，并生成详细的视频制作提示词。</p>
+        </div>
+
+        <h2>核心工作流</h2>
+        
+        <div class="card">
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>原始内容 (Raw Content)</h3>
+                    <p>首先创建一个 <b>项目 (Drama)</b> 并为每个集数(Episode)创建一个实例。将您的源材料（小说章节、创意草稿、原始剧本）粘贴到 <span class="highlight">01 Raw Content</span> 选项卡中。</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <h3>AI 改写 (AI Rewrite)</h3>
+                    <p>切换到 <span class="highlight">02 AI Rewrite</span> 选项卡。脚本重写智能体(Script Rewriter)会将您的原始文本转换为具有清晰对话、动作方向和叙事流程的标准电影剧本格式。您可以在右侧使用聊天界面修改细节（例如："让对话更戏剧化"）。</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <h3>提取特征 (Extract)</h3>
+                    <p>在 <span class="highlight">03 Extract</span> 选项卡中，点击 <b>Extract Characters & Scenes</b>。系统将自动审查您的剧本，并创建一个包含所有角色（角色定位、外貌、性格）和地点/场景的数据库。系统会自动跨集数去除重复角色以保持连续性。</p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <h3>分镜拆解 (Storyboard)</h3>
+                    <p>最后，打开 <span class="highlight">04 Storyboard</span> 选项卡。分镜智能体会将您的剧本分解为可操作的 10-15 秒镜头。每个镜头都列出了详细的机位、角色动作、配乐 (BGM)，并自动生成了纯英文的 <b>图像与视频生成提示词 (Prompt)</b>，随时可导入 Midjourney、Runway 或 Pika 等 AI 生成工具及工作流。</p>
+                </div>
+            </div>
+        </div>
+
+        <h2>配置与设置</h2>
+        <div class="card">
+            <p>Content Studio 需要配置 AI 云服务 (API Provider) 才能工作。虽然默认继承 TubeCLI 的全局设置，但您也可以单独覆盖：</p>
+            <ul>
+                <li>点击右上角的 <b>设置图标 (Settings)</b>。</li>
+                <li><b>剧本语言：</b> 设置生成剧本的目标语言（如：越南语、英语、韩语、日语 等）。</li>
+                <li><b>全局 AI 覆盖：</b> 默认情况下，扩展使用 TubeCLI 的活动 API Key（例如 DeepSeek 或 OpenAI）。您可以关闭 "Use global AI settings" 手动为工作室设置专门的 API 服务商和密钥。</li>
+                <li><b>系统参数：</b> 调整智能体的温度 (Temperature)——数值越高越富创造性，越低则越符合源本设定并且不易产生幻觉。</li>
+            </ul>
+        </div>
+
+        <h2>进阶技巧：如何续写下一集（第2集，第3集...）</h2>
+        <div class="card" style="border-color: var(--accent); background: var(--bg-body);">
+            <p>系统旨在使用每个项目共享的角色和场景数据库，以保持整个剧集的<b>连贯性</b>。若要基于第1集撰写第2集：</p>
+            <ul>
+                <li><b>步骤 1：</b> 在左侧导航栏的项目名称下，点击 <code>+ Add Episode</code> 创建 <b>Ep 2</b>，并点击选中它。</li>
+                <li><b>步骤 2：</b> 在 <b>01 Raw Content</b> 选项卡中粘贴该集的新原始素材。若希望 AI 完全自由创作下一集，可留空。</li>
+                <li><b>步骤 3：</b> 切换到 <b>02 AI Rewrite</b>。在右侧聊天面板向 AI 下达指令，例如：<i>"这是第2集。请根据现有的角色，承接第1集的结尾继续写。男主将会发现真相..."</i></li>
+                <li><b>步骤 4：</b> 后台将自动向 AI 提供来自第1集的角色和场景列表。AI 将利用这个背景来续写第2集，确保没有情节漏洞和设定崩塌。</li>
+            </ul>
+        </div>
+        
+    </div>
+</body>
+</html>

@@ -1,0 +1,245 @@
+/* Settings page extra styles */
+.settings-page {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 56px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.settings-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.settings-icon { font-size: 20px; }
+.settings-title {
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-0);
+}
+.settings-header-right {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 32px 48px;
+    max-width: 720px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+/* ── Section ── */
+.settings-section {
+    margin-bottom: 28px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    overflow: hidden;
+    animation: fadeUp 0.4s var(--ease-out) both;
+}
+.settings-section:nth-child(2) { animation-delay: 0.06s; }
+.settings-section:nth-child(3) { animation-delay: 0.12s; }
+.settings-section:nth-child(4) { animation-delay: 0.18s; }
+
+.section-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.section-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: var(--bg-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+}
+.section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-0);
+}
+.section-desc {
+    font-size: 12px;
+    color: var(--text-2);
+    margin-top: 2px;
+}
+.section-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ── Radio Cards ── */
+.radio-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.radio-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--bg-2);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    transition: all 0.18s var(--ease-out);
+}
+.radio-card:hover {
+    border-color: var(--border-strong);
+}
+.radio-card:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+}
+.radio-card input {
+    accent-color: var(--accent);
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+.radio-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.radio-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-0);
+}
+.radio-card-desc {
+    font-size: 11px;
+    color: var(--text-2);
+    line-height: 1.4;
+}
+
+/* ── Config Panels ── */
+.config-panel {
+    padding: 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    animation: fadeUp 0.25s var(--ease-out) both;
+}
+
+/* ── Range ── */
+.range-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.range-input {
+    flex: 1;
+    accent-color: var(--accent);
+    height: 4px;
+}
+.range-val {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-0);
+    min-width: 28px;
+    text-align: right;
+}
+
+/* ── Test result ── */
+.test-result {
+    font-size: 12px;
+    margin-left: 8px;
+}
+.test-result.success { color: var(--success); }
+.test-result.error { color: var(--error); }
+
+/* ── Drive status ── */
+.drive-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.drive-hint {
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+/* ── Agent Grid ── */
+.agent-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.agent-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.agent-row-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-0);
+}
+.agent-row-icon {
+    font-size: 16px;
+}
+.toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background: var(--bg-3);
+    border-radius: 99px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.toggle-switch.active {
+    background: var(--accent);
+}
+.toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s var(--ease-out);
+}
+.toggle-switch.active::after {
+    transform: translateX(16px);
+}
+.agent-temp-input {
+    width: 50px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    text-align: center;
+}

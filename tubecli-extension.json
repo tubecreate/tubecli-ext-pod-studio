@@ -1,0 +1,19 @@
+{
+  "name": "content_studio",
+  "version": "1.0.0",
+  "description": "AI Content Studio — Drama/Novel script writing, character extraction, storyboard breaking, multi-language",
+  "author": "TubeCreate",
+  "entry": "extension.py",
+  "extension_class": "ContentStudioExtension",
+  "icon": "🎬",
+  "dependencies": [],
+  "nodes": ["content_generate"],
+  "skill_md": "SKILL.md",
+  "ui_static": "static",
+  "api_prefix": "/api/v1/studio",
+  "page_url": "/content-studio",
+  "min_tubecli_version": "0.3.0",
+  "category": "extension",
+  "tags": ["drama", "novel", "script", "AI writer", "content studio", "kịch bản", "tiểu thuyết"],
+  "license": "MIT"
+}

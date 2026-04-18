@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Studio — AI Drama Writer</title>
+    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260417_16">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app" class="studio-app">
+        <!-- ===== Top Bar ===== -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <span class="topbar-icon">🎬</span>
+                <h1 class="topbar-title">Content Studio</h1>
+                <span class="topbar-badge" id="projectCount">0 projects</span>
+            </div>
+            <div class="topbar-right">
+                <a href="/content-studio/settings" class="btn btn-ghost" id="btnSettings">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    Settings
+                </a>
+                <button class="btn btn-primary" onclick="showCreateDrama()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    New Project
+                </button>
+            </div>
+        </header>
+
+        <!-- ===== Main Body ===== -->
+        <div class="studio-body">
+            <!-- ===== Sidebar ===== -->
+            <aside class="sidebar" id="sidebar">
+                <div class="sidebar-head">
+                    <span class="sidebar-label">PROJECTS</span>
+                </div>
+                <div class="sidebar-list" id="sidebarList">
+                    <!-- Populated by JS -->
+                </div>
+                <div class="sidebar-bottom">
+                    <button class="btn btn-sm btn-ghost sidebar-new-btn" onclick="showCreateDrama()">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        New Project
+                    </button>
+                </div>
+            </aside>
+
+            <!-- ===== Main Panel ===== -->
+            <main class="main-panel" id="mainPanel">
+                <!-- Default state: Welcome -->
+                <div class="welcome-state" id="welcomeState">
+                    <div class="welcome-icon">🎬</div>
+                    <h2 class="welcome-title">Content Studio</h2>
+                    <p class="welcome-desc">AI-powered drama & novel content creation platform.<br>Create a project to get started.</p>
+                    <button class="btn btn-primary btn-lg" onclick="showCreateDrama()">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        Create First Project
+                    </button>
+                </div>
+
+                <!-- Editor state -->
+                <div class="editor-state" id="editorState" style="display:none">
+                    <!-- Editor Header -->
+                    <div class="editor-header">
+                        <div class="editor-header-left">
+                            <button class="btn btn-ghost btn-icon" onclick="goBack()" title="Back to projects">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                            </button>
+                            <div class="editor-identity">
+                                <h2 class="editor-title" id="editorTitle">Drama Title</h2>
+                                <span class="editor-chip" id="editorChip">Episode 1</span>
+                            </div>
+                        </div>
+                        <div class="editor-header-right">
+                            <div class="editor-meta">
+                                <span class="meta-pill" id="metaChars">0 characters</span>
+                                <span class="meta-pill" id="metaScenes">0 scenes</span>
+                            </div>
+                            <div class="editor-actions">
+                                <button class="btn btn-primary btn-sm" onclick="resumeAutoPilot()">
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                    Resume Auto-Pilot
+                                </button>
+                                <button class="btn btn-sm" onclick="saveCurrentEpisode()">
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                                    Save
+                                </button>
+                                <div style="display:flex; gap:4px">
+                                    <button class="btn btn-sm" onclick="exportEpisode('md')" title="Export Markdown">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        MD
+                                    </button>
+                                    <button class="btn btn-sm" onclick="exportEpisode('json')" title="Export JSON">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        JSON
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pipeline Steps (dynamically rendered by JS) -->
+                    <div class="pipeline-nav" id="pipelineNav"></div>
+
+                    <!-- Content Panels -->
+                    <div class="editor-content">
+                        <!-- Step 0: Raw Content -->
+                        <div class="step-panel" id="stepRaw" style="display:flex">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="rawCharCount">0 chars</span>
+                                </div>
+                                <div class="toolbar-right" style="display: flex; gap: 8px; align-items: center;">
+                                    <div id="rawAudioPlayerContainer" style="display: none; align-items: center; gap: 8px;">
+                                        <audio id="rawAudioPlayer" controls style="height: 30px;"></audio>
+                                        <a id="rawAudioDownload" class="btn btn-sm btn-ghost" download>Download</a>
+                                    </div>
+                                    <button class="btn btn-sm" id="btnGenAudio" onclick="generateRawAudio()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                                        Gen Audio
+                                    </button>
+                                    <button class="btn btn-sm" onclick="saveCurrentEpisode()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                                        Save
+                                    </button>
+                                </div>
+                            </div>
+                            <textarea class="fill-textarea" id="rawTextarea" placeholder="Paste your novel, outline, or story content here...&#10;&#10;The AI will rewrite this into a formatted screenplay." oninput="updateRawCount()"></textarea>
+                        </div>
+
+                        <!-- Step 1: AI Rewrite -->
+                        <div class="step-panel" id="stepScript" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="scriptCharCount">0 chars</span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-sm" onclick="skipRewrite()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M13 18l6-6-6-6"/></svg>
+                                        Skip Rewrite
+                                    </button>
+                                    <button class="btn btn-primary btn-sm" id="btnRewrite" onclick="doRewrite()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        AI Rewrite
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- Empty state or textarea -->
+                            <div class="step-empty" id="scriptEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                </div>
+                                <div class="empty-title">AI Rewrite to Screenplay</div>
+                                <div class="empty-desc">AI will transform your raw content into a professionally formatted screenplay. You can also skip this step.</div>
+                                <div class="empty-actions">
+                                    <button class="btn btn-primary" onclick="doRewrite()">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        Start Rewrite
+                                    </button>
+                                    <button class="btn" onclick="skipRewrite()">Skip</button>
+                                </div>
+                            </div>
+                            <div class="step-loading" id="scriptLoading" style="display:none">
+                                <div class="spinner"></div>
+                                <div class="loading-text">Rewriting screenplay...</div>
+                            </div>
+                            <textarea class="fill-textarea" id="scriptTextarea" style="display:none" placeholder="Formatted screenplay content..." oninput="updateScriptCount()"></textarea>
+                        </div>
+
+                        <!-- Step 2: Extract -->
+                        <div class="step-panel" id="stepExtract" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="extractCount"></span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-primary btn-sm" id="btnExtract" onclick="doExtract()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                        Extract Characters & Scenes
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="extract-results" id="extractResults">
+                                <div class="step-empty" id="extractEmpty">
+                                    <div class="empty-visual">
+                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                    </div>
+                                    <div class="empty-title">Extract Characters & Scenes</div>
+                                    <div class="empty-desc">AI analyzes the script and extracts character profiles and scene locations with smart deduplication.</div>
+                                    <button class="btn btn-primary" onclick="doExtract()">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        Start Extraction
+                                    </button>
+                                </div>
+                                <!-- Characters grid -->
+                                <div class="extract-section" id="charsSection" style="display:none">
+                                    <div class="extract-section-head">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                        <span>Characters</span>
+                                        <span class="tag tag-accent" id="charsCount">0</span>
+                                    </div>
+                                    <div class="extract-grid" id="charsGrid"></div>
+                                </div>
+                                <!-- Scenes grid -->
+                                <div class="extract-section" id="scenesSection" style="display:none">
+                                    <div class="extract-section-head">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                                        <span>Scenes</span>
+                                        <span class="tag tag-accent" id="scenesCount">0</span>
+                                    </div>
+                                    <div class="extract-grid" id="scenesGrid"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3: Storyboard -->
+                        <div class="step-panel" id="stepStoryboard" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="sbCount"></span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-primary btn-sm" id="btnBreakdown" onclick="doBreakdown()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="8" x2="7" y2="16"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/></svg>
+                                        AI Storyboard
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="step-empty" id="storyboardEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="8" x2="7" y2="16"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/></svg>
+                                </div>
+                                <div class="empty-title">Break Down into Storyboard</div>
+                                <div class="empty-desc">AI breaks the screenplay into detailed shot sequences with camera, action, and prompt data.</div>
+                                <button class="btn btn-primary" onclick="doBreakdown()">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                    AI Storyboard
+                                </button>
+                            </div>
+                            <div class="sb-list" id="sbList" style="display:none"></div>
+                        </div>
+
+                        <!-- Step 5: Images (Grok Gen) -->
+                        <div class="step-panel" id="stepImages" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="imgCount">0 images</span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-sm" id="btnGenImages" onclick="openGenImagesDialog()">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                        Gen Images (Grok)
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="step-empty" id="imagesEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                </div>
+                                <div class="empty-title">Generate Story Images</div>
+                                <div class="empty-desc">Tự động tạo ảnh cho từng shot Storyboard qua Grok Pro, sử dụng Chrome Profile đã đăng nhập.<br><br>Yêu cầu: Storyboard đã được tạo xong.</div>
+                                <button class="btn btn-primary" onclick="openGenImagesDialog()">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                    Start Image Generation
+                                </button>
+                            </div>
+                            <div id="imageGrid" style="display:none; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px; padding:16px;"></div>
+                            <!-- Progress section -->
+                            <div id="imgProgressSection" style="display:none; padding:20px; background:var(--bg-1); border-radius:8px; margin:16px;">
+                                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                    <span style="color:var(--text-1); font-weight:500;" id="imgProgressLabel">Starting...</span>
+                                    <span style="color:var(--text-2); font-size:12px;" id="imgProgressCount">0 / 0</span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-3); border-radius:3px; overflow:hidden;">
+                                    <div id="imgProgressBar" style="width:0%; height:100%; background:var(--accent); transition:width 0.4s ease;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 5.5: AI Video (Grok Gen) -->
+                        <div class="step-panel" id="stepAIVideo" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="vidCount">0 videos</span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-sm" id="btnGenVideos" onclick="openGenVideosDialog()">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                                        Gen Videos (Grok)
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="step-empty" id="videosEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                                </div>
+                                <div class="empty-title">Generate AI Videos</div>
+                                <div class="empty-desc">Tự động tạo video từ prompt cho từng shot qua Grok, sử dụng Chrome Profile.<br><br>Ghi chú: Sẽ tốn nhiều thời gian hơn ảnh.</div>
+                                <button class="btn btn-primary" onclick="openGenVideosDialog()">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                                    Start Video Generation
+                                </button>
+                            </div>
+                            <div id="videoGrid" style="display:none; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px; padding:16px;"></div>
+                            <!-- Progress section -->
+                            <div id="vidProgressSection" style="display:none; padding:20px; background:var(--bg-1); border-radius:8px; margin:16px;">
+                                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                    <span style="color:var(--text-1); font-weight:500;" id="vidProgressLabel">Starting...</span>
+                                    <span style="color:var(--text-2); font-size:12px;" id="vidProgressCount">0 / 0</span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-3); border-radius:3px; overflow:hidden;">
+                                    <div id="vidProgressBar" style="width:0%; height:100%; background:var(--accent); transition:width 0.4s ease;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step: Audio TTS -->
+                        <div class="step-panel" id="stepAudio" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="audioStatus">No audio</span>
+                                </div>
+                                <div class="toolbar-right">
+                                    <button class="btn btn-primary btn-sm" id="btnGenAudioStep" onclick="openAudioGenStep()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                                        Generate Audio
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="step-empty" id="audioEmpty">
+                                <div class="empty-visual" id="audioEmptyVisual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                                </div>
+                                
+                                <!-- Spinner (hidden by default, shown during rendering) -->
+                                <div id="audioSpinner" style="display:none; margin:10px auto;">
+                                    <div style="width:48px; height:48px; border:4px solid var(--border-color); border-top-color:var(--primary-color); border-radius:50%; animation: spin 0.8s linear infinite;"></div>
+                                </div>
+                                <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+
+                                <div class="empty-title" id="audioEmptyTitle">Generate Audio (TTS)</div>
+                                <div class="empty-desc" id="audioEmptyDesc">Chuyển đổi nội dung thành giọng nói bằng Edge-TTS hoặc VibeVoice. Audio sẽ được dùng cho Video preview.</div>
+                                
+                                <div id="audioProgressContainer" style="display:none; width:65%; margin-top:20px; align-items:center; flex-direction:column;">
+                                    <div style="background:var(--border-color); height:10px; border-radius:5px; width:100%; overflow:hidden;">
+                                        <div id="audioProgressBar" style="background:var(--primary-color); width:0%; height:100%; transition:width 0.3s ease-out;"></div>
+                                    </div>
+                                    <div id="audioProgressText" style="text-align:right; font-size:12px; margin-top:6px; color:var(--text-3); font-weight:600; width:100%;">0%</div>
+                                </div>
+
+                                <button id="btnAudioGenerate" class="btn btn-primary" onclick="openAudioGenStep()" style="margin-top:20px;">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                                    Generate Audio
+                                </button>
+                            </div>
+                            <div id="audioPlayerSection" style="display:none; padding:20px; flex-direction:column; gap:16px; align-items:center;">
+                                <audio id="audioStepPlayer" controls style="width:100%; max-width:600px;"></audio>
+                                <div style="display:flex; gap:12px; align-items:center;">
+                                    <a id="audioStepDownload" class="btn btn-sm btn-ghost" download>⬇️ Download Audio</a>
+                                    <button class="btn btn-sm btn-ghost" style="color: #ff4d4d;" onclick="deleteCurrentAudio()">🗑️ Delete Audio</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step: Video Preview -->
+                        <div class="step-panel" id="stepVideo" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="videoStatus">No video</span>
+                                </div>
+                                <div class="toolbar-right" style="display:flex; gap:6px;">
+                                    <select id="videoSpeedSel" class="input" style="width:70px; height:26px; font-size:11px; padding:2px 4px;" onchange="setVideoSpeed(this.value)">
+                                        <option value="3">3s/slide</option>
+                                        <option value="5">5s/slide</option>
+                                        <option value="8">8s/slide</option>
+                                        <option value="10">10s/slide</option>
+                                        <option value="audio" selected>Sync Audio</option>
+                                    </select>
+                                    <button class="btn btn-sm" onclick="generateRawAudio()" title="Generate TTS audio from Raw Content">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                                        Gen Audio
+                                    </button>
+                                    <button class="btn btn-sm" id="btnBuildVideo" onclick="showVideoBuildOptions()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                        Build Preview
+                                    </button>
+                                    <button class="btn btn-sm btn-primary" id="btnDownloadVideo" onclick="downloadVideoMP4()" style="display:none;">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        Download MP4
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="step-empty" id="videoEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/><line x1="17" y1="17" x2="22" y2="17"/></svg>
+                                </div>
+                                <div class="empty-title">Video Preview</div>
+                                <div class="empty-desc">Xem preview slideshow ảnh + audio. Yêu cầu: có ảnh (Images) và/hoặc audio (Audio TTS).</div>
+                                <button class="btn btn-primary" onclick="showVideoBuildOptions()">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                    Build Preview
+                                </button>
+                            </div>
+                            <!-- Build Progress -->
+                            <div id="videoBuildProgress" style="display:none; flex:1; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:40px;">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.18"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                                </div>
+                                <div style="font-size:15px; font-weight:600; color:var(--text-0);">Building Video Preview...</div>
+                                <div id="videoBuildLabel" style="font-size:12px; color:var(--text-2);">Loading images...</div>
+                                <div style="width:100%; max-width:400px; height:6px; background:var(--bg-3); border-radius:3px; overflow:hidden;">
+                                    <div id="videoBuildBar" style="width:0%; height:100%; background:var(--accent-gradient); transition:width 0.3s ease; border-radius:3px;"></div>
+                                </div>
+                                <div id="videoBuildCount" style="font-size:11px; color:var(--text-3); font-family:var(--font-mono);">0 / 0</div>
+                            </div>
+                            <!-- Video Player Container -->
+                            <div id="videoPlayerContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px;">
+                                <div id="videoCanvas" style="position:relative; width:100%; max-width:720px; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; cursor:pointer;" onclick="toggleVideoPlay()">
+                                    <img id="videoSlideImg" style="width:100%; height:100%; object-fit:cover;" />
+                                    <div id="videoShotLabel" style="position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,0.7); color:#fff; padding:4px 10px; border-radius:4px; font-size:12px;"></div>
+                                    <div id="videoSlideCounter" style="position:absolute; top:8px; right:8px; background:rgba(0,0,0,0.7); color:#fff; padding:4px 10px; border-radius:4px; font-size:12px;">0/0</div>
+                                    <!-- Play overlay icon -->
+                                    <div id="videoPlayOverlay" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:60px; height:60px; background:rgba(0,0,0,0.5); border-radius:50%; display:flex; align-items:center; justify-content:center; pointer-events:none;">
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="#fff" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                                    </div>
+                                </div>
+                                <!-- Controls bar -->
+                                <div style="width:100%; max-width:720px; display:flex; flex-direction:column; gap:6px;">
+                                    <input type="range" id="videoSeekBar" min="0" max="1000" value="0" step="1" style="width:100%; height:5px; cursor:pointer;" oninput="seekVideo(this.value)" />
+                                    <div style="display:flex; gap:8px; align-items:center; justify-content:space-between;">
+                                        <div style="display:flex; gap:6px; align-items:center;">
+                                            <button class="btn btn-sm" onclick="videoJumpSlide(-1)" title="Previous slide">⏮</button>
+                                            <button class="btn btn-sm" id="btnVideoPlay" onclick="toggleVideoPlay()" style="min-width:70px;">▶️ Play</button>
+                                            <button class="btn btn-sm" onclick="videoJumpSlide(1)" title="Next slide">⏭</button>
+                                        </div>
+                                        <span id="videoTimeDisplay" style="font-size:12px; color:var(--text-2); font-family:var(--font-mono);">0:00 / 0:00</span>
+                                    </div>
+                                </div>
+                                <!-- Audio player (hidden if no audio, shown as controls) -->
+                                <audio id="videoAudioPlayer" controls style="width:100%; max-width:720px; display:none; height:32px;"></audio>
+                            </div>
+                        </div>
+                </div>
+            </main>
+
+            <!-- ===== AI Chat Panel ===== -->
+            <aside class="chat-panel" id="chatPanel">
+                <div class="chat-header">
+                    <div class="chat-header-left">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        <span class="chat-header-title">AI Agent</span>
+                    </div>
+                    <select class="agent-select" id="agentSelect">
+                        <option value="script_rewriter">✍️ Script Rewriter</option>
+                        <option value="extractor">🔍 Extractor</option>
+                        <option value="storyboard_breaker">🎬 Storyboard</option>
+                        <option value="voice_assigner">🎙️ Voice</option>
+                        <option value="prompt_generator">🖼️ Prompt Gen</option>
+                    </select>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="chat-welcome">
+                        <div class="chat-welcome-icon">🤖</div>
+                        <p>Select an agent and ask it to process your content. The AI will help rewrite, extract, or break down your screenplay.</p>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <textarea class="chat-input" id="chatInput" placeholder="Ask the AI agent..." rows="2" onkeydown="handleChatKey(event)"></textarea>
+                    <button class="btn btn-primary btn-icon chat-send" id="chatSend" onclick="sendChat()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    </button>
+                </div>
+            </aside>
+        </div>
+
+        <!-- ===== Create Project Wizard Modal ===== -->
+        <div class="overlay" id="wizardModal" style="display:none" onclick="if(event.target===this)hideWizard()">
+            <div class="modal card" style="max-width: 800px; width: 90%;">
+                <div class="modal-header" style="padding-bottom: 0; border-bottom: none;">
+                    <div style="display:flex; align-items:center; gap: 10px; margin-bottom: 20px;">
+                        <div class="modal-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                        </div>
+                        <div>
+                            <h2 class="modal-title" id="wizardTitle">New Drama Project</h2>
+                            <p class="modal-desc" id="wizardDesc" style="display:none">Step 1: Project Information</p>
+                        </div>
+                    </div>
+                    
+                    <div class="wizard-stepper">
+                        <div class="wiz-step active" id="wizInd1">
+                            <div class="wiz-step-icon">1</div>
+                            <div class="wiz-step-label">Project Info</div>
+                        </div>
+                        <div class="wiz-step-line" id="wizLine1"></div>
+                        <div class="wiz-step" id="wizInd2">
+                            <div class="wiz-step-icon">2</div>
+                            <div class="wiz-step-label">Core Premise</div>
+                        </div>
+                        <div class="wiz-step-line" id="wizLine2"></div>
+                        <div class="wiz-step" id="wizInd3">
+                            <div class="wiz-step-icon">3</div>
+                            <div class="wiz-step-label">Execution</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <hr style="border:0; border-top:1px solid var(--border); margin: 0 0 20px 0;">
+                
+                <!-- Step 1: Basic Info -->
+                <div id="wizStep1">
+                    <form onsubmit="wizGoToStep2(event)" class="modal-form">
+                        <label class="field">
+                            <span class="field-label">Project Title <span class="required">*</span></span>
+                            <input id="wizTitle" class="input" placeholder='e.g. "The Last Letter" — Urban Romance' required autofocus />
+                        </label>
+                        <div class="field-row" style="display:flex;gap:10px;">
+                            <label class="field" style="flex: 0.5;">
+                                <span class="field-label">Episodes</span>
+                                <select id="wizEpisodes" class="input">
+                                    <option value="0">Auto (AI chọn)</option>
+                                    <option value="1">1 Tập</option>
+                                    <option value="2">2 Tập</option>
+                                    <option value="3">3 Tập</option>
+                                    <option value="5" selected>5 Tập</option>
+                                    <option value="10">10 Tập</option>
+                                    <option value="15">15 Tập</option>
+                                    <option value="20">20 Tập</option>
+                                </select>
+                            </label>
+
+                            <label class="field" style="flex: 1.5;">
+                                <span class="field-label">Visual Style</span>
+                                <select id="wizStyle" class="input">
+                                    <option value="Default">Default</option>
+                                    <option value="Studio Ghibli Animation">Studio Ghibli</option>
+                                    <option value="Disney Pixar 3D Animation">Disney Pixar 3D</option>
+                                    <option value="Hyper-realistic sci-fi">Hyper-realistic Sci-Fi</option>
+                                    <option value="90s Anime Style">90s Anime (Retro)</option>
+                                    <option value="Cyberpunk Neon">Cyberpunk Neon</option>
+                                    <option value="Pixel Art">Pixel Art</option>
+                                    <option value="Donghua">Donghua (Chinese Anime)</option>
+                                    <option value="Hollywood Cinematic">Hollywood Cinematic</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 1.5;">
+                                <span class="field-label">Character Style</span>
+                                <select id="wizCharacterStyle" class="input">
+                                    <option value="Default">Default</option>
+                                    <option value="Realistic">Realistic</option>
+                                    <option value="Anime">Anime</option>
+                                    <option value="Donghua">Donghua</option>
+                                    <option value="Chibi">Chibi</option>
+                                    <option value="3D Cartoon">3D Cartoon</option>
+                                    <option value="Stick Figure">Stick Figure</option>
+                                    <option value="Dark Fantasy">Dark Fantasy</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">Camera Angle</span>
+                                <select id="wizCameraAngle" class="input">
+                                    <option value="Default">Mặc định</option>
+                                    <option value="Cinematic Wide Shots">Wide Shots (Tránh mặt gần)</option>
+                                    <option value="Dynamic Sequence Shots">Dynamic Sequence</option>
+                                    <option value="Intimate Close-ups">Close-ups</option>
+                                    <option value="First-Person POV">First-Person</option>
+                                    <option value="Sweeping Drone Shots">Drone Shots</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">Ethnicity Sync</span>
+                                <select id="wizEthnicity" class="input">
+                                    <option value="Default">Mặc định</option>
+                                    <option value="East Asian">Đông Á (TQ, HQ, VN)</option>
+                                    <option value="Southeast Asian">Đông Nam Á</option>
+                                    <option value="European/Caucasian">Châu Âu/Da trắng</option>
+                                    <option value="African/Black">Châu Phi</option>
+                                    <option value="Middle Eastern">Trung Đông</option>
+                                    <option value="South Asian">Nam Á</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">Aesthetic Focus</span>
+                                <select id="wizPromptFocus" class="input">
+                                    <option value="Default">Cân bằng</option>
+                                    <option value="Costumes and Scenery">Nhấn mạnh Trang phục & Bối cảnh</option>
+                                    <option value="Character Emotions">Nhấn mạnh Cảm xúc khuôn mặt</option>
+                                    <option value="Action and Motion">Nhấn mạnh Hành động</option>
+                                    <option value="Lighting and Atmosphere">Nhấn mạnh Ánh sáng & Cinematic</option>
+                                </select>
+                            </label>
+                        </div>
+                        <label class="field">
+                            <span class="field-label">Language</span>
+                            <select id="wizLanguage" class="input">
+                                <option value="vi">🇻🇳 Tiếng Việt</option>
+                                <option value="en">🇺🇸 English</option>
+                                <option value="zh">🇨🇳 中文</option>
+                                <option value="ja">🇯🇵 日本語</option>
+                                <option value="ko">🇰🇷 한국어</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span class="field-label">🔧 Pipeline Template</span>
+                            <select id="wizPipelineTemplate" class="input" onchange="wizUpdatePipelinePreview()">
+                                <option value="drama_scene">🎞 Drama Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video)</option>
+                                <option value="drama_full">📺 Drama Slideshow (Raw → Rewrite → Extract → Storyboard → Images → Audio → Video)</option>
+                                <option value="audio_story">🎧 Audio Story (Raw → Rewrite → Audio → Video)</option>
+                                <option value="content_only">📝 Content Only (Raw → Rewrite)</option>
+                                <option value="custom">🎬 Custom (chọn steps)</option>
+                            </select>
+                        </label>
+                        <div id="wizCustomSteps" style="display:none; background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
+                            <div style="font-size:12px; color:var(--text-2); margin-bottom:8px;">Chọn các bước:</div>
+                            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="raw" checked disabled /> 📝 Raw Content
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="rewrite" class="wizCustomCheck" checked /> ✍️ AI Rewrite
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="extract" class="wizCustomCheck" /> 🔍 Extract
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="storyboard" class="wizCustomCheck" /> 🎬 Storyboard
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="images" class="wizCustomCheck" /> 🖼 Images
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="videos" class="wizCustomCheck" /> 🎞 AI Video
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="audio" class="wizCustomCheck" /> 🎙 Audio TTS
+                                </label>
+                                <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:var(--text-1); cursor:pointer;">
+                                    <input type="checkbox" value="video" class="wizCustomCheck" /> 🎥 Video
+                                </label>
+                            </div>
+                        </div>
+                        <div class="modal-actions">
+                            <button type="button" class="btn" onclick="hideWizard()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">
+                                Next: Premise
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Step 2: Premise -->
+                <div id="wizStep2" style="display:none">
+                    <div class="modal-form">
+                        <label class="field" style="margin-bottom:0">
+                            <span class="field-label" style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>Core Premise / World Building <span class="required">*</span></span>
+                                <div style="display:flex; gap:6px;">
+                                    <input id="wizYoutubeUrl" class="input" style="width: 200px; padding: 4px 8px; font-size:12px; height:24px;" placeholder="https://youtube.com/watch?v=..." />
+                                    <button type="button" class="btn btn-sm btn-outline" style="padding: 2px 8px; height:24px; font-size:11px;" onclick="wizFetchYoutube()">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33 2.78 2.78 0 0 0 1.94 2c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.33 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/></svg>
+                                        Extract CC
+                                    </button>
+                                </div>
+                            </span>
+                            <textarea id="wizPremise" class="input fill-textarea" rows="4"
+                                placeholder="e.g. A sci-fi mystery about a lost spaceship... OR paste YouTube URL above to fetch Subtitles"
+                                oninput="updateWizPremiseCount()"></textarea>
+                        </label>
+                        <!-- Char counter + warning -->
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:12px; color:var(--text-3);">
+                            <span id="wizPremiseCount">0 chars</span>
+                            <button type="button" id="wizPremiseTrimBtn" onclick="trimWizPremise()"
+                                style="display:none; padding:3px 10px; font-size:11px; background:#7c3aed20; border:1px solid #7c3aed60; border-radius:4px; color:#a78bfa; cursor:pointer;">
+                                ✂️ Trim to 2000 chars
+                            </button>
+                        </div>
+                        <div id="wizPremiseWarning" style="display:none; margin-top:6px; background:#2d1f0a; border:1px solid #92400e; border-radius:6px; padding:8px 10px; color:#fbbf24; font-size:12px;">
+                            ⚠️ Nội dung quá dài (<span id="wizPremiseLen">0</span> chars) — AI có thể bị timeout.
+                            Nên giữ dưới <strong>2000 ký tự</strong> để đảm bảo kết quả. Click <strong>Trim</strong> để cắt bớt tự động.
+                        </div>
+                        <div class="modal-actions" style="margin-top: 20px;">
+                            <button type="button" class="btn" onclick="wizGoToStep1()">Back</button>
+                            <div style="display:flex; gap:8px;">
+                                <button type="button" class="btn btn-ghost" onclick="wizSkipToManual()">Manual (Empty)</button>
+                                <button type="button" class="btn btn-primary" onclick="wizGenerateOutline()">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                    Auto-Pilot Outline
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="wizStep3" style="display:none">
+                    <div class="modal-form" style="display:flex; flex-direction:column; height:70vh; max-height:600px;">
+                        <label class="field" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+                            <span class="field-label" id="wizOutlineTitle">Proposed Episodes</span>
+                            <div class="input" id="wizOutlineReview" style="flex:1; overflow-y:auto; background: var(--bg-1); text-align: left; padding:10px;"></div>
+                        </label>
+                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
+                            <label class="field" id="wizVoiceProfileWrap" style="flex:1;">
+                                <span class="field-label">🎙 Voice Profile (TTS)</span>
+                                <div class="select-wrapper">
+                                    <select id="wizVoiceProfileExec" class="input">
+                                        <option value="">-- Chọn giọng đọc --</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                            
+                            <label class="field" style="flex:1;">
+                                <span class="field-label">🌐 Browser Profile (Grok Image Gen)</span>
+                                <div class="select-wrapper">
+                                    <select id="wizBrowserProfileExec" class="input">
+                                        <option value="">-- Chọn browser profile --</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="modal-actions" style="margin-top:16px; flex-direction:column; gap:8px; flex-shrink:0;">
+                            <button type="button" class="btn btn-primary" style="width:100%; justify-content:center" onclick="startRealtimeAutoPilot()">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                                Watch Live Realtime Stream (Stay on page)
+                            </button>
+                            <div style="display:flex; width:100%; gap:8px;">
+                                <button type="button" class="btn" style="flex:1" onclick="startBackgroundAutoPilot()">
+                                    Run in Background
+                                </button>
+                                <button type="button" class="btn btn-danger" style="flex:1" onclick="hideWizard()">Abort</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 4: Background Progress View -->
+                <div id="wizStepProgress" style="display:none">
+                    <div class="modal-form" style="text-align:center; padding: 20px 0;">
+                        <svg class="step-loading-svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" style="margin: 0 auto 15px; animation: spin 1s linear infinite;"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
+                        <h3 id="wizStatusText" style="color:var(--text-1); margin-bottom: 10px;">Starting Async Engine...</h3>
+                        <div style="width: 100%; height: 6px; background:var(--bg-3); border-radius: 3px; overflow:hidden;">
+                            <div id="wizProgressBar" style="width: 0%; height: 100%; background: var(--accent); transition: width 0.3s ease;"></div>
+                        </div>
+                        <button class="btn btn-sm btn-ghost" style="margin-top: 20px" onclick="hideWizard()">Close window & View Project Mode</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Audio Gen Modal -->
+        <div class="modal-overlay" id="audioGenModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal" style="width: 450px;">
+                <div class="modal-header">
+                    <h2 class="modal-title">Generate Audio Demo</h2>
+                </div>
+                <div class="modal-form">
+                    <label class="field">
+                        <span class="field-label">Select Voice</span>
+                        <div class="select-wrapper">
+                            <select id="audioGenVoice" class="input">
+                                <option value="">Loading voices...</option>
+                            </select>
+                            <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                        </div>
+                    </label>
+                    <div class="modal-actions" style="margin-top:25px;">
+                        <button type="button" class="btn" onclick="document.getElementById('audioGenModal').style.display='none'">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="btnConfirmAudioGen" onclick="confirmGenerateRawAudio()">Generate Audio</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Recovery Modal -->
+        <div class="modal-overlay" id="errorRecoverModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2 class="modal-title" style="color:#ef4444;">Auto-Pilot Error</h2>
+                </div>
+                <div class="modal-form">
+                    <p style="color:var(--text-1); font-size:14px; margin-bottom:5px;">An unexpected error occurred:</p>
+                    <div style="background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:12px; color:#ef4444; font-family:var(--font-mono); font-size:12px; max-height:100px; overflow-y:auto; margin-bottom:20px;" id="errorRecoverMsg">
+                    </div>
+                    <p style="color:var(--text-2); font-size:13px; margin-bottom:15px;">What would you like to do?</p>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <button class="btn btn-primary" style="justify-content:center" onclick="resolveError('retry')">Retry Episode</button>
+                        <button class="btn" style="justify-content:center" onclick="resolveError('skip')">Skip to Next Episode</button>
+                        <button class="btn btn-danger" style="justify-content:center" onclick="resolveError('cancel')">Stop Auto-Pilot</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gen Images Modal -->
+        <div class="modal-overlay" id="genImagesModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal" style="width:500px;">
+                <div class="modal-header">
+                    <h2 class="modal-title">🖼 Generate Images with Grok</h2>
+                </div>
+                <div class="modal-form">
+                    <label class="field">
+                        <span class="field-label">Browser Profile (Chrome đã login Grok)</span>
+                        <select id="genImgProfile" class="input">
+                            <option value="">Đang load profiles...</option>
+                        </select>
+                    </label>
+                    <div class="field-row" style="display:flex; gap:12px; margin-top:4px;">
+                        <label class="field" style="flex:1;">
+                            <span class="field-label">Mode</span>
+                            <select id="genImgMode" class="input">
+                                <option value="pending">Pending only (chưa có ảnh)</option>
+                                <option value="all">All shots (gen lại hết)</option>
+                            </select>
+                        </label>
+                        <label class="field" style="flex:1; flex-direction:row; align-items:center; gap:8px; padding-top:26px;">
+                            <input type="checkbox" id="genImgHeadless" style="width:16px;height:16px;" />
+                            <span class="field-label" style="margin:0;">Headless (ẩn cửa sổ)</span>
+                        </label>
+                    </div>
+                    <div style="background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12px; color:var(--text-2); margin-top:8px;">
+                        ⚠️ Script sẽ tự động điều khiển Chrome. Đừng dùng máy tính trong lúc chạy nếu không headless.
+                        Mỗi ảnh mất ~15–45 giây. <strong id="genImgShotCount">?? shots</strong> cần xử lý.
+                    </div>
+                    <div class="modal-actions" style="margin-top:20px;">
+                        <button type="button" class="btn" onclick="document.getElementById('genImagesModal').style.display='none'">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="btnStartGenImg" onclick="startGrokImageGen()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Start Gen
+                        </button>
+                    </div>
+                    <!-- Error display -->
+                    <div id="genImgError" style="display:none; margin-top:12px; background:#2d1515; border:1px solid #7f1d1d; border-radius:6px; padding:10px 12px; color:#fca5a5; font-size:12px; font-family:var(--font-mono); white-space:pre-wrap; max-height:120px; overflow-y:auto;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gen Videos Modal -->
+        <div class="modal-overlay" id="genVideosModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal" style="width:500px;">
+                <div class="modal-header">
+                    <h2 class="modal-title">🎞 Generate Videos with Grok</h2>
+                </div>
+                <div class="modal-form">
+                    <label class="field">
+                        <span class="field-label">Browser Profile (Chrome đã login Grok)</span>
+                        <select id="genVidProfile" class="input">
+                            <option value="">Đang load profiles...</option>
+                        </select>
+                    </label>
+                    <div class="field-row" style="display:flex; gap:12px; margin-top:4px;">
+                        <label class="field" style="flex:1;">
+                            <span class="field-label">Mode</span>
+                            <select id="genVidMode" class="input">
+                                <option value="pending">Pending only (chưa có video)</option>
+                                <option value="all">All shots (gen lại hết)</option>
+                            </select>
+                        </label>
+                        <label class="field" style="flex:1; flex-direction:row; align-items:center; gap:8px; padding-top:26px;">
+                            <input type="checkbox" id="genVidHeadless" style="width:16px;height:16px;" />
+                            <span class="field-label" style="margin:0;">Headless (ẩn cửa sổ)</span>
+                        </label>
+                    </div>
+                    <div style="background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12px; color:var(--text-2); margin-top:8px;">
+                        ⚠️ Script xử lý Video tốn nhiều thời gian hơn ảnh. Nên chạy Headless và để qua đêm.
+                        Mỗi video mất ~1-5 phút. <strong id="genVidShotCount">?? shots</strong> cần xử lý.
+                    </div>
+                    <div class="modal-actions" style="margin-top:20px;">
+                        <button type="button" class="btn" onclick="document.getElementById('genVideosModal').style.display='none'">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="btnStartGenVid" onclick="startGrokVideoGen()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Start Gen Video
+                        </button>
+                    </div>
+                    <!-- Error display -->
+                    <div id="genVidError" style="display:none; margin-top:12px; background:#2d1515; border:1px solid #7f1d1d; border-radius:6px; padding:10px 12px; color:#fca5a5; font-size:12px; font-family:var(--font-mono); white-space:pre-wrap; max-height:120px; overflow-y:auto;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stop Stream Floating Button -->
+        <button id="floatStopBtn" class="btn btn-danger" style="display:none; position:fixed; bottom:30px; right:30px; z-index:9999; box-shadow:0 8px 30px rgba(0,0,0,0.5); padding:15px 25px; border-radius:30px; font-weight:600; font-size:14px;" onclick="abortRealtimeStream()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+            STOP AUTO-PILOT
+        </button>
+
+        <!-- Custom Confirm Modal -->
+        <div class="modal-overlay" id="confirmModal" style="display:none; z-index:10001; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal" style="width:360px;">
+                <div class="modal-header">
+                    <h2 class="modal-title" id="confirmModalTitle">⚠️ Xác nhận xoá</h2>
+                </div>
+                <div class="modal-form">
+                    <p style="color:var(--text-2); font-size:14px; margin-top:0; margin-bottom:15px;" id="confirmModalMessage">Bạn có chắc chắn muốn xoá project này không?</p>
+                    <div class="modal-actions" style="margin-top:20px;">
+                        <button type="button" class="btn" id="confirmModalCancel">Huỷ</button>
+                        <button type="button" class="btn btn-danger" id="confirmModalOK">Xoá</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Video Build Options Modal -->
+        <div class="overlay" id="videoBuildOptionsModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+            <div class="modal card" style="max-width: 420px; width: 90%;">
+                <div class="modal-header">
+                    <h2 class="modal-title">Video Build Options</h2>
+                </div>
+                <div class="modal-form" style="padding: 20px;">
+                    <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input type="checkbox" id="voRandomSlides" checked style="width:16px; height:16px; cursor:pointer;">
+                        <span style="font-size:14px; color:var(--text-0);">Bật Random Slide VFX (zoom, ken-burns...)</span>
+                    </label>
+                    <div style="margin-top:16px;">
+                        <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="voAddAudio" checked style="width:16px; height:16px; cursor:pointer;" onchange="document.getElementById('voVoiceWrap').style.opacity = this.checked ? '1' : '0.5'">
+                            <span style="font-size:14px; color:var(--text-0);">Sync Episode Audio (TTS)</span>
+                        </label>
+                        <div id="voVoiceWrap" style="margin-top:8px; padding-left:24px; transition:opacity 0.2s;">
+                            <div style="font-size:11px; color:var(--text-2); margin-bottom:4px;">Chưa có audio. Trình tự động tạo sẽ dùng giọng đọc:</div>
+                            <select id="voVoiceSelect" class="input" style="width:100%; font-size:13px; padding:6px 10px;">
+                                <option value="">Loading voices...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <label class="form-label" style="display:flex; align-items:center; gap:8px; margin-top:16px; opacity:0.5;">
+                        <input type="checkbox" id="voAddSubtitle" disabled style="width:16px; height:16px;">
+                        <span style="font-size:14px; color:var(--text-0);">Tạo Subtitle (Coming Soon)</span>
+                    </label>
+                </div>
+                <div class="modal-footer" style="padding: 16px 20px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border);">
+                    <button class="btn btn-outline" onclick="document.getElementById('videoBuildOptionsModal').style.display='none'">Cancel</button>
+                    <button class="btn btn-primary" onclick="confirmBuildVideoPreview()">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        Bắt đầu Build
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast -->
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+
+    <script src="/content-studio-static/studio.js?v=20260418_06"></script>
+</body>
+</html>
