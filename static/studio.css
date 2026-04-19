@@ -1288,3 +1288,59 @@ select.input {
 .chip-dropdown-option.selected .opt-check { opacity: 1; }
 @keyframes chipIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
 @keyframes chipMenuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* -- Character/Scene Reference Gallery -- */
+.ref-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ref-card {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-xl);
+    overflow: hidden; transition: all 0.2s var(--ease-out); cursor: pointer;
+    display: flex; flex-direction: column;
+}
+.ref-card:hover { border-color: var(--accent-glow); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.ref-card-img {
+    width: 100%; aspect-ratio: 1; background: var(--bg-3); display: flex;
+    align-items: center; justify-content: center; position: relative; overflow: hidden;
+}
+.ref-card-img img { width: 100%; height: 100%; object-fit: contain; }
+.ref-card-img .ref-placeholder {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    color: var(--text-3); font-size: 12px; padding: 20px; text-align: center;
+}
+.ref-card-img .ref-upload-overlay {
+    position: absolute; inset: 0; background: rgba(99,102,241,0.15);
+    display: none; align-items: center; justify-content: center;
+    border: 2px dashed var(--accent); border-radius: var(--radius-lg);
+    color: var(--accent-text); font-size: 13px; font-weight: 600; backdrop-filter: blur(4px);
+}
+.ref-card-img:hover .ref-upload-overlay { display: flex; }
+.ref-card-body { padding: 10px 12px; }
+.ref-card-name { font-size: 13px; font-weight: 700; color: var(--text-0); margin-bottom: 2px; }
+.ref-card-role { font-size: 11px; color: var(--accent-text); font-weight: 500; }
+.ref-card-desc { font-size: 11px; color: var(--text-2); line-height: 1.5; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ref-card-actions { display: flex; gap: 4px; padding: 6px 12px 10px; }
+
+/* Character Detail Modal */
+.char-detail-modal { width: 560px !important; }
+.char-detail-grid { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
+.char-ref-preview {
+    width: 200px; height: 200px; border-radius: var(--radius-lg); background: var(--bg-3);
+    display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;
+    border: 2px dashed var(--border-strong); cursor: pointer; transition: border-color 0.2s;
+}
+.char-ref-preview:hover { border-color: var(--accent); }
+.char-ref-preview img { width: 100%; height: 100%; object-fit: cover; }
+.char-ref-preview .upload-hint {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    color: var(--text-3); font-size: 12px; text-align: center;
+}
+.char-ref-thumbs { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.char-ref-thumb {
+    width: 48px; height: 48px; border-radius: 8px; overflow: hidden; cursor: pointer;
+    border: 2px solid transparent; transition: border-color 0.15s;
+}
+.char-ref-thumb:hover { border-color: var(--accent); }
+.char-ref-thumb.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-bg); }
+.char-ref-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.char-fields { display: flex; flex-direction: column; gap: 10px; }
+.char-field label { font-size: 11px; font-weight: 600; color: var(--text-2); display: block; margin-bottom: 3px; }
+.char-field textarea { width: 100%; min-height: 60px; resize: vertical; }

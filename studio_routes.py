@@ -5,6 +5,7 @@ FastAPI router for drama CRUD, AI agent streaming, settings, and export.
 import os
 import sys
 import json
+import asyncio
 import logging
 from typing import Optional
 
@@ -24,6 +25,72 @@ if _ext_dir not in sys.path:
 def _db():
     from db.database import Database
     return Database.get_instance()
+
+
+def _clean_appearance_for_ref(appearance: str) -> str:
+    """Strip emotional/expression descriptors from appearance for neutral reference photo.
+    Keep only physical features (body, hair, face shape, skin) — like an ID photo."""
+    import re
+    # Remove emotion/expression phrases (Vietnamese + English)
+    emotion_patterns = [
+        # Vietnamese expressions
+        r'đỏ hoe\s*(vì\s*)?xúc động', r'mang vẻ\s+\w+', r'nét mặt\s+\w+',
+        r'ánh mắt\s+\w+', r'vẻ\s+(mệt mỏi|đau khổ|buồn|vui|giận|sợ|lo lắng|căng thẳng|phẫn nộ|tuyệt vọng|hạnh phúc|nghiêm nghị|lạnh lùng)',
+        r'đang\s+(khóc|cười|mỉm cười|nhăn mặt|cau mày|trầm ngâm|suy tư)',
+        r'(nước mắt|khóe mắt)\s+\w+',
+        # English expressions
+        r'crying', r'tears?\s+in\s+eyes?', r'angry', r'sad\w*', r'happy',
+        r'smiling', r'frowning', r'worried', r'exhausted', r'tired[\-\s]looking',
+        r'painful', r'sorrowful', r'emotional', r'tearful',
+        # Clothing/outfit descriptors (keep for video, strip for face ref)
+        r'\[Clothing\][^\[]*(?=\[|$)', r'\[Trang phục\][^\[]*(?=\[|$)',
+    ]
+    cleaned = appearance
+    for pat in emotion_patterns:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    # Remove CRITICAL blocks that often contain expression descriptions
+    cleaned = re.sub(r'\*\*CRITICAL:.*?\*\*', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # Clean up whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = re.sub(r',\s*,', ',', cleaned)
+    cleaned = re.sub(r',\s*\.', '.', cleaned)
+    return cleaned
+
+
+def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Realistic") -> str:
+    """Build a neutral face-only reference prompt (like an ID photo) in the project's visual style."""
+    clean_app = _clean_appearance_for_ref(appearance)
+    
+    # Map project style to prompt style descriptor
+    style_map = {
+        "default": "Photorealistic, cinematic lighting, studio quality",
+        "realistic": "Photorealistic, cinematic lighting, studio quality",
+        "anime": "Anime art style, clean lines, vibrant colors, anime aesthetic",
+        "donghua": "Chinese animation (Donghua) style, detailed linework, vibrant colors",
+        "chibi": "Chibi art style, cute proportions, simple shading",
+        "3d cartoon": "3D Cartoon render, Pixar/Disney style, smooth shading",
+        "stick figure": "Simple line drawing, minimalist style",
+        "dark fantasy": "Dark fantasy art style, dramatic shadows, gothic aesthetic",
+        "hollywood cinematic": "Photorealistic, Hollywood cinematic lighting, studio quality",
+    }
+    style_desc = style_map.get(visual_style.lower().strip(), style_map["realistic"])
+    
+    return (
+        f"Close-up face portrait of {name}: {clean_app}. "
+        f"Neutral expression, like an ID photo. "
+        f"Focus on facial features only, no clothing, no emotions. "
+        f"{style_desc}, highly detailed face, neutral background, 4K."
+    )
+
+
+def _get_char_style(drama: dict) -> str:
+    """Extract Character Style from drama.style string like 'Visual Style: X | Character Style: Y'."""
+    style_str = drama.get("style", "") or ""
+    if "Character Style:" in style_str:
+        parts = style_str.split("Character Style:")
+        if len(parts) > 1:
+            return parts[1].strip().split("|")[0].strip()
+    return "Realistic"
 
 
 def _settings():
@@ -374,7 +441,7 @@ async def _autopilot_runner(drama_id: int):
             context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes]
             
             extract_json_str = await a_extract.chat_complete(
-                f"Extract characters and scenes from this script:\n\n{script[:6000]}",
+                f"Extract ALL characters and scenes from this FULL script. Do NOT skip any named character, even if they appear only once.\n\n{script[:15000]}",
                 language, base_url, api_key, model, s.get_agent_config("extractor").get("temperature", 0.3), context
             )
             # Parse extracted JSON loosely
@@ -387,6 +454,103 @@ async def _autopilot_runner(drama_id: int):
                     _db().save_scenes_dedup(drama_id, ep_id, extracted.get("scenes", []))
             except Exception as e:
                 logger.error(f"Autopilot Extractor error: {e}")
+
+            # 4b. Flow: Generate AI reference images for characters without images
+            meta["autopilot_status"] = f"running {idx+1}/{total} - generating character refs"
+            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            
+            try:
+                # Get browser profile from drama metadata
+                char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                all_chars = _db().list_characters(drama_id)
+                chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
+                
+                logger.info(f"Autopilot char gen: total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}")
+                for c in all_chars:
+                    logger.info(f"  - {c.get('name')}: appearance={'YES' if c.get('appearance','').strip() else 'NO'}, image_url={'YES' if c.get('image_url','').strip() else 'NO'}")
+                
+                if chars_needing_images:
+                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} characters")
+                    
+                    from pathlib import Path
+                    grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    top_dir = Path(_ext_dir).parents[2]
+                    browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+                    
+                    try:
+                        from tubecli.config import DATA_DIR
+                        profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+                    except:
+                        profiles_dir = str(top_dir / "data" / "browser_profiles")
+                    
+                    ref_dir = _get_ref_dir()
+                    from datetime import datetime as _dt
+                    
+                    for ci, char_obj in enumerate(chars_needing_images):
+                        cid = char_obj["id"]
+                        cname = char_obj.get("name", "Unknown")
+                        cappearance = char_obj.get("appearance", "")
+                        
+                        meta["autopilot_status"] = f"running {idx+1}/{total} - char ref {ci+1}/{len(chars_needing_images)}: {cname}"
+                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                        
+                        char_style = _get_char_style(drama) if drama else "Realistic"
+                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style)
+                        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                        out_file = f"char_{cid}_ai_{ts}.png"
+                        out_path = os.path.join(ref_dir, out_file)
+                        
+                        cmd = [
+                            "node", grok_script,
+                            "--profile", char_profile,
+                            "--prompt", char_prompt,
+                            "--output", out_path,
+                            "--profiles-dir", profiles_dir,
+                            "--timeout", "120"
+                        ]
+                        env = os.environ.copy()
+                        env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                        
+                        try:
+                            proc = await asyncio.create_subprocess_exec(
+                                *cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                cwd=browser_ext_dir,
+                                env=env,
+                            )
+                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
+                            stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
+                            
+                            # Check result
+                            if stdout_text:
+                                for line in reversed(stdout_text.splitlines()):
+                                    if line.strip().startswith("{"):
+                                        try:
+                                            result = json.loads(line.strip())
+                                            if result.get("status") == "success" and os.path.exists(out_path):
+                                                try:
+                                                    refs = json.loads(char_obj.get("reference_images") or "[]")
+                                                except:
+                                                    refs = []
+                                                refs.append(out_path)
+                                                _db().update_character(cid, {
+                                                    "reference_images": json.dumps(refs),
+                                                    "image_url": out_path
+                                                })
+                                                logger.info(f"  ✓ Generated ref image for {cname}")
+                                                break
+                                        except:
+                                            pass
+                        except Exception as ce:
+                            logger.warning(f"  ✗ Failed to generate ref for {cname}: {ce}")
+                            continue
+                else:
+                    logger.info(f"Autopilot: no characters need image generation (all have images or no appearance)")
+            except Exception as e:
+                import traceback
+                logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
+                # Non-fatal: continue to storyboard step
 
             # 5. Flow: Storyboard Breaker
             sb_json_str = await a_storybd.chat_complete(
@@ -494,6 +658,204 @@ async def update_character(char_id: int, request: Request):
 async def delete_character(char_id: int):
     _db().delete_character(char_id)
     return {"status": "ok"}
+
+
+def _get_ref_dir():
+    """Get the directory for storing reference images."""
+    try:
+        from tubecli.config import DATA_DIR
+        ref_dir = os.path.join(str(DATA_DIR), "content_studio", "references")
+    except Exception:
+        ref_dir = os.path.join(_ext_dir, "outputs", "references")
+    os.makedirs(ref_dir, exist_ok=True)
+    return ref_dir
+
+
+@router.post("/api/v1/studio/characters/{char_id}/upload-ref")
+async def upload_character_ref(char_id: int, request: Request):
+    """Upload a reference image for a character (multipart/form-data)."""
+    import shutil
+    from datetime import datetime
+    
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+    
+    ref_dir = _get_ref_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"char_{char_id}_{timestamp}{ext}"
+    filepath = os.path.join(ref_dir, filename)
+    
+    with open(filepath, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    
+    # Update character's reference_images list
+    db = _db()
+    char = db._dict(db.conn.execute("SELECT * FROM characters WHERE id = ?", (char_id,)).fetchone())
+    if not char:
+        raise HTTPException(404, "Character not found")
+    
+    try:
+        refs = json.loads(char.get("reference_images") or "[]")
+    except:
+        refs = []
+    refs.append(filepath)
+    
+    db.update_character(char_id, {"reference_images": json.dumps(refs), "image_url": filepath})
+    
+    return {"status": "ok", "path": filepath, "filename": filename}
+
+
+# Background task storage for generation status
+_gen_tasks = {}
+
+@router.post("/api/v1/studio/characters/{char_id}/generate-ref")
+async def generate_character_ref(char_id: int, request: Request, background_tasks: BackgroundTasks):
+    """Generate a character reference image using Grok Imagine."""
+    data = await request.json()
+    profile_name = data.get("profile_name", "")
+    
+    if not profile_name:
+        raise HTTPException(400, "Browser profile required")
+    
+    db = _db()
+    char = db._dict(db.conn.execute("SELECT * FROM characters WHERE id = ?", (char_id,)).fetchone())
+    if not char:
+        raise HTTPException(404, "Character not found")
+    
+    # Build image prompt from character appearance
+    appearance = char.get("appearance", "").strip()
+    name = char.get("name", "Unknown")
+    if not appearance:
+        raise HTTPException(400, f"Character '{name}' has no appearance description. Please fill in the Appearance field first.")
+    
+    # Get visual style from drama
+    drama = db.get_drama(char.get("drama_id")) if char.get("drama_id") else None
+    char_style = _get_char_style(drama) if drama else "Realistic"
+    
+    prompt = _build_char_ref_prompt(name, appearance, char_style)
+    
+    ref_dir = _get_ref_dir()
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"char_{char_id}_ai_{timestamp}.png"
+    output_path = os.path.join(ref_dir, filename)
+    
+    task_id = f"chargen_{char_id}_{timestamp}"
+    _gen_tasks[task_id] = {"status": "running", "char_id": char_id, "name": name}
+    
+    async def _run_generation():
+        import asyncio
+        try:
+            grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+            from pathlib import Path
+            # _ext_dir = .../tubecli/data/extensions_external/content_studio
+            # parents: content_studio → extensions_external → data → tubecli(top)
+            top_dir = Path(_ext_dir).parents[2]  # .../tubecli
+            browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+            
+            try:
+                from tubecli.config import DATA_DIR
+                profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+            except:
+                profiles_dir = str(top_dir / "data" / "browser_profiles")
+            
+            cmd = [
+                "node", grok_script,
+                "--profile", profile_name,
+                "--prompt", prompt,
+                "--output", output_path,
+                "--profiles-dir", profiles_dir,
+                "--timeout", "120"
+            ]
+            
+            env = os.environ.copy()
+            env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+            
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=browser_ext_dir,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=150)
+            
+            stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            
+            if stdout_text:
+                for line in reversed(stdout_text.splitlines()):
+                    if line.strip().startswith("{"):
+                        try:
+                            result = json.loads(line.strip())
+                            if result.get("status") == "success" and os.path.exists(output_path):
+                                # Update character with new reference image
+                                try:
+                                    refs = json.loads(char.get("reference_images") or "[]")
+                                except:
+                                    refs = []
+                                refs.append(output_path)
+                                db.update_character(char_id, {
+                                    "reference_images": json.dumps(refs),
+                                    "image_url": output_path
+                                })
+                                _gen_tasks[task_id] = {"status": "done", "path": output_path, "filename": filename}
+                                return
+                        except:
+                            pass
+            
+            _gen_tasks[task_id] = {"status": "error", "message": "Generation failed"}
+        except Exception as e:
+            logger.error(f"Character image gen error: {e}")
+            _gen_tasks[task_id] = {"status": "error", "message": str(e)}
+    
+    background_tasks.add_task(_run_generation)
+    return {"status": "started", "task_id": task_id}
+
+
+@router.get("/api/v1/studio/generate-status/{task_id}")
+async def get_gen_status(task_id: str):
+    task = _gen_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return task
+
+
+@router.get("/api/v1/studio/references/{filename}")
+async def serve_reference(filename: str):
+    """Serve a reference image file."""
+    ref_dir = _get_ref_dir()
+    filepath = os.path.join(ref_dir, filename)
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    raise HTTPException(404, "Reference image not found")
+
+
+@router.post("/api/v1/studio/scenes/{scene_id}/upload-ref")
+async def upload_scene_ref(scene_id: int, request: Request):
+    """Upload a reference image for a scene."""
+    from datetime import datetime
+    
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+    
+    ref_dir = _get_ref_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"scene_{scene_id}_{timestamp}{ext}"
+    filepath = os.path.join(ref_dir, filename)
+    
+    with open(filepath, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    
+    _db().update_scene(scene_id, {"image_url": filepath})
+    return {"status": "ok", "path": filepath, "filename": filename}
 
 
 # ── Scene CRUD ──────────────────────────────────────────────
@@ -709,7 +1071,7 @@ async def extract_characters_scenes(episode_id: int):
         # Collect full AI response
         full_response = []
         async for chunk in agent.chat_stream(
-            f"Extract ONLY MERELY NEW characters and scenes from this script. Do NOT output characters or scenes that already exist in the context.\nIf there are no new ones, return empty arrays.\n\nScript:\n{script[:8000]}",
+            f"Extract ALL characters and scenes from this script. Do NOT skip any named character even if minor. If character/scene already exists in context, skip it.\n\nScript:\n{script[:15000]}",
             language, base_url, api_key, model, agent_temp, context
         ):
             full_response.append(chunk)
@@ -769,6 +1131,94 @@ async def extract_characters_scenes(episode_id: int):
             _db().conn.commit()
         except:
             pass
+
+        # --- Auto-generate AI reference images for new characters ---
+        # Re-fetch from DB to get fresh data (saved_chars may have stale image_url from dedup)
+        all_drama_chars = _db().list_characters(drama_id)
+        chars_for_gen = [c for c in all_drama_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
+        if chars_for_gen:
+            drama_obj = _db().get_drama(drama_id)
+            char_style = _get_char_style(drama_obj) if drama_obj else "Realistic"
+            try:
+                drama_meta_img = json.loads(drama_obj.get("metadata", "{}") or "{}")
+                profile_name_img = drama_meta_img.get("browser_profile_name") or drama_meta_img.get("browser_profile") or ""
+            except:
+                profile_name_img = ""
+
+            if not profile_name_img:
+                _msg = "⚠️ Chưa chọn Browser Profile — bỏ qua tạo ảnh AI cho " + str(len(chars_for_gen)) + " nhân vật. Chọn profile rồi bấm AI Gen."
+                yield f'data: {json.dumps({"event": "status", "message": _msg})}\n\n'
+            else:
+                _msg = "🎨 Đang tạo ảnh tham chiếu cho " + str(len(chars_for_gen)) + " nhân vật mới..."
+                yield f'data: {json.dumps({"event": "status", "message": _msg})}\n\n'
+                from pathlib import Path as _PImg
+                _grok_s = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                _top = _PImg(_ext_dir).parents[2]
+                _bdir = str(_top / "tubecli" / "extensions" / "browser")
+                try:
+                    from tubecli.config import DATA_DIR as _D2
+                    _pdir = os.path.join(str(_D2), "browser_profiles")
+                except:
+                    _pdir = str(_top / "data" / "browser_profiles")
+                _rdir = _get_ref_dir()
+                from datetime import datetime as _dt3
+                _gok = 0
+                _ger = 0
+                for _ci, _co in enumerate(chars_for_gen):
+                    _cid = _co["id"]
+                    _cn = _co.get("name", "Unknown")
+                    _ca = _co.get("appearance", "")
+                    _msg2 = f"🎨 [{_ci+1}/{len(chars_for_gen)}] Tạo ảnh: {_cn}..."
+                    yield f'data: {json.dumps({"event": "status", "message": _msg2})}\n\n'
+                    _cp = _build_char_ref_prompt(_cn, _ca, char_style)
+                    _ts = _dt3.now().strftime("%Y%m%d_%H%M%S")
+                    _cout = os.path.join(_rdir, f"char_{_cid}_ai_{_ts}.png")
+                    os.makedirs(os.path.dirname(_cout), exist_ok=True)
+                    logger.info(f"CharGen [{_cn}] output={_cout}, profile={profile_name_img}")
+                    _cmd = ["node", _grok_s, "--profile", profile_name_img, "--prompt", _cp, "--output", _cout, "--profiles-dir", _pdir, "--timeout", "120"]
+                    _env = os.environ.copy()
+                    _env["NODE_PATH"] = os.path.join(_bdir, "node_modules")
+                    try:
+                        _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir, env=_env)
+                        _so, _se = await asyncio.wait_for(_pr.communicate(), timeout=150)
+                        _sot = _so.decode("utf-8", errors="replace").strip()
+                        _set = _se.decode("utf-8", errors="replace").strip()
+                        logger.info(f"CharGen [{_cn}] exit={_pr.returncode}, stdout_len={len(_sot)}, stderr_len={len(_set)}")
+                        logger.info(f"CharGen [{_cn}] stdout last 500: {_sot[-500:]}")
+                        _imok = False
+                        if _sot:
+                            for _ln in reversed(_sot.splitlines()):
+                                if _ln.strip().startswith("{"):
+                                    try:
+                                        _rj = json.loads(_ln.strip())
+                                        logger.info(f"CharGen [{_cn}] parsed JSON: {_rj}")
+                                        # Use actual path from result, fallback to expected path
+                                        actual_path = _rj.get("path", _cout)
+                                        if _rj.get("status") == "success" and os.path.exists(actual_path):
+                                            try:
+                                                _ors = json.loads(_co.get("reference_images") or "[]")
+                                            except:
+                                                _ors = []
+                                            _ors.append(actual_path)
+                                            _db().update_character(_cid, {"reference_images": json.dumps(_ors), "image_url": actual_path})
+                                            _imok = True
+                                            _gok += 1
+                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cho " + _cn})}\n\n'
+                                            break
+                                        elif _rj.get("status") == "success":
+                                            logger.warning(f"CharGen [{_cn}] success but file not found: {actual_path}, exists={os.path.exists(actual_path)}, cout_exists={os.path.exists(_cout)}")
+                                    except:
+                                        pass
+                        if not _imok:
+                            _ger += 1
+                            _em = _set[:150] if _set else "Không tìm thấy ảnh output"
+                            logger.warning(f"CharGen [{_cn}] FAILED: {_em}")
+                            yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh " + _cn + ": " + _em[:80]})}\n\n'
+                    except Exception as _ex:
+                        _ger += 1
+                        yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh " + _cn + ": " + str(_ex)[:80]})}\n\n'
+                _msg3 = f"🎨 Hoàn thành: {_gok} thành công, {_ger} thất bại"
+                yield f'data: {json.dumps({"event": "status", "message": _msg3})}\n\n'
 
         # Return final result
         result = {
@@ -1217,6 +1667,42 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     shots = _db().list_storyboards(episode_id)
     if not shots:
         raise HTTPException(400, "No storyboard shots found. Generate storyboard first.")
+
+    # --- Inject character reference images into each shot ---
+    db = _db()
+    drama_id = ep.get("drama_id")
+    all_chars = {c["id"]: c for c in db.list_characters(drama_id)} if drama_id else {}
+    
+    for shot in shots:
+        char_ids = shot.get("character_ids", [])
+        ref_images = []
+        for cid in char_ids:
+            char = all_chars.get(cid)
+            if not char:
+                continue
+            img_url = char.get("image_url", "")
+            if img_url and os.path.isfile(img_url):
+                ref_images.append(img_url)
+            else:
+                try:
+                    refs = json.loads(char.get("reference_images") or "[]")
+                    for r in refs:
+                        if r and os.path.isfile(r):
+                            ref_images.append(r)
+                            break
+                except:
+                    pass
+        if ref_images:
+            shot["ref_images"] = ref_images[:3]
+
+    # Inject aspect ratio from drama metadata
+    try:
+        drama_meta = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
+        video_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+    except:
+        video_aspect_ratio = "16:9"
+    for shot in shots:
+        shot["aspect_ratio"] = video_aspect_ratio
 
     import uuid
     task_id = str(uuid.uuid4())[:8]

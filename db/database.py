@@ -231,7 +231,7 @@ class Database:
         fields = []
         values = []
         for key in ["name", "role", "description", "appearance", "personality",
-                     "voice_style", "image_url", "voice_sample_url"]:
+                     "voice_style", "image_url", "reference_images", "voice_sample_url"]:
             if key in data:
                 fields.append(f"{key} = ?")
                 values.append(data[key])

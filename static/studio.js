@@ -163,6 +163,7 @@ async function _createDramaFromWiz() {
     metadata.camera_angle = document.getElementById('wizCameraAngle').value;
     metadata.ethnicity = document.getElementById('wizEthnicity').value;
     metadata.prompt_focus = document.getElementById('wizPromptFocus').value;
+    metadata.aspect_ratio = document.getElementById('wizAspectRatio').value;
 
     try {
         return await apiFetch('/dramas', {
@@ -856,6 +857,14 @@ async function doExtract() {
                             const lt = loadEl.querySelector('.loading-text');
                             if (lt) lt.textContent = parsed.message;
                         }
+                        // Live-refresh character cards when an image is generated
+                        if (parsed.message && (parsed.message.includes('✅') || parsed.message.includes('Hoàn thành'))) {
+                            try {
+                                const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
+                                const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                                renderExtractResults({ characters: charRes.items || [], scenes: sceneRes.items || [] });
+                            } catch(e) {}
+                        }
                     }
                     if (parsed.event === 'progress' && parsed.content) {
                         exCharCount += parsed.content.length;
@@ -934,29 +943,30 @@ function renderExtractResults(data) {
     if (characters.length > 0) {
         charsSection.style.display = '';
         charsCount.textContent = characters.length;
+        charsGrid.className = 'ref-gallery';
         charsGrid.innerHTML = characters.map(c => {
-            const roleColors = {
-                protagonist: 'var(--accent)',
-                deuteragonist: '#10b981',
-                supporting: '#f59e0b',
-                minor: 'var(--text-2)',
-                extra: 'var(--text-3)',
-            };
-            const roleColor = roleColors[c.role] || 'var(--text-2)';
+            const refImgUrl = _getCharRefUrl(c);
             return `
-                <div class="extract-card">
-                    <div class="extract-card-head">
-                        <div class="extract-card-avatar">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                        </div>
-                        <div>
-                            <div class="extract-card-name">${esc(c.name)}</div>
-                            <span class="tag" style="background:${roleColor};color:#fff;font-size:10px;padding:1px 6px">${esc(c.role)}</span>
-                        </div>
+                <div class="ref-card" onclick="openCharacterDetail(${c.id})">
+                    <div class="ref-card-img" ondragover="event.preventDefault();this.querySelector('.ref-upload-overlay').style.display='flex'" ondragleave="this.querySelector('.ref-upload-overlay').style.display='none'" ondrop="event.preventDefault();this.querySelector('.ref-upload-overlay').style.display='none';handleCharRefDrop(event,${c.id})">
+                        ${refImgUrl
+                          ? `<img src="${refImgUrl}" alt="${esc(c.name)}" />`
+                          : `<div class="ref-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                <span>Drop image or click to upload</span>
+                             </div>`}
+                        <div class="ref-upload-overlay">📷 Drop image here</div>
                     </div>
-                    ${c.appearance ? `<div class="extract-card-field"><span class="field-icon">👤</span><span>${esc(c.appearance)}</span></div>` : ''}
-                    ${c.personality ? `<div class="extract-card-field"><span class="field-icon">💡</span><span>${esc(c.personality)}</span></div>` : ''}
-                    ${c.description ? `<div class="extract-card-field"><span class="field-icon">📝</span><span>${esc(c.description)}</span></div>` : ''}
+                    <div class="ref-card-body">
+                        <div class="ref-card-name">${esc(c.name)}</div>
+                        <div class="ref-card-role">${esc(c.role || 'character')}</div>
+                        ${c.appearance ? `<div class="ref-card-desc">${esc(c.appearance)}</div>` : ''}
+                    </div>
+                    <div class="ref-card-actions">
+                        <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();triggerCharRefUpload(${c.id})" title="Upload reference image">📷 Upload</button>
+                        <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();generateCharRefAI(${c.id})" title="Generate with Grok AI" id="btnGenChar${c.id}">🎨 AI Gen</button>
+                        <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();openCharacterDetail(${c.id})" title="Edit character details">✏️ Edit</button>
+                    </div>
                 </div>
             `;
         }).join('');
@@ -970,25 +980,234 @@ function renderExtractResults(data) {
     if (scenes.length > 0) {
         scenesSection.style.display = '';
         scenesCount.textContent = scenes.length;
-        scenesGrid.innerHTML = scenes.map(s => `
-            <div class="extract-card">
-                <div class="extract-card-head">
-                    <div class="extract-card-avatar" style="background:rgba(16,185,129,.15);color:#10b981">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        scenesGrid.className = 'ref-gallery';
+        scenesGrid.innerHTML = scenes.map(s => {
+            const sceneImgUrl = _getSceneRefUrl(s);
+            return `
+                <div class="ref-card" onclick="openSceneDetail(${s.id})">
+                    <div class="ref-card-img" style="aspect-ratio:16/9" ondragover="event.preventDefault();this.querySelector('.ref-upload-overlay').style.display='flex'" ondragleave="this.querySelector('.ref-upload-overlay').style.display='none'" ondrop="event.preventDefault();this.querySelector('.ref-upload-overlay').style.display='none';handleSceneRefDrop(event,${s.id})">
+                        ${sceneImgUrl
+                          ? `<img src="${sceneImgUrl}" alt="${esc(s.location)}" />`
+                          : `<div class="ref-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                                <span>Drop scene image</span>
+                             </div>`}
+                        <div class="ref-upload-overlay">🖼️ Drop image here</div>
                     </div>
-                    <div>
-                        <div class="extract-card-name">${esc(s.location)}</div>
-                        ${s.time ? `<span class="extract-card-time">${esc(s.time)}</span>` : ''}
+                    <div class="ref-card-body">
+                        <div class="ref-card-name">${esc(s.location)}</div>
+                        ${s.time ? `<div class="ref-card-role">${esc(s.time)}</div>` : ''}
+                        ${s.description ? `<div class="ref-card-desc">${esc(s.description)}</div>` : ''}
+                    </div>
+                    <div class="ref-card-actions">
+                        <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();triggerSceneRefUpload(${s.id})" title="Upload scene image">📷 Upload</button>
                     </div>
                 </div>
-                ${s.description ? `<div class="extract-card-field"><span class="field-icon">🎭</span><span>${esc(s.description)}</span></div>` : ''}
-                ${s.prompt ? `<div class="extract-card-field" style="font-family:var(--font-mono);font-size:11px;color:var(--text-3)"><span class="field-icon">🖼️</span><span>${esc(s.prompt)}</span></div>` : ''}
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
 
     // Update extract count
     document.getElementById('extractCount').textContent = `${characters.length} characters · ${scenes.length} scenes`;
+}
+
+// ── Character/Scene Reference Helpers ──────────────────────
+function _getCharRefUrl(c) {
+    if (c.image_url) {
+        const fname = c.image_url.replace(/\\/g, '/').split('/').pop();
+        return `/api/v1/studio/references/${encodeURIComponent(fname)}`;
+    }
+    return null;
+}
+
+function _getSceneRefUrl(s) {
+    if (s.image_url) {
+        const fname = s.image_url.replace(/\\/g, '/').split('/').pop();
+        return `/api/v1/studio/references/${encodeURIComponent(fname)}`;
+    }
+    return null;
+}
+
+function triggerCharRefUpload(charId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+        if (!input.files[0]) return;
+        await _uploadRefFile(`/characters/${charId}/upload-ref`, input.files[0]);
+        loadExtractData();
+    };
+    input.click();
+}
+
+function triggerSceneRefUpload(sceneId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+        if (!input.files[0]) return;
+        await _uploadRefFile(`/scenes/${sceneId}/upload-ref`, input.files[0]);
+        loadExtractData();
+    };
+    input.click();
+}
+
+async function handleCharRefDrop(event, charId) {
+    const file = event.dataTransfer?.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    await _uploadRefFile(`/characters/${charId}/upload-ref`, file);
+    loadExtractData();
+}
+
+async function handleSceneRefDrop(event, sceneId) {
+    const file = event.dataTransfer?.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    await _uploadRefFile(`/scenes/${sceneId}/upload-ref`, file);
+    loadExtractData();
+}
+
+async function _uploadRefFile(endpoint, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const resp = await fetch(`${API}${endpoint}`, { method: 'POST', body: formData });
+        if (!resp.ok) throw new Error('Upload failed');
+        const result = await resp.json();
+        toast('Reference image uploaded!', 'success');
+        return result;
+    } catch(e) {
+        toast('Upload failed: ' + e.message, 'error');
+        return null;
+    }
+}
+
+function openCharacterDetail(charId) {
+    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    if (!char) { toast('Character not found', 'error'); return; }
+    
+    const refImgUrl = _getCharRefUrl(char);
+    let refs = [];
+    try { refs = JSON.parse(char.reference_images || '[]'); } catch(e) {}
+    
+    const modal = document.getElementById('charDetailModal');
+    if (!modal) return;
+    
+    document.getElementById('charDetailName').value = char.name || '';
+    document.getElementById('charDetailRole').value = char.role || '';
+    document.getElementById('charDetailAppearance').value = char.appearance || '';
+    document.getElementById('charDetailPersonality').value = char.personality || '';
+    document.getElementById('charDetailDescription').value = char.description || '';
+    
+    const previewEl = document.getElementById('charDetailPreview');
+    if (refImgUrl) {
+        previewEl.innerHTML = `<img src="${refImgUrl}" alt="${esc(char.name)}" />`;
+    } else {
+        previewEl.innerHTML = `<div class="upload-hint"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Click to upload</span></div>`;
+    }
+    previewEl.onclick = () => triggerCharRefUpload(charId);
+    
+    // Ref thumbs
+    const thumbsEl = document.getElementById('charDetailThumbs');
+    thumbsEl.innerHTML = refs.map((path, i) => {
+        const fname = path.replace(/\\/g, '/').split('/').pop();
+        return `<div class="char-ref-thumb ${i === refs.length - 1 ? 'active' : ''}"><img src="/api/v1/studio/references/${encodeURIComponent(fname)}" /></div>`;
+    }).join('');
+    
+    modal.dataset.charId = charId;
+    modal.style.display = 'flex';
+}
+
+async function saveCharacterDetail() {
+    const modal = document.getElementById('charDetailModal');
+    const charId = parseInt(modal.dataset.charId);
+    
+    const data = {
+        name: document.getElementById('charDetailName').value,
+        role: document.getElementById('charDetailRole').value,
+        appearance: document.getElementById('charDetailAppearance').value,
+        personality: document.getElementById('charDetailPersonality').value,
+        description: document.getElementById('charDetailDescription').value,
+    };
+    
+    try {
+        await apiFetch(`/characters/${charId}`, { method: 'PUT', body: JSON.stringify(data) });
+        toast('Character updated!', 'success');
+        modal.style.display = 'none';
+        loadExtractData();
+    } catch(e) {
+        toast('Failed to save: ' + e.message, 'error');
+    }
+}
+
+function openSceneDetail(sceneId) {
+    // Simple inline edit - can be enhanced later
+    toast('Scene detail editor coming soon', 'info');
+}
+
+async function generateCharRefAI(charId) {
+    // Get a browser profile to use
+    const savedProfile = localStorage.getItem('cs_last_browser_profile') || '';
+    if (!savedProfile) {
+        toast('Please select a browser profile first (Auto-Pilot wizard → Browser Profiles)', 'error');
+        return;
+    }
+    
+    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    if (!char) { toast('Character not found', 'error'); return; }
+    if (!char.appearance || !char.appearance.trim()) {
+        toast(`Please fill in the Appearance field for "${char.name}" first (click Edit)`, 'error');
+        return;
+    }
+    
+    const btn = document.getElementById(`btnGenChar${charId}`);
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
+    
+    try {
+        const res = await apiFetch(`/characters/${charId}/generate-ref`, {
+            method: 'POST',
+            body: JSON.stringify({ profile_name: savedProfile }),
+        });
+        
+        if (res.task_id) {
+            toast(`Generating portrait for ${char.name}...`, 'info');
+            _pollCharGenStatus(res.task_id, charId, btn);
+        }
+    } catch(e) {
+        toast('AI Generate failed: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+    }
+}
+
+function _pollCharGenStatus(taskId, charId, btn) {
+    let polls = 0;
+    const maxPolls = 50; // 50 * 3s = 150s max
+    
+    const interval = setInterval(async () => {
+        polls++;
+        if (polls > maxPolls) {
+            clearInterval(interval);
+            if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+            toast('Generation timeout', 'error');
+            return;
+        }
+        
+        try {
+            const status = await apiFetch(`/generate-status/${taskId}`);
+            if (status.status === 'done') {
+                clearInterval(interval);
+                if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+                toast('Character portrait generated! 🎉', 'success');
+                loadExtractData(); // Refresh gallery
+            } else if (status.status === 'error') {
+                clearInterval(interval);
+                if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+                toast('Generation failed: ' + (status.message || 'Unknown error'), 'error');
+            }
+            // else still running, continue polling
+        } catch(e) {
+            // Ignore poll errors
+        }
+    }, 3000);
 }
 
 // ── Storyboard Breakdown ───────────────────────────────────

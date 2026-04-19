@@ -175,6 +175,16 @@ async function sleep(ms) {
                 }
             } catch(e) {}
 
+            // Setup 16:9 aspect ratio
+            try {
+                const btn169 = page.locator('button:has-text("16:9"), div:text-is("16:9"), span:text-is("16:9"), button:has-text("16:9")').last();
+                if (await btn169.isVisible({ timeout: 1000 })) {
+                    log('Selecting 16:9 aspect ratio...');
+                    await btn169.evaluate(el => el.click());
+                    await sleep(500);
+                }
+            } catch(e) {}
+
             // Input Prompt
             let inputEl = null;
             try {
@@ -202,13 +212,79 @@ async function sleep(ms) {
                 
                 await inputEl.click();
                 await sleep(500);
+
+                // --- UPLOAD REFERENCE IMAGES (if any) ---
+                const refImages = shot.ref_images || [];
+                if (refImages.length > 0) {
+                    log(`Uploading ${refImages.length} reference image(s) for this shot...`);
+                    for (const imgPath of refImages) {
+                        if (!fs.existsSync(imgPath)) {
+                            log(`  Ref image not found, skipping: ${imgPath}`);
+                            continue;
+                        }
+                        try {
+                            let fileChooserTriggered = false;
+
+                            // Method 1 (fastest): Find hidden input[type="file"] and set directly
+                            const fileInputs = page.locator('input[type="file"]');
+                            const fileInputCount = await fileInputs.count();
+                            if (fileInputCount > 0) {
+                                await fileInputs.first().setInputFiles(imgPath);
+                                fileChooserTriggered = true;
+                                log(`  Uploaded ref image via hidden input: ${path.basename(imgPath)}`);
+                                await sleep(3000);
+                            }
+
+                            // Method 2: Click "+" near input area, then click "Upload or drop" zone
+                            if (!fileChooserTriggered) {
+                                // Find the + button: it's near the bottom input area (textarea)
+                                // Use the textarea's bounding box to find the nearby + button
+                                const textareaBox = await inputEl.boundingBox();
+                                if (textareaBox) {
+                                    // The + button is typically to the left of the textarea
+                                    const plusX = textareaBox.x - 30;
+                                    const plusY = textareaBox.y + textareaBox.height / 2;
+                                    await page.mouse.click(plusX, plusY);
+                                    await sleep(1500);
+                                    log('  Clicked near + area by coordinates');
+                                }
+
+                                // Now look for "Upload or drop" text in the popup
+                                const uploadArea = page.locator('text=/Upload or drop/i, text=/Tải lên/i').first();
+                                if (await uploadArea.isVisible({ timeout: 3000 })) {
+                                    const [fileChooser] = await Promise.all([
+                                        page.waitForEvent('filechooser', { timeout: 5000 }),
+                                        uploadArea.click(),
+                                    ]);
+                                    await fileChooser.setFiles(imgPath);
+                                    fileChooserTriggered = true;
+                                    log(`  Uploaded ref image via popup: ${path.basename(imgPath)}`);
+                                    await sleep(3000);
+                                }
+                            }
+
+                            if (!fileChooserTriggered) {
+                                log(`  Could not upload ref image — skipping`);
+                                try { await page.keyboard.press('Escape'); } catch(x) {}
+                            }
+                        } catch (e) {
+                            log(`  Failed to upload ref image ${path.basename(imgPath)}: ${e.message}`);
+                            try { await page.keyboard.press('Escape'); } catch(x) {}
+                        }
+                    }
+                    await sleep(1000);
+                }
                 
                 // Clear any existing text just in case
                 await inputEl.fill('');
                 await sleep(200);
 
-                // Use robust filling
-                const promptClean = shot.prompt.replace(/\n+/g, ' ').trim();
+                // Use robust filling — append aspect ratio to ensure widescreen output
+                let promptClean = shot.prompt.replace(/\n+/g, ' ').trim();
+                const aspectRatio = shot.aspect_ratio || '16:9';
+                if (!promptClean.includes('aspect ratio') && !promptClean.includes('16:9') && !promptClean.includes('9:16')) {
+                    promptClean += ` Output in ${aspectRatio} widescreen aspect ratio.`;
+                }
                 try {
                     await inputEl.fill(promptClean);
                 } catch(e) {

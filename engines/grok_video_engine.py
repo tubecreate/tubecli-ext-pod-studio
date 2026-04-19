@@ -208,7 +208,15 @@ async def batch_generate(
 
             filename = f"ep{episode_id}_shot{shot_num:03d}.mp4"
             out_path = os.path.join(out_dir, filename)
-            tasks_data.append({"id": shot["id"], "prompt": prompt, "output": out_path})
+            task_entry = {"id": shot["id"], "prompt": prompt, "output": out_path}
+            # Pass through ref_images if provided by the caller
+            if shot.get("ref_images"):
+                task_entry["ref_images"] = shot["ref_images"][:3]
+                logger.info(f"Shot {shot_num}: injecting {len(task_entry['ref_images'])} reference image(s)")
+            # Pass through aspect_ratio
+            if shot.get("aspect_ratio"):
+                task_entry["aspect_ratio"] = shot["aspect_ratio"]
+            tasks_data.append(task_entry)
 
         import tempfile
         with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8") as f:
