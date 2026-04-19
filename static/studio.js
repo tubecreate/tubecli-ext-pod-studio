@@ -298,19 +298,11 @@ async function wizGenerateOutline() {
         document.getElementById('wizStep2').style.display = 'none';
         document.getElementById('wizStep3').style.display = '';
         
-        // Load browser profiles into execution dropdown for new project
+        // Load browser profiles into chip selector for new project
         _loadBrowserProfilesIntoSelect('wizBrowserProfileExec').then(() => {
-            const sel = document.getElementById('wizBrowserProfileExec');
-            const saved = localStorage.getItem('cs_last_browser_profile') || '';
-            if (saved && sel) {
-                for (let i = 0; i < sel.options.length; i++) {
-                    if (sel.options[i].value === saved) {
-                        sel.selectedIndex = i;
-                        break;
-                    }
-                }
-            }
+            _initChipsFromSaved();
         });
+
         
         // Voice profile loading and display logic
         const pSteps = getWizPipeline();
@@ -461,41 +453,19 @@ async function selectEpisode(episodeId) {
         currentEpisode = await apiFetch(`/episodes/${episodeId}`);
         showEditor();
         renderSidebar();
-
-        // Background fetch characters, scenes, and storyboards for this episode's project to persist the view
-        if (currentDrama) {
+        
+        // Lazy: characters, scenes, storyboards will load when user clicks their tab
+        // (see setStep → loadEpisodeImages, loadEpisodeVideos, etc.)
+        
+        // Pre-cache extract data in background (lightweight, no render)
+        if (currentDrama && !window.currentDramaCharacters) {
             Promise.all([
                 apiFetch(`/dramas/${currentDrama.id}/characters`),
-                apiFetch(`/dramas/${currentDrama.id}/scenes`),
-                apiFetch(`/episodes/${episodeId}/storyboards`)
-            ]).then(([charRes, sceneRes, sbRes]) => {
-                const characters = window.currentDramaCharacters = charRes.items || [];
-                const scenes = window.currentDramaScenes = sceneRes.items || [];
-                const storyboards = sbRes.items || [];
-
-                // Render extract section using existing data
-                if (characters.length > 0 || scenes.length > 0) {
-                    document.getElementById('extractEmpty').style.display = 'none';
-                    renderExtractResults({ characters, scenes });
-                } else {
-                    document.getElementById('extractEmpty').style.display = '';
-                    document.getElementById('charsSection').style.display = 'none';
-                    document.getElementById('scenesSection').style.display = 'none';
-                }
-
-                // Render storyboard section using existing data
-                if (storyboards.length > 0) {
-                    document.getElementById('storyboardEmpty').style.display = 'none';
-                    renderStoryboard(storyboards);
-                    document.getElementById('sbList').style.display = '';
-                } else {
-                    document.getElementById('storyboardEmpty').style.display = '';
-                    document.getElementById('sbList').style.display = 'none';
-                    document.getElementById('sbCount').textContent = '0 shots';
-                }
-            }).catch(e => {
-                console.error("Failed to load project assets", e);
-            });
+                apiFetch(`/dramas/${currentDrama.id}/scenes`)
+            ]).then(([charRes, sceneRes]) => {
+                window.currentDramaCharacters = charRes.items || [];
+                window.currentDramaScenes = sceneRes.items || [];
+            }).catch(() => {});
         }
 
     } catch (e) {
@@ -530,13 +500,16 @@ function renderSidebar() {
     }
     list.innerHTML = dramas.map(d => {
         const isActive = currentDrama && currentDrama.id === d.id;
-        const eps = d.episodes || [];
+        // For the active project, use currentDrama (which has full episodes list)
+        // For others, use lightweight data (only episode_count)
+        const eps = isActive && currentDrama.episodes ? currentDrama.episodes : [];
+        const epCount = isActive ? eps.length : (d.episode_count || d.episodes?.length || 0);
         return `
             <div class="sidebar-project">
                 <div class="sidebar-project-head ${isActive ? 'active' : ''}" onclick="selectDrama(${d.id})">
                     <span class="project-icon">🎬</span>
                     <span class="project-name">${esc(d.title)}</span>
-                    <span class="project-ep-count">${eps.length}</span>
+                    <span class="project-ep-count">${epCount}</span>
                     <button class="sidebar-delete-btn" onclick="deleteDrama(${d.id}, event)" title="Delete">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                     </button>
@@ -654,11 +627,55 @@ function setStep(step) {
         if (el) el.style.display = key === step ? 'flex' : 'none';
     }
 
-    // Step-specific triggers
+    // Step-specific triggers (lazy load)
+    if (step === 'extract') loadExtractData();
+    if (step === 'storyboard') loadStoryboardData();
     if (step === 'images') loadEpisodeImages();
     if (step === 'videos') loadEpisodeVideos();
     if (step === 'audio') loadEpisodeAudio();
     if (step === 'video') loadEpisodeVideo();
+}
+
+// ── Lazy Tab Loaders ───────────────────────────────────────
+async function loadExtractData() {
+    if (!currentDrama || !currentEpisode) return;
+    try {
+        const [charRes, sceneRes] = await Promise.all([
+            apiFetch(`/dramas/${currentDrama.id}/characters`),
+            apiFetch(`/dramas/${currentDrama.id}/scenes`)
+        ]);
+        const characters = window.currentDramaCharacters = charRes.items || [];
+        const scenes = window.currentDramaScenes = sceneRes.items || [];
+        if (characters.length > 0 || scenes.length > 0) {
+            document.getElementById('extractEmpty').style.display = 'none';
+            renderExtractResults({ characters, scenes });
+        } else {
+            document.getElementById('extractEmpty').style.display = '';
+            document.getElementById('charsSection').style.display = 'none';
+            document.getElementById('scenesSection').style.display = 'none';
+        }
+    } catch(e) {
+        console.warn('Failed to load extract data', e);
+    }
+}
+
+async function loadStoryboardData() {
+    if (!currentEpisode) return;
+    try {
+        const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+        const storyboards = sbRes.items || [];
+        if (storyboards.length > 0) {
+            document.getElementById('storyboardEmpty').style.display = 'none';
+            renderStoryboard(storyboards);
+            document.getElementById('sbList').style.display = '';
+        } else {
+            document.getElementById('storyboardEmpty').style.display = '';
+            document.getElementById('sbList').style.display = 'none';
+            document.getElementById('sbCount').textContent = '0 shots';
+        }
+    } catch(e) {
+        console.warn('Failed to load storyboard data', e);
+    }
 }
 
 // ── AI Rewrite ─────────────────────────────────────────────
@@ -1608,7 +1625,24 @@ window.resumeAutoPilot = function() {
     let outline;
     try { outline = JSON.parse(currentDrama.metadata).series_outline; } catch(e) {}
     
-    if (outline && outline.episodes) {
+    if (!outline || !outline.episodes) {
+        outline = { episodes: [], series_title: currentDrama.title };
+    }
+    
+    // Pad outline to support manually added DB episodes
+    if (currentDrama && currentDrama.episodes) {
+        let maxEpNum = currentDrama.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
+        while (outline.episodes.length < maxEpNum) {
+            const nextNum = outline.episodes.length + 1;
+            outline.episodes.push({
+                episode_number: nextNum,
+                title: `Episode ${nextNum}`,
+                plot_outline: `Manual episode plot outline...`
+            });
+        }
+    }
+    
+    if (outline && outline.episodes && outline.episodes.length > 0) {
         document.getElementById('wizardModal').style.display = 'flex';
         document.getElementById('wizStep1').style.display = 'none';
         document.getElementById('wizStep2').style.display = 'none';
@@ -1634,19 +1668,11 @@ window.resumeAutoPilot = function() {
         });
         document.getElementById('wizOutlineReview').innerHTML = outlineHtml;
         
-        // Load browser profiles into execution dropdown
+        // Load browser profiles into chip selector
         _loadBrowserProfilesIntoSelect('wizBrowserProfileExec').then(() => {
-            const sel = document.getElementById('wizBrowserProfileExec');
-            const saved = localStorage.getItem('cs_last_browser_profile') || '';
-            if (saved && sel) {
-                for (let i = 0; i < sel.options.length; i++) {
-                    if (sel.options[i].value === saved) {
-                        sel.selectedIndex = i;
-                        break;
-                    }
-                }
-            }
+            _initChipsFromSaved();
         });
+
         
         // Voice profile loading and display logic
         const pSteps = getCurrentPipeline();
@@ -1682,7 +1708,8 @@ async function startRealtimeAutoPilot() {
     
     // Save selected profiles from wizard to localStorage + drama metadata
     const wizProfileSel = document.getElementById('wizBrowserProfileExec');
-    const selectedProfile = wizProfileSel ? wizProfileSel.value : '';
+    const selectedVideoProfiles = wizProfileSel ? Array.from(wizProfileSel.selectedOptions).map(o => o.value) : [];
+    const selectedProfile = selectedVideoProfiles.length > 0 ? selectedVideoProfiles[0] : '';
     const wizVoiceSel = document.getElementById('wizVoiceProfileExec');
     let selectedVoice = wizVoiceSel ? wizVoiceSel.value : '';
     
@@ -1702,6 +1729,7 @@ async function startRealtimeAutoPilot() {
             const dramaData = await apiFetch(`/dramas/${pendingAutoPilotDramaId}`);
             const meta = JSON.parse(dramaData.metadata || '{}');
             if (selectedProfile) meta.browser_profile_name = selectedProfile;
+            if (selectedVideoProfiles.length > 0) meta.browser_profile_names_video = selectedVideoProfiles;
             
             const vWrap = document.getElementById('wizVoiceProfileWrap');
             if (selectedVoice && vWrap && vWrap.style.display !== 'none') {
@@ -1723,6 +1751,11 @@ async function startRealtimeAutoPilot() {
     
     hideWizard();
     
+    // Save the episode the user was viewing before selectDrama resets it
+    const isResume = !!window.pendingAutoPilotIsResume;
+    window.pendingAutoPilotIsResume = false;
+    const savedResumeEpNumber = (isResume && currentEpisode) ? currentEpisode.episode_number : null;
+    
     // Refresh sidebar data so the newly created project appears
     await loadDramas();
     
@@ -1735,8 +1768,26 @@ async function startRealtimeAutoPilot() {
     try { 
         outline = JSON.parse(currentDrama.metadata).series_outline; 
     } catch(e) {}
+    
     if (!outline || !outline.episodes) {
-        toast("No outline found to run.", "error"); return;
+        outline = { episodes: [] };
+    }
+    
+    // Pad outline to support manually added DB episodes
+    if (currentDrama && currentDrama.episodes) {
+        let maxEpNum = currentDrama.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
+        while (outline.episodes.length < maxEpNum) {
+            const nextNum = outline.episodes.length + 1;
+            outline.episodes.push({
+                episode_number: nextNum,
+                title: `Episode ${nextNum}`,
+                plot_outline: ``
+            });
+        }
+    }
+    
+    if (outline.episodes.length === 0) {
+        toast("No episodes exist to run.", "error"); return;
     }
     
     realtimeAbortController = new AbortController();
@@ -1748,13 +1799,11 @@ async function startRealtimeAutoPilot() {
     
     try {
         let startIndex = 0;
-        const isResume = !!window.pendingAutoPilotIsResume;
-        window.pendingAutoPilotIsResume = false;
-        if (isResume && typeof currentEpisode !== 'undefined' && currentEpisode) {
-            let foundIdx = outline.episodes.findIndex((epPlan, idx) => (epPlan.episode_number || idx + 1) === currentEpisode.episode_number);
+        if (isResume && savedResumeEpNumber) {
+            let foundIdx = outline.episodes.findIndex((epPlan, idx) => (epPlan.episode_number || idx + 1) === savedResumeEpNumber);
             if (foundIdx >= 0) {
                 startIndex = foundIdx;
-                toast(`🚀 Auto-Pilot resuming directly from Episode ${currentEpisode.episode_number}...`, "info");
+                toast(`🚀 Auto-Pilot resuming directly from Episode ${savedResumeEpNumber}...`, "info");
             }
         }
         
@@ -1920,21 +1969,36 @@ async function startRealtimeAutoPilot() {
                         toast(`Skipping Video gen for ${currentEpisode.title} (all ${vidShots.length} videos done)`, "info");
                         await loadEpisodeVideos().catch(e => {});
                     } else if (pendingVidShots.length > 0) {
-                        let browserProfile = '';
+                        let browserProfileNames = [];
                         try {
                             const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
-                            browserProfile = dramaMeta.browser_profile_name || dramaMeta.browser_profile_path || '';
+                            
+                            if (dramaMeta.browser_profile_names_video && dramaMeta.browser_profile_names_video.length > 0) {
+                                browserProfileNames = dramaMeta.browser_profile_names_video;
+                            } else {
+                                const fallback = dramaMeta.browser_profile_name || dramaMeta.browser_profile_path || '';
+                                if (fallback) browserProfileNames = [fallback];
+                            }
                         } catch(e) {}
-                        if (!browserProfile) browserProfile = localStorage.getItem('cs_last_browser_profile') || '';
                         
-                        if (!browserProfile) {
+                        if (browserProfileNames.length === 0) {
+                            const fallbackStr = localStorage.getItem('cs_last_browser_profile_video');
+                            if (fallbackStr) {
+                                browserProfileNames = fallbackStr.split(',');
+                            } else {
+                                const older = localStorage.getItem('cs_last_browser_profile');
+                                if (older) browserProfileNames = [older];
+                            }
+                        }
+                        
+                        if (browserProfileNames.length === 0) {
                             toast(`⚠️ No browser profile set — skipping video gen for ${currentEpisode.title}`, "warning");
                         } else {
                             toast(`🎞 Auto Grok video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, "info");
                             
                             const genRes = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
                                 method: 'POST',
-                                body: JSON.stringify({ profile_name: browserProfile, headless: false, overwrite: false })
+                                body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false })
                             });
                             
                             if (genRes.success) {
@@ -2194,6 +2258,114 @@ async function _loadBrowserProfilesIntoSelect(selectId) {
     } catch(e) {
         sel.innerHTML = `<option value="">⚠️ ${e.message}</option>`;
     }
+    // Auto-render chip UI if the chip container exists
+    if (selectId === 'wizBrowserProfileExec') {
+        _renderBrowserChips();
+    }
+}
+
+// ── Chip-based Browser Profile Selector ──
+let _chipSelectedProfiles = [];
+
+function _renderBrowserChips() {
+    const container = document.getElementById('wizBrowserChipSelect');
+    const emptyLabel = document.getElementById('wizBrowserChipEmpty');
+    const menu = document.getElementById('wizBrowserChipMenu');
+    if (!container || !menu) return;
+
+    // Remove old chips (keep empty label and the add-btn wrapper)
+    container.querySelectorAll('.chip-item').forEach(el => el.remove());
+
+    // Show/hide empty label
+    if (emptyLabel) emptyLabel.style.display = _chipSelectedProfiles.length === 0 ? '' : 'none';
+
+    // Insert chips before the add-btn wrapper
+    const addBtnWrap = container.querySelector('[style*="position:relative"]');
+    _chipSelectedProfiles.forEach(name => {
+        const profile = _browserProfilesCache.find(p => p.name === name);
+        const chip = document.createElement('span');
+        chip.className = 'chip-item';
+        chip.innerHTML = `<span class="chip-status"></span>${_escChip(name)}<span class="chip-remove" title="Remove">✕</span>`;
+        chip.querySelector('.chip-remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            _chipSelectedProfiles = _chipSelectedProfiles.filter(n => n !== name);
+            _syncChipsToSelect();
+            _renderBrowserChips();
+        });
+        container.insertBefore(chip, addBtnWrap);
+    });
+
+    // Render dropdown menu options
+    menu.innerHTML = '';
+    _browserProfilesCache.forEach(p => {
+        const isSelected = _chipSelectedProfiles.includes(p.name);
+        const opt = document.createElement('div');
+        opt.className = 'chip-dropdown-option' + (isSelected ? ' selected' : '');
+        opt.innerHTML = `
+            <span class="opt-icon">🌐</span>
+            <span class="opt-name">${_escChip(p.name)}${p.has_cookies ? ' 🍪' : ''}${p.google_account ? ' 👤' : ''}</span>
+            <span class="opt-check">✓</span>
+        `;
+        opt.addEventListener('click', () => {
+            if (isSelected) {
+                _chipSelectedProfiles = _chipSelectedProfiles.filter(n => n !== p.name);
+            } else {
+                _chipSelectedProfiles.push(p.name);
+            }
+            _syncChipsToSelect();
+            _renderBrowserChips();
+        });
+        menu.appendChild(opt);
+    });
+}
+
+function _syncChipsToSelect() {
+    const sel = document.getElementById('wizBrowserProfileExec');
+    if (!sel) return;
+    // Sync selected state to hidden native select
+    for (let i = 0; i < sel.options.length; i++) {
+        sel.options[i].selected = _chipSelectedProfiles.includes(sel.options[i].value);
+    }
+    // Save to localStorage
+    if (_chipSelectedProfiles.length > 0) {
+        localStorage.setItem('cs_last_browser_profile_video', _chipSelectedProfiles.join(','));
+        localStorage.setItem('cs_last_browser_profile', _chipSelectedProfiles[0]);
+    }
+}
+
+function toggleBrowserChipMenu() {
+    const menu = document.getElementById('wizBrowserChipMenu');
+    if (!menu) return;
+    menu.classList.toggle('open');
+
+    // Close on click outside
+    if (menu.classList.contains('open')) {
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!menu.contains(e.target) && e.target.id !== 'wizBrowserAddBtn') {
+                    menu.classList.remove('open');
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 10);
+    }
+}
+
+function _escChip(str) {
+    const d = document.createElement('span');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+// Initialize chips from saved localStorage on profile load
+function _initChipsFromSaved() {
+    const savedStr = localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '';
+    if (savedStr) {
+        _chipSelectedProfiles = savedStr.split(',').filter(s => s && _browserProfilesCache.some(p => p.name === s));
+        _syncChipsToSelect();
+    }
+    _renderBrowserChips();
 }
 
 async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
@@ -2553,17 +2725,29 @@ async function openGenVideosDialog() {
     await _loadBrowserProfilesIntoSelect('genVidProfile');
 
     const sel = document.getElementById('genVidProfile');
-    let savedProfile = '';
+    let savedProfiles = [];
     if (currentDrama) {
-        try { savedProfile = JSON.parse(currentDrama.metadata || '{}').browser_profile_name || ''; } catch(e) {}
+        try { 
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            if (meta.browser_profile_names_video) savedProfiles = meta.browser_profile_names_video;
+            else if (meta.browser_profile_name) savedProfiles = [meta.browser_profile_name];
+        } catch(e) {}
     }
-    if (!savedProfile) savedProfile = localStorage.getItem('cs_last_browser_profile') || '';
+    if (savedProfiles.length === 0) {
+        const fallbackStr = localStorage.getItem('cs_last_browser_profile_video');
+        if (fallbackStr) savedProfiles = fallbackStr.split(',');
+        else {
+            const older = localStorage.getItem('cs_last_browser_profile');
+            if (older) savedProfiles = [older];
+        }
+    }
     
-    if (savedProfile) {
+    if (savedProfiles.length > 0) {
         for (let i = 0; i < sel.options.length; i++) {
-            if (sel.options[i].value === savedProfile) {
-                sel.selectedIndex = i;
-                break;
+            if (savedProfiles.includes(sel.options[i].value)) {
+                sel.options[i].selected = true;
+            } else {
+                sel.options[i].selected = false;
             }
         }
     }
@@ -2581,7 +2765,8 @@ async function openGenVideosDialog() {
 }
 
 async function startGrokVideoGen() {
-    const profilePath = document.getElementById('genVidProfile').value;
+    const sel = document.getElementById('genVidProfile');
+    const profilePaths = Array.from(sel.selectedOptions).map(o => o.value);
     const errEl = document.getElementById('genVidError');
     
     function showDialogError(msg) {
@@ -2592,19 +2777,19 @@ async function startGrokVideoGen() {
     
     errEl.style.display = 'none';
     
-    if (!profilePath) { 
-        showDialogError('Vui lòng chọn một Browser Profile');
+    if (profilePaths.length === 0 || !profilePaths[0]) { 
+        showDialogError('Vui lòng chọn ít nhất một Browser Profile');
         return; 
     }
 
     const overwrite = document.getElementById('genVidMode').value === 'all';
     const headless = document.getElementById('genVidHeadless').checked;
 
-    localStorage.setItem('cs_last_browser_profile', profilePath);
+    localStorage.setItem('cs_last_browser_profile_video', profilePaths.join(','));
     if (currentDrama) {
         try {
             const meta = JSON.parse(currentDrama.metadata || '{}');
-            meta.browser_profile_name = profilePath;
+            meta.browser_profile_names_video = profilePaths;
             await apiFetch(`/dramas/${currentDrama.id}`, {
                 method: 'PUT',
                 body: JSON.stringify({ metadata: JSON.stringify(meta) })
@@ -2619,7 +2804,7 @@ async function startGrokVideoGen() {
     try {
         const res = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
             method: 'POST',
-            body: JSON.stringify({ profile_name: profilePath, headless, overwrite })
+            body: JSON.stringify({ profile_names: profilePaths, headless, overwrite })
         });
 
         if (res.success) {
@@ -2902,6 +3087,33 @@ function loadEpisodeVideo() {
     const container = document.getElementById('videoPlayerContainer');
     const progress = document.getElementById('videoBuildProgress');
     const statusEl = document.getElementById('videoStatus');
+    const exportedContainer = document.getElementById('videoExportedContainer');
+    const exportedPlayer = document.getElementById('videoExportedPlayer');
+    const exportedDownload = document.getElementById('videoExportedDownload');
+    
+    // 1. If episode has an exported MP4 video, show native <video> player
+    if (currentEpisode && currentEpisode.video_url) {
+        _stopVideo();
+        empty.style.display = 'none';
+        progress.style.display = 'none';
+        container.style.display = 'none';
+        
+        // Determine the URL: if it's an absolute path, serve via API; otherwise use as-is
+        let videoSrc = currentEpisode.video_url;
+        if (videoSrc.includes(':\\') || videoSrc.includes(':/')) {
+            // Absolute Windows/Unix path -> serve via a file API
+            const fname = videoSrc.replace(/\\/g, '/').split('/').pop();
+            videoSrc = `/api/v1/studio/export-video/${encodeURIComponent(fname)}`;
+        }
+        
+        exportedPlayer.src = videoSrc;
+        exportedDownload.href = videoSrc;
+        exportedContainer.style.display = 'flex';
+        return;
+    }
+    
+    // 2. Hide exported player if no exported video
+    if (exportedContainer) exportedContainer.style.display = 'none';
     
     if (window.currentVideoEpisodeId === currentEpisode?.id && typeof videoSlides !== 'undefined' && videoSlides.length > 0) {
         // Video is already built for this episode. Just show container and return.
@@ -3001,6 +3213,8 @@ async function showVideoBuildOptions() {
 }
 
 let _ffmpegPollTimer = null;
+let _ffmpegResolve = null;
+let _ffmpegReject = null;
 
 async function startFFmpegExport() {
     if (!currentEpisode) { toast('No episode selected', 'error'); return; }
@@ -3014,6 +3228,8 @@ async function startFFmpegExport() {
 
     empty.style.display = 'none';
     container.style.display = 'none';
+    const exportedContainer = document.getElementById('videoExportedContainer');
+    if (exportedContainer) exportedContainer.style.display = 'none';
     progress.style.display = 'flex';
     buildBar.style.width = '0%';
     buildLabel.textContent = 'Starting FFmpeg export...';
@@ -3021,60 +3237,70 @@ async function startFFmpegExport() {
 
     try {
         const res = await apiFetch(`/episodes/${currentEpisode.id}/export-ffmpeg`, { method: 'POST' });
-        if (res.success) {
-            toast('FFmpeg assembly started', 'info');
+        if (!res.success) {
+            toast(res.detail || res.message || 'Error starting export', 'error');
+            progress.style.display = 'none';
+            empty.style.display = 'flex';
+            return;
+        }
+        
+        toast('FFmpeg assembly started', 'info');
+        
+        // Return a Promise that resolves only when FFmpeg finishes
+        return new Promise((resolve, reject) => {
+            _ffmpegResolve = resolve;
+            _ffmpegReject = reject;
             
             _ffmpegPollTimer = setInterval(async () => {
                 try {
+                    // Check abort
+                    if (realtimeAbortController && realtimeAbortController.signal.aborted) {
+                        clearInterval(_ffmpegPollTimer);
+                        _ffmpegPollTimer = null;
+                        _ffmpegReject = null;
+                        reject(new Error("Aborted by user"));
+                        return;
+                    }
+                    
                     const statusRes = await apiFetch(`/export-ffmpeg/status/${res.task_id}`);
                     if (!statusRes.success) {
                         clearInterval(_ffmpegPollTimer);
+                        _ffmpegPollTimer = null;
                         buildLabel.textContent = '⚠️ Lỗi: Không thể check tiến độ FFmpeg';
+                        resolve(); // don't block auto-pilot
                         return;
                     }
                     
                     const pct = statusRes.done || 0;
                     buildBar.style.width = `${pct}%`;
                     buildLabel.textContent = statusRes.current_shot || `Assembling... ${pct}%`;
+                    buildCount.textContent = `${pct}%`;
                     
                     if (statusRes.status === 'completed' || statusRes.status.startsWith('error')) {
                         clearInterval(_ffmpegPollTimer);
+                        _ffmpegPollTimer = null;
+                        
                         if (statusRes.status.startsWith('error')) {
                             buildLabel.textContent = `❌ ${statusRes.status}`;
                             toast(`FFmpeg Error: ${statusRes.status}`, 'error');
                         } else {
                             buildLabel.textContent = '✅ FFmpeg export complete!';
+                            buildBar.style.width = '100%';
+                            buildCount.textContent = '100%';
                             toast('Video Assembly Complete!', 'success');
                             
                             // Load the episode to update the UI with new video_url
                             await selectEpisode(currentEpisode.id);
+                            setStep('video');
                         }
+                        resolve();
                     }
-                } catch(e) { console.warn('poll error', e); }
-            }, 3000);
-            
-            // Auto-pilot wait loop hook
-            if (isAutoPilotRunning) {
-                return new Promise((resolve, reject) => {
-                    const checkInterval = setInterval(() => {
-                        if (realtimeAbortController && realtimeAbortController.signal.aborted) {
-                            clearInterval(checkInterval);
-                            clearInterval(_ffmpegPollTimer);
-                            reject(new Error("Aborted by user"));
-                        }
-                        if (!_ffmpegPollTimer) {
-                            clearInterval(checkInterval);
-                            resolve();
-                        }
-                    }, 3000);
-                });
-            }
+                } catch(e) { 
+                    console.warn('poll error', e); 
+                }
+            }, 2000);
+        });
 
-        } else {
-            toast(res.detail || res.message || 'Error starting export', 'error');
-            progress.style.display = 'none';
-            empty.style.display = 'flex';
-        }
     } catch(e) {
         toast('Exception: ' + e.message, 'error');
         progress.style.display = 'none';

@@ -175,12 +175,9 @@ async def create_drama(request: Request):
 
 @router.get("/api/v1/studio/dramas/{drama_id}")
 async def get_drama(drama_id: int):
-    d = _db().get_drama(drama_id)
+    d = _db().get_drama_full(drama_id)
     if not d:
         raise HTTPException(404, "Drama not found")
-    d["episodes"] = _db().list_episodes(drama_id)
-    d["characters"] = _db().list_characters(drama_id)
-    d["scenes"] = _db().list_scenes(drama_id)
     return d
 
 
@@ -1202,12 +1199,16 @@ _video_tasks: dict = {}
 async def start_gen_videos(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start Grok video generation for an episode's storyboard shots."""
     data = await request.json()
-    profile_name = data.get("profile_name", data.get("profile_path", ""))
+    profile_names = data.get("profile_names")
+    if not profile_names:
+        single_profile = data.get("profile_name", data.get("profile_path", ""))
+        profile_names = [single_profile] if single_profile else []
+
     headless = data.get("headless", False)
     overwrite = data.get("overwrite", False)
 
-    if not profile_name:
-        raise HTTPException(400, "browser profile_name is required")
+    if not profile_names:
+        raise HTTPException(400, "At least one browser profile is required")
 
     ep = _db().get_episode(episode_id)
     if not ep:
@@ -1265,7 +1266,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
 
             results = await batch_generate(
                 shots=shots,
-                profile_name=profile_name,
+                profile_names=profile_names,
                 episode_id=episode_id,
                 headless=headless,
                 overwrite=overwrite,
@@ -1395,3 +1396,18 @@ async def serve_grok_video(filename: str):
     if os.path.exists(path):
         return FileResponse(path)
     raise HTTPException(404, "Video not found")
+
+
+@router.get("/api/v1/studio/export-video/{filename}")
+async def serve_export_video(filename: str):
+    """Serve an exported FFmpeg video."""
+    try:
+        from tubecli.config import DATA_DIR
+        out_dir = os.path.join(str(DATA_DIR), "content_studio", "exports")
+    except Exception:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "exports")
+
+    path = os.path.join(out_dir, filename)
+    if os.path.exists(path):
+        return FileResponse(path, media_type="video/mp4")
+    raise HTTPException(404, "Exported video not found")

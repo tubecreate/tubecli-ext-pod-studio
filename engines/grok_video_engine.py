@@ -125,130 +125,171 @@ async def generate_video(
 
 async def batch_generate(
     shots: list,
-    profile_name: str,
+    profile_names: list,
     episode_id: int,
     headless: bool = False,
     overwrite: bool = False,
     progress_callback=None,
 ) -> list:
     """
-    Generate videos for a batch of storyboard shots.
+    Generate videos for a batch of storyboard shots using multiple browser profiles concurrently.
     """
-    # Pending condition uses image_prompt but outputs to video
     pending = [s for s in shots if s.get("image_prompt", "").strip()]
     if not overwrite:
-        pending = [s for s in pending if not s.get("composed_video", "").strip()]
+        pending = [s for s in pending if not s.get("video_url", "").strip()]
 
     total = len(pending)
     if total == 0:
         return []
 
-    logger.info(f"Batch gen videos: {total} shots using profile '{profile_name}'")
+    if not isinstance(profile_names, list):
+        profile_names = [profile_names] if profile_names else ["Default"]
+
+    num_profiles = len(profile_names)
+    logger.info(f"Batch gen videos: {total} shots distributed across {num_profiles} profiles: {profile_names}")
+    
     out_dir = get_output_dir()
     os.makedirs(out_dir, exist_ok=True)
 
-    tasks_data = []
-    for shot in pending:
-        shot_num = shot.get("storyboard_number", shot["id"])
-        prompt = shot.get("image_prompt", "").strip()
+    # Distribute the pending shots among profiles (Round-Robin)
+    profile_workloads = {p: [] for p in profile_names}
+    for i, shot in enumerate(pending):
+        profile_workloads[profile_names[i % num_profiles]].append(shot)
 
-        if "[IMAGE PROMPT]" in prompt:
-            lines = prompt.split('\n')
-            p = []
-            capture = False
-            for line in lines:
-                if line.startswith("[IMAGE PROMPT]"):
-                    capture = True
-                    continue
-                elif line.startswith("[") and line.endswith("]"):
-                    capture = False
-                if capture:
-                    p.append(line.strip())
-            prompt = " ".join(p).strip()
-            if not prompt:
-                prompt = shot.get("image_prompt", "").strip()
-
-        filename = f"ep{episode_id}_shot{shot_num:03d}.mp4"
-        out_path = os.path.join(out_dir, filename)
-        tasks_data.append({"id": shot["id"], "prompt": prompt, "output": out_path})
-
-    import tempfile
-    with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump(tasks_data, f)
-        temp_file = f.name
-
-    profiles_dir = get_profiles_dir()
-    node_path = str(BROWSER_EXT_DIR / "node_modules")
+    global_completed_count = 0
+    global_results = []
     
-    cmd = [
-        "node",
-        str(GROK_JS_SCRIPT),
-        "--profile", profile_name,
-        "--shots-file", temp_file,
-        "--profiles-dir", profiles_dir,
-        "--timeout", "240"
-    ]
-    if headless:
-        cmd.append("--headless")
+    async def process_batch_for_profile(profile, p_shots):
+        nonlocal global_completed_count
+        if not p_shots:
+            return
+            
+        tasks_data = []
+        for shot in p_shots:
+            shot_num = shot.get("storyboard_number", shot["id"])
+            raw_prompt = shot.get("image_prompt", "").strip()
+            prompt = ""
 
-    env = os.environ.copy()
-    env["NODE_PATH"] = node_path
+            # Priority 1: Extract [VIDEO PROMPT] section (dedicated video description)
+            if "[VIDEO PROMPT]" in raw_prompt:
+                lines = raw_prompt.split('\n')
+                p = []
+                capture = False
+                for line in lines:
+                    if line.strip().startswith("[VIDEO PROMPT]"):
+                        capture = True
+                        continue
+                    elif line.strip().startswith("[") and line.strip().endswith("]"):
+                        if capture:
+                            capture = False
+                    if capture:
+                        p.append(line.strip())
+                prompt = " ".join(p).strip()
 
-    results = []
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(BROWSER_EXT_DIR),
-            env=env,
-        )
+            # Priority 2: Fall back to [IMAGE PROMPT] section
+            if not prompt and "[IMAGE PROMPT]" in raw_prompt:
+                lines = raw_prompt.split('\n')
+                p = []
+                capture = False
+                for line in lines:
+                    if line.strip().startswith("[IMAGE PROMPT]"):
+                        capture = True
+                        continue
+                    elif line.strip().startswith("[") and line.strip().endswith("]"):
+                        if capture:
+                            capture = False
+                    if capture:
+                        p.append(line.strip())
+                prompt = " ".join(p).strip()
 
-        completed_count = 0
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="replace").strip()
-            if line_str.startswith("{"):
-                try:
-                    res = json.loads(line_str)
-                    if "status" in res and "shot_id" in res:
-                        if res["status"] == "generating":
-                            # Real-time generating progress (percent update)
-                            if progress_callback:
-                                try:
-                                    await progress_callback(
-                                        completed_count, total, res["shot_id"],
-                                        "generating", None, res.get("percent", 0)
-                                    )
-                                except Exception:
-                                    pass
-                        elif res["status"] in ("success", "error"):
-                            completed_count += 1
-                            res["shot_number"] = next((s["storyboard_number"] for s in pending if s["id"] == res["shot_id"]), res["shot_id"])
-                            results.append(res)
-                            if progress_callback:
-                                try:
-                                    await progress_callback(completed_count, total, res["shot_id"], res["status"], res.get("path"))
-                                except Exception:
-                                    pass
-                    elif "status" in res and "message" in res:
-                        logger.error(f"Global Node error: {res}")
-                except json.JSONDecodeError:
-                    pass
+            # Priority 3: Use full raw prompt as-is
+            if not prompt:
+                prompt = raw_prompt
 
-        await proc.wait()
-        if proc.returncode != 0:
-            stderr_text = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
-            logger.error(f"grok_video.js exited with {proc.returncode}. stderr: {stderr_text[-500:]}")
+            filename = f"ep{episode_id}_shot{shot_num:03d}.mp4"
+            out_path = os.path.join(out_dir, filename)
+            tasks_data.append({"id": shot["id"], "prompt": prompt, "output": out_path})
 
-    except Exception as e:
-        logger.error(f"Batch execution failed: {e}")
-    finally:
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump(tasks_data, f)
+            temp_file = f.name
+
+        profiles_dir = get_profiles_dir()
+        node_path = str(BROWSER_EXT_DIR / "node_modules")
+
+        cmd = [
+            "node",
+            str(GROK_JS_SCRIPT),
+            "--profile", profile,
+            "--shots-file", temp_file,
+            "--profiles-dir", profiles_dir,
+            "--timeout", "240"
+        ]
+        if headless:
+            cmd.append("--headless")
+
+        env = os.environ.copy()
+        env["NODE_PATH"] = node_path
+
         try:
-            os.remove(temp_file)
-        except OSError:
-            pass
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(BROWSER_EXT_DIR),
+                env=env,
+            )
 
-    return results
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if line_str.startswith("{"):
+                    try:
+                        res = json.loads(line_str)
+                        if "status" in res and "shot_id" in res:
+                            if res["status"] == "generating":
+                                if progress_callback:
+                                    try:
+                                        await progress_callback(
+                                            global_completed_count, total, res["shot_id"],
+                                            "generating", None, res.get("percent", 0)
+                                        )
+                                    except Exception:
+                                        pass
+                            elif res["status"] in ("success", "error"):
+                                global_completed_count += 1
+                                res["shot_number"] = next((s["storyboard_number"] for s in pending if s["id"] == res["shot_id"]), res["shot_id"])
+                                global_results.append(res)
+                                if progress_callback:
+                                    try:
+                                        await progress_callback(
+                                            global_completed_count, total, res["shot_id"], 
+                                            res["status"], res.get("path")
+                                        )
+                                    except Exception:
+                                        pass
+                        elif "status" in res and "message" in res:
+                            logger.error(f"Global Node error from {profile}: {res}")
+                    except json.JSONDecodeError:
+                        pass
+
+            await proc.wait()
+            if proc.returncode != 0:
+                stderr_text = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
+                logger.error(f"grok_video.js ({profile}) exited with {proc.returncode}. stderr: {stderr_text[-500:]}")
+
+        except Exception as e:
+            logger.error(f"Batch execution failed for {profile}: {e}")
+        finally:
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+
+    tasks = [process_batch_for_profile(profile, p_shots) for profile, p_shots in profile_workloads.items() if p_shots]
+    await asyncio.gather(*tasks)
+
+    return global_results

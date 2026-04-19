@@ -89,24 +89,35 @@ class Database:
         return self._dict(row)
 
     def list_dramas(self) -> List[dict]:
+        """Lightweight listing: only drama metadata + episode count for sidebar."""
         rows = self.conn.execute(
-            "SELECT * FROM dramas WHERE deleted_at IS NULL ORDER BY updated_at DESC"
+            """SELECT d.*, 
+                      (SELECT COUNT(*) FROM episodes e WHERE e.drama_id = d.id AND e.deleted_at IS NULL) as episode_count
+               FROM dramas d 
+               WHERE d.deleted_at IS NULL 
+               ORDER BY d.updated_at DESC"""
         ).fetchall()
         dramas = self._dicts(rows)
-        for d in dramas:
-            d["episodes"] = self._dicts(self.conn.execute(
-                "SELECT id, episode_number, title, status FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
-                (d["id"],),
-            ).fetchall())
-            d["characters"] = self._dicts(self.conn.execute(
-                "SELECT id, name, role FROM characters WHERE drama_id = ? AND deleted_at IS NULL",
-                (d["id"],),
-            ).fetchall())
-            d["scenes"] = self._dicts(self.conn.execute(
-                "SELECT id, location, time FROM scenes WHERE drama_id = ? AND deleted_at IS NULL",
-                (d["id"],),
-            ).fetchall())
         return dramas
+
+    def get_drama_full(self, drama_id: int) -> Optional[dict]:
+        """Full drama with episodes, characters, scenes (used when selecting a project)."""
+        d = self.get_drama(drama_id)
+        if not d:
+            return None
+        d["episodes"] = self._dicts(self.conn.execute(
+            "SELECT id, episode_number, title, status FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
+            (d["id"],),
+        ).fetchall())
+        d["characters"] = self._dicts(self.conn.execute(
+            "SELECT id, name, role FROM characters WHERE drama_id = ? AND deleted_at IS NULL",
+            (d["id"],),
+        ).fetchall())
+        d["scenes"] = self._dicts(self.conn.execute(
+            "SELECT id, location, time FROM scenes WHERE drama_id = ? AND deleted_at IS NULL",
+            (d["id"],),
+        ).fetchall())
+        return d
 
     def update_drama(self, drama_id: int, data: dict) -> Optional[dict]:
         fields = []

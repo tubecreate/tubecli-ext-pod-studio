@@ -1245,3 +1245,46 @@ select.input {
 @keyframes vfxZoomPanTL { 0%{transform:scale(1) translate(0,0);opacity:0} 8%{opacity:1} 100%{transform:scale(1.3) translate(-2%,-2%);opacity:1} }
 @keyframes vfxZoomPanBR { 0%{transform:scale(1) translate(0,0);opacity:0} 8%{opacity:1} 100%{transform:scale(1.3) translate(2%,2%);opacity:1} }
 
+/* -- Chip Multi-Select (Browser Profiles) -- */
+.chip-select {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    min-height: 42px;
+    align-items: center;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chip-select:hover { border-color: var(--border-strong); }
+.chip-select:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+.chip-select-empty { font-size: 12px; color: var(--text-3); padding: 2px 6px; user-select: none; }
+.chip-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px 4px 8px; background: var(--accent-bg);
+    border: 1px solid transparent; border-radius: 99px;
+    font-size: 11px; font-weight: 600; color: var(--accent-text);
+    cursor: pointer; user-select: none;
+    transition: all 0.2s var(--ease-out);
+    animation: chipIn 0.25s var(--ease-spring) both;
+}
+.chip-item:hover { background: var(--accent); color: #fff; transform: translateY(-1px); box-shadow: 0 3px 12px rgba(99,102,241,0.3); }
+.chip-item .chip-remove { width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; transition: background 0.15s; }
+.chip-item:hover .chip-remove { background: rgba(255,255,255,0.3); }
+.chip-item .chip-status { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex-shrink: 0; box-shadow: 0 0 4px var(--success); }
+.chip-dropdown-trigger { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: var(--bg-3); border: 1px dashed var(--border-strong); border-radius: 99px; font-size: 11px; font-weight: 600; color: var(--text-2); cursor: pointer; transition: all 0.18s var(--ease-out); }
+.chip-dropdown-trigger:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-text); border-style: solid; }
+.chip-dropdown-menu { position: absolute; top: calc(100% + 6px); left: auto; right: 0; min-width: 200px; background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-elevated); z-index: 50; max-height: 160px; overflow-y: auto; display: none; animation: chipMenuIn 0.2s var(--ease-spring) both; }
+.chip-dropdown-menu.open { display: block; }
+.chip-dropdown-option { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 12px; color: var(--text-1); cursor: pointer; transition: background 0.12s; }
+.chip-dropdown-option:hover { background: var(--bg-hover); }
+.chip-dropdown-option.selected { color: var(--accent-text); background: var(--accent-bg); }
+.chip-dropdown-option .opt-icon { width: 22px; height: 22px; border-radius: 6px; background: var(--bg-3); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+.chip-dropdown-option.selected .opt-icon { background: var(--accent); color: #fff; }
+.chip-dropdown-option .opt-name { flex: 1; font-weight: 500; }
+.chip-dropdown-option .opt-check { font-size: 14px; opacity: 0; transition: opacity 0.15s; }
+.chip-dropdown-option.selected .opt-check { opacity: 1; }
+@keyframes chipIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+@keyframes chipMenuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }

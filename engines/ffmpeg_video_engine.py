@@ -2,7 +2,8 @@ import asyncio
 import os
 import subprocess
 import tempfile
-from loguru import logger
+import logging
+logger = logging.getLogger("ffmpeg")
 
 try:
     from tubecli.config import DATA_DIR
@@ -24,7 +25,7 @@ async def build_ffmpeg_video(episode, shots, progress_callback=None):
     # Gather valid videos
     valid_shots = []
     for s in shots:
-        path = s.get("composed_video")
+        path = s.get("video_url")
         if path and os.path.exists(path):
             valid_shots.append(path)
             

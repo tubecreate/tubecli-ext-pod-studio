@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Content Studio — AI Drama Writer</title>
-    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260417_16">
+    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260419_18">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -385,6 +385,10 @@
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                                         Build Preview
                                     </button>
+                                    <button class="btn btn-sm btn-primary" id="btnExportFFmpeg" onclick="startFFmpegExport()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        Export Final Video
+                                    </button>
                                     <button class="btn btn-sm btn-primary" id="btnDownloadVideo" onclick="downloadVideoMP4()" style="display:none;">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                                         Download MP4
@@ -397,10 +401,16 @@
                                 </div>
                                 <div class="empty-title">Video Preview</div>
                                 <div class="empty-desc">Xem preview slideshow ảnh + audio. Yêu cầu: có ảnh (Images) và/hoặc audio (Audio TTS).</div>
-                                <button class="btn btn-primary" onclick="showVideoBuildOptions()">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                                    Build Preview
-                                </button>
+                                <div style="display:flex; gap:10px; margin-top:15px;">
+                                    <button class="btn btn-primary" onclick="showVideoBuildOptions()">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                        Build Preview
+                                    </button>
+                                    <button class="btn btn-primary" onclick="startFFmpegExport()">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        Export Final Video
+                                    </button>
+                                </div>
                             </div>
                             <!-- Build Progress -->
                             <div id="videoBuildProgress" style="display:none; flex:1; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:40px;">
@@ -439,6 +449,22 @@
                                 </div>
                                 <!-- Audio player (hidden if no audio, shown as controls) -->
                                 <audio id="videoAudioPlayer" controls style="width:100%; max-width:720px; display:none; height:32px;"></audio>
+                            </div>
+                            <!-- Exported MP4 Video Player -->
+                            <div id="videoExportedContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px; width:100%;">
+                                <div style="width:100%; max-width:720px; border-radius:10px; overflow:hidden; background:#000;">
+                                    <video id="videoExportedPlayer" controls style="width:100%; display:block; border-radius:10px;" preload="metadata"></video>
+                                </div>
+                                <div style="display:flex; gap:10px; align-items:center;">
+                                    <a id="videoExportedDownload" class="btn btn-sm btn-primary" download style="text-decoration:none;">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        Download MP4
+                                    </a>
+                                    <button class="btn btn-sm" onclick="startFFmpegExport()">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                                        Re-export
+                                    </button>
+                                </div>
                             </div>
                         </div>
                 </div>
@@ -713,13 +739,19 @@
                             </label>
                             
                             <label class="field" style="flex:1;">
-                                <span class="field-label">🌐 Browser Profile (Grok Image Gen)</span>
-                                <div class="select-wrapper">
-                                    <select id="wizBrowserProfileExec" class="input">
-                                        <option value="">-- Chọn browser profile --</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                <span class="field-label">🌐 Browser Profiles (Grok Gen)</span>
+                                <div class="chip-select" id="wizBrowserChipSelect">
+                                    <span class="chip-select-empty" id="wizBrowserChipEmpty">Click + to add browsers</span>
+                                    <!-- chips render here -->
+                                    <div style="position:relative; display:inline-flex;">
+                                        <span class="chip-dropdown-trigger" id="wizBrowserAddBtn" onclick="toggleBrowserChipMenu()">+ Add</span>
+                                        <div class="chip-dropdown-menu" id="wizBrowserChipMenu">
+                                            <!-- options render dynamically -->
+                                        </div>
+                                    </div>
                                 </div>
+                                <!-- hidden native select for form compat -->
+                                <select id="wizBrowserProfileExec" multiple style="display:none"></select>
                             </label>
                         </div>
                         <div class="modal-actions" style="margin-top:16px; flex-direction:column; gap:8px; flex-shrink:0;">
@@ -847,7 +879,7 @@
                 <div class="modal-form">
                     <label class="field">
                         <span class="field-label">Browser Profile (Chrome đã login Grok)</span>
-                        <select id="genVidProfile" class="input">
+                        <select id="genVidProfile" class="input" multiple size="4" style="height: 100px;">
                             <option value="">Đang load profiles...</option>
                         </select>
                     </label>
@@ -944,7 +976,6 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-
-    <script src="/content-studio-static/studio.js?v=20260418_06"></script>
+    <script src="/content-studio-static/studio.js?v=20260419_14"></script>
 </body>
 </html>
