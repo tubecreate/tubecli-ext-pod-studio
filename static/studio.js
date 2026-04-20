@@ -138,6 +138,19 @@ function wizGoToStep1() {
     document.getElementById('wizLine1').className = 'wiz-step-line';
 }
 
+function toggleCustomStyleInput(selectId, inputId) {
+    const sel = document.getElementById(selectId);
+    const inp = document.getElementById(inputId);
+    if (!sel || !inp) return;
+    if (sel.value === '__custom__') {
+        inp.style.display = '';
+        inp.focus();
+    } else {
+        inp.style.display = 'none';
+        inp.value = '';
+    }
+}
+
 async function wizSkipToManual() {
     const drama = await _createDramaFromWiz();
     if (drama) {
@@ -150,8 +163,10 @@ async function wizSkipToManual() {
 
 async function _createDramaFromWiz() {
     const title = document.getElementById('wizTitle').value.trim();
-    const vStyle = document.getElementById('wizStyle').value;
-    const cStyle = document.getElementById('wizCharacterStyle').value;
+    const vStyleSel = document.getElementById('wizStyle').value;
+    const cStyleSel = document.getElementById('wizCharacterStyle').value;
+    const vStyle = vStyleSel === '__custom__' ? (document.getElementById('wizStyleCustom')?.value.trim() || 'Default') : vStyleSel;
+    const cStyle = cStyleSel === '__custom__' ? (document.getElementById('wizCharStyleCustom')?.value.trim() || 'Default') : cStyleSel;
     const finalStyle = `Visual Style: ${vStyle} | Character Style: ${cStyle}`;
     
     const metadata = {};
@@ -164,6 +179,15 @@ async function _createDramaFromWiz() {
     metadata.ethnicity = document.getElementById('wizEthnicity').value;
     metadata.prompt_focus = document.getElementById('wizPromptFocus').value;
     metadata.aspect_ratio = document.getElementById('wizAspectRatio').value;
+    metadata.narration_source = document.getElementById('wizNarrationSource').value;
+    
+    // Save TTS voice config
+    const voiceSelect = document.getElementById('wizVoiceProfileExec');
+    if (voiceSelect && voiceSelect.value) {
+        const opt = voiceSelect.selectedOptions[0];
+        metadata.tts_voice = voiceSelect.value;
+        metadata.tts_engine = opt?.dataset?.engine || 'edge';
+    }
 
     try {
         return await apiFetch('/dramas', {
@@ -2085,21 +2109,13 @@ async function startRealtimeAutoPilot() {
                     if (pipeline.includes('extract')) {
                     setStep('extract');
                     
-                    // Check if extract data already exists
+                    // Check if extract was already completed for THIS episode
                     let hasExtractData = epMeta.extract_completed;
-                    if (!hasExtractData && currentDrama) {
-                        try {
-                            const [charRes, sceneRes] = await Promise.all([
-                                apiFetch(`/dramas/${currentDrama.id}/characters`),
-                                apiFetch(`/dramas/${currentDrama.id}/scenes`)
-                            ]);
-                            hasExtractData = (charRes.items || []).length > 0 || (sceneRes.items || []).length > 0;
-                        } catch(e) {}
-                    }
                     
                     if (hasExtractData && !isRetry) {
-                        toast(`Skipping Extract for ${currentEpisode.title} (data already exists)`, "info");
+                        toast(`Skipping Extract for ${currentEpisode.title} (already completed)`, "info");
                     } else {
+                        // Always extract to discover new characters in each episode
                         await doExtract();
                     }
                     }
@@ -2641,9 +2657,10 @@ async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
         if (typeof currentDrama !== 'undefined' && currentDrama) {
             try {
                 const meta = JSON.parse(currentDrama.metadata || '{}');
-                if (meta.voice_preset) {
+                const savedVoice = meta.tts_voice || meta.voice_preset;
+                if (savedVoice) {
                     for (let i = 0; i < sel.options.length; i++) {
-                        if (sel.options[i].value === meta.voice_preset) {
+                        if (sel.options[i].value === savedVoice) {
                             sel.selectedIndex = i;
                             hasSelected = true;
                             break;
@@ -3247,27 +3264,292 @@ async function loadEpisodeVideos(progressMap = null) {
 }
 
 // ── Audio Step ─────────────────────────────────────────────
-function loadEpisodeAudio() {
+async function loadEpisodeAudio() {
+    const cardsEl = document.getElementById('audioShotCards');
     const empty = document.getElementById('audioEmpty');
     const player = document.getElementById('audioPlayerSection');
     const statusEl = document.getElementById('audioStatus');
     
-    if (currentEpisode && currentEpisode.audio_url) {
-        empty.style.display = 'none';
-        player.style.display = 'flex';
+    if (!currentEpisode) { console.warn('loadEpisodeAudio: no currentEpisode'); return; }
+    if (!cardsEl) { console.error('loadEpisodeAudio: audioShotCards element not found'); return; }
+    
+    // Fetch storyboard shots
+    let shots = [];
+    try {
+        const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+        shots = sbRes.items || [];
+        console.log(`loadEpisodeAudio: ${shots.length} shots loaded`);
+    } catch(e) { console.error('loadEpisodeAudio fetch error:', e); }
+    
+    if (shots.length === 0) {
+        cardsEl.innerHTML = '';
+        if (empty) empty.style.display = '';
+        if (player) player.style.display = 'none';
+        if (statusEl) statusEl.textContent = 'No storyboard shots — create storyboard first';
+        return;
+    }
+    
+    if (empty) empty.style.display = 'none';
+    if (player) player.style.display = 'none';
+    
+    const withAudio = shots.filter(s => s.tts_audio_url && s.tts_audio_url.trim()).length;
+    if (statusEl) statusEl.textContent = `${withAudio}/${shots.length} audio ready`;
+    
+    // Render cards - show only narration text (strip prompt metadata)
+    cardsEl.innerHTML = shots.map((shot, idx) => {
+        const rawNarration = shot.narration_text || shot.dialogue || shot.description || '';
+        const narration = _cleanNarration(rawNarration);
+        const hasAudio = shot.tts_audio_url && shot.tts_audio_url.trim();
+        const cardClass = hasAudio ? 'audio-shot-card has-audio' : 'audio-shot-card';
+        const charCount = narration.length;
+        
+        return `
+            <div class="${cardClass}" id="audioCard_${shot.id}">
+                <div class="audio-shot-num">${shot.storyboard_number || idx + 1}</div>
+                <div class="audio-shot-body">
+                    <div class="audio-shot-title">
+                        ${esc(shot.title || 'Shot ' + (idx + 1))}
+                        ${hasAudio ? '<span style="color:#22c55e;font-size:11px;">✅</span>' : '<span style="color:var(--text-3);font-size:11px;">⏳</span>'}
+                        <span style="font-size:10px;color:var(--text-3);font-weight:400">${charCount} chars</span>
+                    </div>
+                    <div class="audio-shot-text" onclick="this.classList.toggle('expanded')" title="Click to expand">${esc(narration) || '<i style="color:var(--text-3)">No narration text</i>'}</div>
+                    ${hasAudio ? `
+                    <div class="mini-player" id="mp_${shot.id}">
+                        <button class="mp-play" onclick="toggleMiniPlayer(${shot.id})">▶</button>
+                        <div class="mp-bar" onclick="seekMiniPlayer(event, ${shot.id})">
+                            <div class="mp-progress" id="mpProg_${shot.id}"></div>
+                        </div>
+                        <span class="mp-time" id="mpTime_${shot.id}">0:00</span>
+                        <audio id="mpAudio_${shot.id}" preload="none" src="${shot.tts_audio_url}" 
+                            ontimeupdate="updateMiniPlayer(${shot.id})" 
+                            onended="endMiniPlayer(${shot.id})"
+                            onloadedmetadata="initMiniPlayer(${shot.id})"></audio>
+                    </div>` : ''}
+                </div>
+                <div class="audio-shot-actions">
+                    <button class="btn btn-sm ${hasAudio ? 'btn-ghost' : 'btn-primary'}" onclick="generateShotAudio(${shot.id}, ${idx})" id="btnGenShot_${shot.id}">
+                        ${hasAudio ? '🔄' : '🎙'}
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    if (currentEpisode.audio_url) {
+        if (player) player.style.display = 'flex';
         document.getElementById('audioStepPlayer').src = currentEpisode.audio_url;
         document.getElementById('audioStepDownload').href = currentEpisode.audio_url;
-        statusEl.textContent = '✅ Audio ready';
-    } else {
-        empty.style.display = '';
-        player.style.display = 'none';
-        statusEl.textContent = 'No audio';
     }
 }
 
+// Clean narration text: strip prompt metadata, keep only story content
+function _cleanNarration(text) {
+    if (!text) return '';
+    let clean = text
+        .replace(/\[IMAGE PROMPT\][\s\S]*?(?=\[|$)/gi, '')
+        .replace(/\[CHARACTERS\][\s\S]*?(?=\[|$)/gi, '')
+        .replace(/\[SCENE SETTING\][\s\S]*?(?=\[|$)/gi, '')
+        .replace(/\[Camera Angle\][^\n]*/gi, '')
+        .replace(/\[NARRATION\]:?/gi, '')
+        .replace(/\[DIALOGUE\]:?/gi, '')
+        // Strip visual/cinematic descriptions that shouldn't be in narration
+        .replace(/^Hình ảnh chuyển cảnh[.:]\s*/gim, '')
+        .replace(/^Cảnh quay (cắt|chuyển|mở)[^.]*\.\s*/gim, '')
+        .replace(/^(Camera|Fade|Cut|Pan|Zoom|Tracking)[^.]*\.\s*/gim, '')
+        .replace(/^Hình ảnh [^.]*\.\s*/gim, '')
+        .trim();
+    return clean || text.trim();
+}
+
+// ── Mini Player Controls ──
+let _activeMiniPlayer = null;
+
+function toggleMiniPlayer(shotId) {
+    const audio = document.getElementById(`mpAudio_${shotId}`);
+    const btn = document.querySelector(`#mp_${shotId} .mp-play`);
+    if (!audio || !btn) return;
+    
+    // Stop any other playing audio
+    if (_activeMiniPlayer && _activeMiniPlayer !== shotId) {
+        const prevAudio = document.getElementById(`mpAudio_${_activeMiniPlayer}`);
+        const prevBtn = document.querySelector(`#mp_${_activeMiniPlayer} .mp-play`);
+        if (prevAudio) { prevAudio.pause(); }
+        if (prevBtn) prevBtn.textContent = '▶';
+    }
+    
+    if (audio.paused) {
+        audio.play().catch(e => console.warn('Play failed:', e));
+        btn.textContent = '⏸';
+        _activeMiniPlayer = shotId;
+    } else {
+        audio.pause();
+        btn.textContent = '▶';
+        _activeMiniPlayer = null;
+    }
+}
+
+function updateMiniPlayer(shotId) {
+    const audio = document.getElementById(`mpAudio_${shotId}`);
+    const prog = document.getElementById(`mpProg_${shotId}`);
+    const timeEl = document.getElementById(`mpTime_${shotId}`);
+    if (!audio || !prog) return;
+    
+    const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+    prog.style.width = pct + '%';
+    
+    if (timeEl) {
+        const cur = _fmtTime(audio.currentTime);
+        const dur = _fmtTime(audio.duration || 0);
+        timeEl.textContent = `${cur}/${dur}`;
+    }
+}
+
+function initMiniPlayer(shotId) {
+    const audio = document.getElementById(`mpAudio_${shotId}`);
+    const timeEl = document.getElementById(`mpTime_${shotId}`);
+    if (audio && timeEl) {
+        timeEl.textContent = `0:00/${_fmtTime(audio.duration || 0)}`;
+    }
+}
+
+function endMiniPlayer(shotId) {
+    const btn = document.querySelector(`#mp_${shotId} .mp-play`);
+    const prog = document.getElementById(`mpProg_${shotId}`);
+    if (btn) btn.textContent = '▶';
+    if (prog) prog.style.width = '0%';
+    _activeMiniPlayer = null;
+}
+
+function seekMiniPlayer(e, shotId) {
+    const audio = document.getElementById(`mpAudio_${shotId}`);
+    const bar = e.currentTarget;
+    if (!audio || !bar || !audio.duration) return;
+    const rect = bar.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    audio.currentTime = pct * audio.duration;
+}
+
+function _fmtTime(s) {
+    if (!s || isNaN(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+async function generateShotAudio(shotId, idx) {
+    const btn = document.getElementById(`btnGenShot_${shotId}`);
+    const card = document.getElementById(`audioCard_${shotId}`);
+    if (!btn || !card) return;
+    
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    card.classList.add('generating');
+    card.classList.remove('has-audio');
+    
+    try {
+        const res = await apiFetch(`/storyboards/${shotId}/generate-tts`, { method: 'POST' });
+        if (res.success && res.audio_url) {
+            // Refresh card
+            await loadEpisodeAudio();
+            toast(`✅ Shot ${idx + 1} audio ready`, 'success');
+        } else {
+            throw new Error(res.detail || res.message || 'TTS failed');
+        }
+    } catch(e) {
+        toast(`❌ Shot ${idx + 1}: ${e.message}`, 'error');
+        btn.disabled = false;
+        btn.textContent = '🎙';
+        card.classList.remove('generating');
+    }
+}
+
+async function generateAllShotAudio() {
+    if (!currentEpisode) return;
+    
+    // Step 1: Ensure cards are rendered first
+    await loadEpisodeAudio();
+    
+    const btn = document.getElementById('btnGenAllAudio');
+    if (btn) btn.disabled = true;
+    
+    // Step 2: Get shots from already-loaded cards data
+    let shots = [];
+    try {
+        const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+        shots = sbRes.items || [];
+    } catch(e) { toast('Failed to fetch shots', 'error'); if (btn) btn.disabled = false; return; }
+    
+    const pending = shots.filter(s => !s.tts_audio_url || !s.tts_audio_url.trim());
+    if (pending.length === 0) {
+        toast('All shots already have audio!', 'info');
+        if (btn) btn.disabled = false;
+        return;
+    }
+    
+    const statusEl = document.getElementById('audioStatus');
+    let done = 0;
+    let success = 0;
+    
+    // Step 3: Process pending cards one by one
+    for (const shot of pending) {
+        done++;
+        if (statusEl) statusEl.textContent = `🎙 ${done}/${pending.length}...`;
+        
+        const cardBtn = document.getElementById(`btnGenShot_${shot.id}`);
+        const card = document.getElementById(`audioCard_${shot.id}`);
+        
+        // Visual: mark card as generating
+        if (cardBtn) { cardBtn.disabled = true; cardBtn.innerHTML = '<span class="spin-icon">⏳</span>'; }
+        if (card) { card.classList.add('generating'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        
+        try {
+            const res = await apiFetch(`/storyboards/${shot.id}/generate-tts`, { method: 'POST' });
+            if (res.success && res.audio_url) {
+                success++;
+                // Update card inline — add audio player
+                if (card) {
+                    card.classList.remove('generating');
+                    card.classList.add('has-audio');
+                }
+                if (cardBtn) { cardBtn.innerHTML = '🔄'; cardBtn.disabled = false; }
+                
+                // Add mini player
+                const body = card?.querySelector('.audio-shot-body');
+                if (body && !body.querySelector('.mini-player')) {
+                    body.insertAdjacentHTML('beforeend', `
+                    <div class="mini-player" id="mp_${shot.id}">
+                        <button class="mp-play" onclick="toggleMiniPlayer(${shot.id})">▶</button>
+                        <div class="mp-bar" onclick="seekMiniPlayer(event, ${shot.id})">
+                            <div class="mp-progress" id="mpProg_${shot.id}"></div>
+                        </div>
+                        <span class="mp-time" id="mpTime_${shot.id}">0:00</span>
+                        <audio id="mpAudio_${shot.id}" preload="none" src="${res.audio_url}" 
+                            ontimeupdate="updateMiniPlayer(${shot.id})" 
+                            onended="endMiniPlayer(${shot.id})"
+                            onloadedmetadata="initMiniPlayer(${shot.id})"></audio>
+                    </div>`);
+                }
+                // Update status icon
+                const statusIcon = card?.querySelector('.audio-shot-title span:first-of-type');
+                if (statusIcon) { statusIcon.style.color = '#22c55e'; statusIcon.textContent = '✅'; }
+            } else {
+                throw new Error(res.detail || res.message || 'TTS failed');
+            }
+        } catch(e) {
+            console.error(`Shot ${shot.id} TTS error:`, e);
+            if (card) card.classList.remove('generating');
+            if (cardBtn) { cardBtn.innerHTML = '❌'; cardBtn.disabled = false; }
+        }
+    }
+    
+    // Step 4: Final refresh
+    if (statusEl) statusEl.textContent = `✅ ${success}/${shots.length} audio ready`;
+    if (btn) btn.disabled = false;
+    toast(`🎙 ${success}/${pending.length} audio generated!`, 'success');
+}
+
 function openAudioGenStep() {
-    // Reuse existing audio gen modal
-    generateRawAudio();
+    generateAllShotAudio();
 }
 
 async function deleteCurrentAudio() {
@@ -3280,10 +3562,8 @@ async function deleteCurrentAudio() {
             method: 'PUT',
             body: JSON.stringify({ audio_url: "" })
         });
-        toast("Audio deleted successfully. You can now regenerate.", "success");
-        // Refresh UI
+        toast("Audio deleted successfully.", "success");
         document.getElementById('audioPlayerSection').style.display = 'none';
-        document.getElementById('audioEmpty').style.display = 'flex';
         document.getElementById('audioStepPlayer').pause();
         document.getElementById('audioStepPlayer').src = '';
     } catch(e) {
@@ -3839,123 +4119,52 @@ async function downloadVideoMP4() {
     }
 }
 
-async function _generateVideoTTS(voiceId, engine) {
-    // Generate intelligent script from storyboard instead of reading Raw Markdown
-    let text = "";
-    
-    if (currentEpisode) {
-        try {
-            const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
-            const shots = sbRes.items || [];
-            if (shots.length > 0) {
-                text = shots.map(s => s.dialogue || s.description || "").filter(t => t.trim().length > 0).join('. ');
-            }
-        } catch(e) {
-            console.warn("Failed to fetch storyboards for TTS, falling back.", e);
-        }
-    }
-    
-    if (!text && window.videoSlides && window.videoSlides.length > 0) {
-        text = window.videoSlides.map(s => s.dialogue || s.description || "").filter(t => t.trim().length > 0).join('. ');
-    }
-    if (!text) text = document.getElementById('rawTextarea').value.trim();
-    if (!text && currentEpisode) text = currentEpisode.raw_content;
-    
-    if (!text) { toast("Không có nội dung kịch bản để tạo audio.", "warning"); return null; }
-    
-    if (!voiceId) {
-        voiceId = 'hmy';
-        engine = 'vibe';
-    }
-    
-    
-    // Show loading state: hide button, show spinner
+async function _generateVideoTTS() {
+    // Show loading state
     const _btnGen = document.getElementById('btnAudioGenerate');
     const _btnGenTop = document.getElementById('btnGenAudioStep');
     const _spinner = document.getElementById('audioSpinner');
     const _emptyVisual = document.getElementById('audioEmptyVisual');
     const _emptyTitle = document.getElementById('audioEmptyTitle');
+    
     if (_btnGen) _btnGen.style.display = 'none';
     if (_btnGenTop) _btnGenTop.disabled = true;
     if (_spinner) _spinner.style.display = 'block';
     if (_emptyVisual) _emptyVisual.style.display = 'none';
-    if (_emptyTitle) _emptyTitle.textContent = '🔊 Generating Audio...';
+    if (_emptyTitle) _emptyTitle.textContent = '🔊 Generating Audio for all shots...';
     
     try {
-        const res = await apiFetch('/../tts/synthesize', {
-            method: 'POST',
-            body: JSON.stringify({ text: text, voice: voiceId, engine: engine })
-        });
-        if (!res.success || !res.task_id) return null;
+        // We use the new UI per-shot audio generator for reliable processing
+        await generateAllShotAudio();
         
-        while(true) {
-            await new Promise(r => setTimeout(r, 2000));
-            const st = await apiFetch(`/../tts/status/${res.task_id}`);
-            if(!st.success) throw new Error("Status check failed or returned unsuccessful.");
-            
-            // Provide UI feedback since VibeVoice takes a long time
-            const countEl = document.getElementById('videoBuildCount');
-            const audioStatusEl = document.getElementById('audioStatus');
-            const progContainer = document.getElementById('audioProgressContainer');
-            const progBar = document.getElementById('audioProgressBar');
-            const progText = document.getElementById('audioProgressText');
-            
-            let txt = '';
-            if (st.status === 'loading_model') {
-                txt = 'Loading AI Voice Model (may take 30-60s)...';
-                if (progContainer) progContainer.style.display = 'flex';
-            }
-            else if (st.status === 'processing') {
-                txt = `Synthesizing Speech (${st.progress || 0}%)...`;
-                if (progContainer) progContainer.style.display = 'flex';
-                if (progBar) progBar.style.width = (st.progress || 0) + '%';
-                if (progText) progText.textContent = (st.progress || 0) + '%';
-            }
-            else if (st.status === 'stitching') {
-                txt = 'Stitching Audio Tracks...';
-                if (progBar) progBar.style.width = '95%';
-                if (progText) progText.textContent = 'Stitching...';
-            }
-            else if (st.status === 'error') {
-                throw new Error(`Backend TTS generation failed: ${st.result?.message || 'Unknown'}`);
-            }
-            
-            if (txt) {
-                if (countEl) countEl.textContent = txt;
-                if (audioStatusEl) audioStatusEl.textContent = txt;
-                if (_emptyTitle) _emptyTitle.textContent = txt;
-                const descEl = document.getElementById('audioEmptyDesc');
-                if (descEl) descEl.textContent = txt;
-            }
-
-            if(st.status === 'success') {
-                if (progBar) progBar.style.width = '100%';
-                if (progText) progText.textContent = '100% (Complete)';
-                if (_emptyTitle) _emptyTitle.textContent = '✅ Audio Complete!';
-                
-                // Restore UI
-                if (_spinner) _spinner.style.display = 'none';
-                if (_btnGenTop) _btnGenTop.disabled = false;
-                
-                let filename = (st.result.output || "").split(/[\\/]/).pop();
-                if(filename) return `/api/v1/tts/audio/${filename}`;
-                throw new Error("Success status but no output filename found.");
-            }
+        // Re-check shots to see if any are still pending
+        let shots = [];
+        if (currentEpisode) {
+            const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+            shots = sbRes.items || [];
         }
+        
+        const pending = shots.filter(s => !s.tts_audio_url || !s.tts_audio_url.trim());
+        
+        if (pending.length > 0 && shots.length > 0) {
+            throw new Error(`Failed to generate audio for ${pending.length} shot(s).`);
+        }
+        
+        if (_emptyTitle) _emptyTitle.textContent = '✅ Audio Complete!';
+        if (_spinner) _spinner.style.display = 'none';
+        if (_btnGenTop) _btnGenTop.disabled = false;
+        
+        // Return a dummy string to satisfy AutoPilot's `episode.audio_url` requirement 
+        // Backend FFmpeg pipeline natively overrides this if per-shot audio exists.
+        return "per_shot_audio";
     } catch(e) {
-        console.error("TTS Generation Exception:", e);
-        // Restore UI on error
-        const _btnGenErr = document.getElementById('btnAudioGenerate');
-        const _btnGenTopErr = document.getElementById('btnGenAudioStep');
-        const _spinnerErr = document.getElementById('audioSpinner');
-        const _emptyVisualErr = document.getElementById('audioEmptyVisual');
-        const _emptyTitleErr = document.getElementById('audioEmptyTitle');
-        if (_btnGenErr) _btnGenErr.style.display = '';
-        if (_btnGenTopErr) _btnGenTopErr.disabled = false;
-        if (_spinnerErr) _spinnerErr.style.display = 'none';
-        if (_emptyVisualErr) _emptyVisualErr.style.display = '';
-        if (_emptyTitleErr) _emptyTitleErr.textContent = 'Generate Audio (TTS)';
-        throw new Error(`TTS Generation Exception: ${e.message}`);
+        console.error("TTS Exception:", e);
+        if (_btnGen) _btnGen.style.display = '';
+        if (_btnGenTop) _btnGenTop.disabled = false;
+        if (_spinner) _spinner.style.display = 'none';
+        if (_emptyVisual) _emptyVisual.style.display = '';
+        if (_emptyTitle) _emptyTitle.textContent = 'Generate Audio (TTS)';
+        throw new Error(`TTS Exception: ${e.message}`);
     }
 }
 

@@ -48,6 +48,16 @@ class Database:
     def _init_tables(self):
         self.conn.executescript(SCHEMA_SQL)
         self.conn.commit()
+        # Migrations for existing databases
+        self._migrate()
+
+    def _migrate(self):
+        """Add missing columns to existing tables."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(storyboards)").fetchall()}
+        if "narration_text" not in cols:
+            self.conn.execute("ALTER TABLE storyboards ADD COLUMN narration_text TEXT DEFAULT ''")
+            self.conn.commit()
+            logger.info("Migration: added narration_text to storyboards")
 
     def _dict(self, row: sqlite3.Row) -> dict:
         if row is None:
@@ -297,7 +307,8 @@ class Database:
                      "action", "result", "atmosphere", "image_prompt", "video_prompt",
                      "bgm_prompt", "sound_effect", "dialogue", "description",
                      "duration", "scene_id", "status", "composed_image",
-                     "first_frame_image", "last_frame_image", "video_url", "tts_audio_url"]:
+                     "first_frame_image", "last_frame_image", "video_url",
+                     "narration_text", "tts_audio_url"]:
             if key in data:
                 fields.append(f"{key} = ?")
                 values.append(data[key])
@@ -415,8 +426,8 @@ class Database:
                 """INSERT INTO storyboards (episode_id, scene_id, storyboard_number,
                    title, location, time, shot_type, angle, movement, action, result,
                    atmosphere, image_prompt, video_prompt, bgm_prompt, sound_effect,
-                   dialogue, description, duration, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   dialogue, description, narration_text, duration, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     episode_id, sb.get("scene_id"), i,
                     sb.get("title", ""), sb.get("location", ""), sb.get("time", ""),
@@ -425,6 +436,7 @@ class Database:
                     sb.get("image_prompt", ""), sb.get("video_prompt", ""),
                     sb.get("bgm_prompt", ""), sb.get("sound_effect", ""),
                     sb.get("dialogue", ""), sb.get("description", ""),
+                    sb.get("narration_text", ""),
                     sb.get("duration", 10), "pending", now, now,
                 ),
             )

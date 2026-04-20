@@ -173,10 +173,8 @@ function downloadFile(url, dest) {
         await sleep(200);
 
         let promptClean = prompt.replace(/\n+/g, ' ').trim();
-        // Only add 1:1 instruction if not already in the prompt
-        if (!promptClean.includes('1:1') && !promptClean.includes('square')) {
-            promptClean = 'Generate in 1:1 square aspect ratio: ' + promptClean;
-        }
+        // Aspect ratio is now included in the prompt by _build_char_ref_prompt
+        // No need to prepend a default here
         try {
             await inputEl.fill(promptClean);
         } catch(e) {
@@ -233,27 +231,15 @@ function downloadFile(url, dest) {
         while (Date.now() < deadline) {
             await sleep(3000);
 
-            // Auto-retry if Grok fails internally (e.g., "Grok was unable to finish replying.")
-            if (!imageSaved && shotRetries < 2) {
+            // If Grok fails, do NOT retry — just mark as failed and exit
+            if (!imageSaved) {
                 try {
-                    const errLoc = page.locator('text=/unable to finish replying|try again later|thử lại/i').first();
+                    const errLoc = page.locator('text=/unable to finish replying|try again later|thử lại|No response/i').first();
                     const errVisible = await errLoc.isVisible({ timeout: 500 }).catch(()=>false);
-                    const retryBtn = page.locator('button:has-text("Retry"), button:has-text("Thử lại")').first();
-                    const btnVisible = await retryBtn.isVisible({ timeout: 500 }).catch(()=>false);
 
-                    if (errVisible || btnVisible) {
-                        log(`Grok internal error detected. Waiting 5s before retry... (${shotRetries+1}/2)`);
-                        await sleep(5000);
-                        if (btnVisible) {
-                            await retryBtn.click().catch(()=>{});
-                        } else {
-                            await inputEl.fill(promptClean);
-                            await sleep(500);
-                            await inputEl.press('Enter');
-                        }
-                        shotRetries++;
-                        deadline = Date.now() + timeout; // Reset timeout
-                        continue;
+                    if (errVisible) {
+                        log('Grok internal error detected. NOT retrying — exiting gracefully.');
+                        break;
                     }
                 } catch (e) {}
             }

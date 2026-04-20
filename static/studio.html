@@ -322,38 +322,35 @@
                                     <span class="char-count" id="audioStatus">No audio</span>
                                 </div>
                                 <div class="toolbar-right">
-                                    <button class="btn btn-primary btn-sm" id="btnGenAudioStep" onclick="openAudioGenStep()">
+                                    <button class="btn btn-primary btn-sm" id="btnGenAllAudio" onclick="generateAllShotAudio()">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-                                        Generate Audio
+                                        Generate All Audio
                                     </button>
                                 </div>
                             </div>
+                            
+                            <!-- Per-shot audio cards -->
+                            <div id="audioShotCards" style="padding: 16px; display: grid; grid-template-columns: 1fr; gap: 12px;"></div>
+                            
+                            <!-- Empty state -->
                             <div class="step-empty" id="audioEmpty">
                                 <div class="empty-visual" id="audioEmptyVisual">
                                     <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                                 </div>
-                                
-                                <!-- Spinner (hidden by default, shown during rendering) -->
                                 <div id="audioSpinner" style="display:none; margin:10px auto;">
                                     <div style="width:48px; height:48px; border:4px solid var(--border-color); border-top-color:var(--primary-color); border-radius:50%; animation: spin 0.8s linear infinite;"></div>
                                 </div>
-                                <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
-
                                 <div class="empty-title" id="audioEmptyTitle">Generate Audio (TTS)</div>
-                                <div class="empty-desc" id="audioEmptyDesc">Chuyển đổi nội dung thành giọng nói bằng Edge-TTS hoặc VibeVoice. Audio sẽ được dùng cho Video preview.</div>
-                                
+                                <div class="empty-desc" id="audioEmptyDesc">Mỗi shot từ Storyboard sẽ có audio narration riêng. Bấm "Generate All Audio" để tạo.</div>
                                 <div id="audioProgressContainer" style="display:none; width:65%; margin-top:20px; align-items:center; flex-direction:column;">
                                     <div style="background:var(--border-color); height:10px; border-radius:5px; width:100%; overflow:hidden;">
                                         <div id="audioProgressBar" style="background:var(--primary-color); width:0%; height:100%; transition:width 0.3s ease-out;"></div>
                                     </div>
                                     <div id="audioProgressText" style="text-align:right; font-size:12px; margin-top:6px; color:var(--text-3); font-weight:600; width:100%;">0%</div>
                                 </div>
-
-                                <button id="btnAudioGenerate" class="btn btn-primary" onclick="openAudioGenStep()" style="margin-top:20px;">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-                                    Generate Audio
-                                </button>
                             </div>
+                            
+                            <!-- Hidden global player for backward compat -->
                             <div id="audioPlayerSection" style="display:none; padding:20px; flex-direction:column; gap:16px; align-items:center;">
                                 <audio id="audioStepPlayer" controls style="width:100%; max-width:600px;"></audio>
                                 <div style="display:flex; gap:12px; align-items:center;">
@@ -557,31 +554,70 @@
                             </label>
 
                             <label class="field" style="flex: 1.5;">
-                                <span class="field-label">Visual Style</span>
-                                <select id="wizStyle" class="input">
-                                    <option value="Default">Default</option>
-                                    <option value="Studio Ghibli Animation">Studio Ghibli</option>
-                                    <option value="Disney Pixar 3D Animation">Disney Pixar 3D</option>
-                                    <option value="Hyper-realistic sci-fi">Hyper-realistic Sci-Fi</option>
-                                    <option value="90s Anime Style">90s Anime (Retro)</option>
-                                    <option value="Cyberpunk Neon">Cyberpunk Neon</option>
-                                    <option value="Pixel Art">Pixel Art</option>
-                                    <option value="Donghua">Donghua (Chinese Anime)</option>
-                                    <option value="Hollywood Cinematic">Hollywood Cinematic</option>
+                                <span class="field-label">🎨 Visual Style</span>
+                                <select id="wizStyle" class="input" onchange="toggleCustomStyleInput('wizStyle','wizStyleCustom')">
+                                    <optgroup label="── Animation ──">
+                                        <option value="Default">Default</option>
+                                        <option value="Studio Ghibli Animation">Studio Ghibli</option>
+                                        <option value="Disney Pixar 3D Animation">Disney Pixar 3D</option>
+                                        <option value="90s Anime Style">90s Anime (Retro)</option>
+                                        <option value="Donghua">Donghua (Chinese Anime)</option>
+                                        <option value="Gothic Animation">Gothic Animation</option>
+                                        <option value="Lean and Simple 2D">Lean & Simple 2D</option>
+                                        <option value="Minimalist Japan 2D">Minimalist Japan 2D</option>
+                                        <option value="Simple 2D stick figure animation, doodle style, thick black lines">Stick Figure Doodle</option>
+                                    </optgroup>
+                                    <optgroup label="── Cinematic ──">
+                                        <option value="Hollywood Blockbuster">Hollywood Blockbuster</option>
+                                        <option value="Hyper-realistic sci-fi">Hyper-realistic Sci-Fi</option>
+                                        <option value="Disaster Movie Cinematic">Disaster Movie</option>
+                                        <option value="Cyberpunk Neon">Cyberpunk Neon</option>
+                                    </optgroup>
+                                    <optgroup label="── Artistic ──">
+                                        <option value="Watercolor Painting">Watercolor Painting</option>
+                                        <option value="Dynamic ink wash painting">Ink Wash Painting</option>
+                                        <option value="Soft Pastel Colors">Soft Pastel Colors</option>
+                                        <option value="Pixel Art">Pixel Art</option>
+                                        <option value="Minimalist black and white hand-drawn sketch">B&W Hand-drawn Sketch</option>
+                                        <option value="Cartoonish">Cartoonish</option>
+                                    </optgroup>
+                                    <optgroup label="── Custom ──">
+                                        <option value="__custom__">✏️ Custom...</option>
+                                    </optgroup>
                                 </select>
+                                <input type="text" id="wizStyleCustom" class="input" placeholder="Nhập visual style tùy chỉnh..." style="display:none; margin-top:6px; font-size:12px;">
                             </label>
                             <label class="field" style="flex: 1.5;">
-                                <span class="field-label">Character Style</span>
-                                <select id="wizCharacterStyle" class="input">
-                                    <option value="Default">Default</option>
-                                    <option value="Realistic">Realistic</option>
-                                    <option value="Anime">Anime</option>
-                                    <option value="Donghua">Donghua</option>
-                                    <option value="Chibi">Chibi</option>
-                                    <option value="3D Cartoon">3D Cartoon</option>
-                                    <option value="Stick Figure">Stick Figure</option>
-                                    <option value="Dark Fantasy">Dark Fantasy</option>
+                                <span class="field-label">👤 Character Style</span>
+                                <select id="wizCharacterStyle" class="input" onchange="toggleCustomStyleInput('wizCharacterStyle','wizCharStyleCustom')">
+                                    <optgroup label="── Realistic ──">
+                                        <option value="Default">Default</option>
+                                        <option value="Realistic">Realistic</option>
+                                        <option value="Hyper-realistic">Hyper-realistic</option>
+                                        <option value="Semi-realistic">Semi-realistic</option>
+                                    </optgroup>
+                                    <optgroup label="── Anime / Manga ──">
+                                        <option value="Anime">Anime</option>
+                                        <option value="Manga">Manga</option>
+                                        <option value="Donghua">Donghua</option>
+                                        <option value="Chibi">Chibi</option>
+                                        <option value="Anime-influenced Gothic">Anime Gothic</option>
+                                    </optgroup>
+                                    <optgroup label="── Stylized ──">
+                                        <option value="3D">3D</option>
+                                        <option value="2D">2D</option>
+                                        <option value="Cartoon">Cartoon</option>
+                                        <option value="Big Head">Big Head</option>
+                                        <option value="Cute">Cute</option>
+                                        <option value="Anthropomorphic">Anthropomorphic</option>
+                                        <option value="Stick Figure">Stick Figure</option>
+                                        <option value="Dark Fantasy Illustration">Dark Fantasy</option>
+                                    </optgroup>
+                                    <optgroup label="── Custom ──">
+                                        <option value="__custom__">✏️ Custom...</option>
+                                    </optgroup>
                                 </select>
+                                <input type="text" id="wizCharStyleCustom" class="input" placeholder="Nhập character style tùy chỉnh..." style="display:none; margin-top:6px; font-size:12px;">
                             </label>
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
@@ -625,6 +661,13 @@
                                     <option value="9:16">9:16 (Portrait / TikTok / Shorts)</option>
                                     <option value="1:1">1:1 (Square / Instagram)</option>
                                     <option value="4:3">4:3 (Classic)</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">🎙 Narration Source</span>
+                                <select id="wizNarrationSource" class="input">
+                                    <option value="prose" selected>Prose (Văn xuôi — nghe mượt, kể chuyện)</option>
+                                    <option value="screenplay">Screenplay (Kịch bản — đối thoại + bối cảnh)</option>
                                 </select>
                             </label>
                         </div>

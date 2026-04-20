@@ -57,7 +57,7 @@ def _clean_appearance_for_ref(appearance: str) -> str:
     return cleaned
 
 
-def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Realistic") -> str:
+def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Realistic", aspect_ratio: str = "1:1") -> str:
     """Build a neutral face-only reference prompt (like an ID photo) in the project's visual style."""
     clean_app = _clean_appearance_for_ref(appearance)
     
@@ -75,7 +75,18 @@ def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Real
     }
     style_desc = style_map.get(visual_style.lower().strip(), style_map["realistic"])
     
+    # Map aspect ratio to readable description for Grok
+    ar_map = {
+        "1:1": "1:1 square",
+        "16:9": "16:9 widescreen landscape",
+        "9:16": "9:16 vertical portrait",
+        "4:3": "4:3 landscape",
+        "3:4": "3:4 portrait",
+    }
+    ar_desc = ar_map.get(aspect_ratio, aspect_ratio or "1:1 square")
+    
     return (
+        f"Generate in {ar_desc} aspect ratio: "
         f"Close-up face portrait of {name}: {clean_app}. "
         f"Neutral expression, like an ID photo. "
         f"Focus on facial features only, no clothing, no emotions. "
@@ -440,6 +451,7 @@ async def _autopilot_runner(drama_id: int):
             context["characters"] = [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c["appearance"], "personality": c["personality"]} for c in chars]
             context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes]
             
+            # Always extract for EVERY episode to discover new characters
             extract_json_str = await a_extract.chat_complete(
                 f"Extract ALL characters and scenes from this FULL script. Do NOT skip any named character, even if they appear only once.\n\n{script[:15000]}",
                 language, base_url, api_key, model, s.get_agent_config("extractor").get("temperature", 0.3), context
@@ -456,21 +468,21 @@ async def _autopilot_runner(drama_id: int):
                 logger.error(f"Autopilot Extractor error: {e}")
 
             # 4b. Flow: Generate AI reference images for characters without images
+            # Runs every episode — the filter `chars_needing_images` ensures only NEW chars get generated
             meta["autopilot_status"] = f"running {idx+1}/{total} - generating character refs"
             _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
             
             try:
-                # Get browser profile from drama metadata
+                # Get browser profile and aspect ratio from drama metadata
                 char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                char_aspect_ratio = meta.get("aspect_ratio", "16:9")
                 all_chars = _db().list_characters(drama_id)
                 chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
                 
-                logger.info(f"Autopilot char gen: total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}")
-                for c in all_chars:
-                    logger.info(f"  - {c.get('name')}: appearance={'YES' if c.get('appearance','').strip() else 'NO'}, image_url={'YES' if c.get('image_url','').strip() else 'NO'}")
+                logger.info(f"Autopilot char gen: ep {ep_num}, total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}, aspect_ratio={char_aspect_ratio}")
                 
                 if chars_needing_images:
-                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} characters")
+                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} NEW characters")
                     
                     from pathlib import Path
                     grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
@@ -495,7 +507,7 @@ async def _autopilot_runner(drama_id: int):
                         _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
                         
                         char_style = _get_char_style(drama) if drama else "Realistic"
-                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style)
+                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio)
                         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                         out_file = f"char_{cid}_ai_{ts}.png"
                         out_path = os.path.join(ref_dir, out_file)
@@ -523,6 +535,7 @@ async def _autopilot_runner(drama_id: int):
                             stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
                             
                             # Check result
+                            img_ok = False
                             if stdout_text:
                                 for line in reversed(stdout_text.splitlines()):
                                     if line.strip().startswith("{"):
@@ -538,23 +551,43 @@ async def _autopilot_runner(drama_id: int):
                                                     "reference_images": json.dumps(refs),
                                                     "image_url": out_path
                                                 })
+                                                img_ok = True
                                                 logger.info(f"  ✓ Generated ref image for {cname}")
                                                 break
                                         except:
                                             pass
+                            if not img_ok:
+                                logger.warning(f"  ✗ Image gen failed for {cname} — skipping (no retry). Prompt may be blocked.")
                         except Exception as ce:
-                            logger.warning(f"  ✗ Failed to generate ref for {cname}: {ce}")
+                            logger.warning(f"  ✗ Failed to generate ref for {cname}: {ce} — skipping (no retry)")
                             continue
                 else:
-                    logger.info(f"Autopilot: no characters need image generation (all have images or no appearance)")
+                    logger.info(f"Autopilot: no NEW characters need image generation for ep {ep_num}")
             except Exception as e:
                 import traceback
                 logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
                 # Non-fatal: continue to storyboard step
 
             # 5. Flow: Storyboard Breaker
+            import re as _re_ap
+            _ap_headings = _re_ap.findall(r'^## S\d+[^\n]*', script, _re_ap.MULTILINE)
+            _ap_count = len(_ap_headings) if _ap_headings else 1
+            _ap_h_list = '\n'.join(_ap_headings) if _ap_headings else '(no headings)'
+            
+            # Add narration_source to context
+            context["narration_source"] = meta.get("narration_source", "prose")
+            if meta.get("narration_source") == "prose":
+                raw_content = ep_plan.get("plot_outline", "")
+                if raw_content:
+                    context["raw_prose_content"] = raw_content[:8000]
+            
+            sb_prompt = (
+                f"Break this screenplay into storyboard shots.\n"
+                f"CRITICAL: Script has EXACTLY {_ap_count} scenes. Output EXACTLY {_ap_count} shots.\n"
+                f"Scenes:\n{_ap_h_list}\n\nScript:\n\n{script[:15000]}"
+            )
             sb_json_str = await a_storybd.chat_complete(
-                f"Break this screenplay into storyboard shots:\n\n{script[:8000]}",
+                sb_prompt,
                 language, base_url, api_key, model, s.get_agent_config("storyboard_breaker").get("temperature", 0.6), context
             )
             try:
@@ -736,7 +769,16 @@ async def generate_character_ref(char_id: int, request: Request, background_task
     drama = db.get_drama(char.get("drama_id")) if char.get("drama_id") else None
     char_style = _get_char_style(drama) if drama else "Realistic"
     
-    prompt = _build_char_ref_prompt(name, appearance, char_style)
+    # Get aspect ratio from drama metadata
+    char_aspect_ratio = "1:1"
+    if drama:
+        try:
+            drama_meta = json.loads(drama.get("metadata", "{}") or "{}")
+            char_aspect_ratio = drama_meta.get("aspect_ratio", "1:1")
+        except:
+            pass
+    
+    prompt = _build_char_ref_prompt(name, appearance, char_style, char_aspect_ratio)
     
     ref_dir = _get_ref_dir()
     from datetime import datetime
@@ -1164,13 +1206,20 @@ async def extract_characters_scenes(episode_id: int):
                 from datetime import datetime as _dt3
                 _gok = 0
                 _ger = 0
+                # Get aspect ratio from drama metadata
+                _char_ar = "1:1"
+                try:
+                    _drama_meta_ar = json.loads(drama_obj.get("metadata", "{}") or "{}")
+                    _char_ar = _drama_meta_ar.get("aspect_ratio", "1:1")
+                except:
+                    pass
                 for _ci, _co in enumerate(chars_for_gen):
                     _cid = _co["id"]
                     _cn = _co.get("name", "Unknown")
                     _ca = _co.get("appearance", "")
                     _msg2 = f"🎨 [{_ci+1}/{len(chars_for_gen)}] Tạo ảnh: {_cn}..."
                     yield f'data: {json.dumps({"event": "status", "message": _msg2})}\n\n'
-                    _cp = _build_char_ref_prompt(_cn, _ca, char_style)
+                    _cp = _build_char_ref_prompt(_cn, _ca, char_style, _char_ar)
                     _ts = _dt3.now().strftime("%Y%m%d_%H%M%S")
                     _cout = os.path.join(_rdir, f"char_{_cid}_ai_{_ts}.png")
                     os.makedirs(os.path.dirname(_cout), exist_ok=True)
@@ -1291,9 +1340,14 @@ async def generate_storyboard(episode_id: int, request: Request):
         "camera_angle": drama_metadata.get("camera_angle", "Default"),
         "ethnicity": drama_metadata.get("ethnicity", "Default"),
         "prompt_focus": drama_metadata.get("prompt_focus", "Default"),
+        "narration_source": drama_metadata.get("narration_source", "prose"),
         "characters": [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c["appearance"], "personality": c["personality"]} for c in characters],
         "scenes": [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes],
     }
+    # Provide raw prose content for narration extraction
+    raw_content = ep.get("content") or ""
+    if drama_metadata.get("narration_source") == "prose" and raw_content.strip():
+        context["raw_prose_content"] = raw_content[:12000]
 
     # Build name-to-id map for character resolution
     char_name_map = {c["name"].lower().strip(): c["id"] for c in characters}
@@ -1346,7 +1400,19 @@ async def generate_storyboard(episode_id: int, request: Request):
                 chunk_text = chunks[idx]
                 yield f"data: {json.dumps({'event': 'status', 'message': f'Phân đoạn {idx+1}/{total_chunks_original}...'})}\n\n"
 
-                prompt = f"Break this portion of the screenplay into storyboard shots:\n\n{chunk_text}"
+                # Count scenes in this chunk and list their headings
+                import re as _re_sb
+                scene_headings = _re_sb.findall(r'^## S\d+[^\n]*', chunk_text, _re_sb.MULTILINE)
+                scene_count_in_chunk = len(scene_headings) if scene_headings else 1
+                headings_list = '\n'.join(scene_headings) if scene_headings else '(no scene headings found)'
+                
+                prompt = (
+                    f"Break this portion of the screenplay into storyboard shots.\n"
+                    f"CRITICAL: This chunk contains EXACTLY {scene_count_in_chunk} scenes. "
+                    f"You MUST output EXACTLY {scene_count_in_chunk} shot objects, one per scene heading.\n"
+                    f"Scene headings in this chunk:\n{headings_list}\n\n"
+                    f"Script:\n\n{chunk_text}"
+                )
                 if append_mode and existing_shots and is_first:
                     last_shot = existing_shots[-1]
                     prompt += f"\n\nIMPORTANT: You have already generated up to shot number {last_shot['storyboard_number']}.\nYOU MUST RESUME GENERATION EXACTLY FROM SHOT NUMBER {last_shot['storyboard_number'] + 1}."
@@ -1415,6 +1481,11 @@ async def generate_storyboard(episode_id: int, request: Request):
                                 break
 
                 if shots:
+                    # Validate: AI should produce one shot per scene
+                    expected = scene_count_in_chunk
+                    if len(shots) < expected:
+                        logger.warning(f"Storyboard chunk {idx+1}: AI returned {len(shots)} shots but expected {expected}")
+                        yield f"data: {json.dumps({'event': 'status', 'message': f'⚠️ Chunk {idx+1}: {len(shots)}/{expected} shots'})}\\n\\n"
                     all_shots.extend(shots)
             
                 is_first = False
@@ -1786,6 +1857,89 @@ async def get_gen_videos_status(task_id: str):
     return {"success": True, **task}
 
 
+@router.post("/api/v1/studio/storyboards/{shot_id}/generate-tts")
+async def generate_shot_tts(shot_id: int, request: Request):
+    """Generate TTS audio for a single storyboard shot using its narration_text."""
+    shot = _db().conn.execute("SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL", (shot_id,)).fetchone()
+    if not shot:
+        raise HTTPException(404, "Shot not found")
+    shot = dict(shot)
+    
+    narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or ""
+    narration = narration.strip()
+    if not narration:
+        raise HTTPException(400, "No narration text for this shot")
+    
+    # Get voice config from request body
+    body = {}
+    try:
+        body = await request.json()
+    except:
+        pass
+    
+    # Resolve voice/engine: request body > project metadata > defaults 
+    voice_id = body.get("voice")
+    engine = body.get("engine")
+    
+    if not voice_id or not engine:
+        # Try project metadata
+        ep = _db().conn.execute("SELECT drama_id FROM episodes WHERE id = ?", (shot.get("episode_id"),)).fetchone()
+        if ep:
+            drama = _db().conn.execute("SELECT metadata FROM dramas WHERE id = ?", (ep["drama_id"],)).fetchone()
+            if drama and drama["metadata"]:
+                meta = json.loads(drama["metadata"])
+                if not voice_id:
+                    voice_id = meta.get("tts_voice", "vi-VN-HoaiMyNeural")
+                if not engine:
+                    engine = meta.get("tts_engine", "edge")
+    
+    voice_id = voice_id or "vi-VN-HoaiMyNeural"
+    engine = engine or "edge"
+    
+    logger.info(f"Shot TTS: id={shot_id}, voice={voice_id}, engine={engine}, text={narration[:60]}...")
+    
+    import httpx
+    tts_base = str(request.base_url).rstrip("/")
+    async with httpx.AsyncClient(timeout=300) as client:
+        # Start synthesis
+        resp = await client.post(f"{tts_base}/api/v1/tts/synthesize", json={
+            "text": narration,
+            "voice": voice_id,
+            "engine": engine,
+        })
+        if resp.status_code != 200:
+            raise HTTPException(500, f"TTS API error: {resp.text[:200]}")
+        
+        result = resp.json()
+        if not result.get("success") or not result.get("task_id"):
+            raise HTTPException(500, "TTS API returned no task_id")
+        
+        task_id = result["task_id"]
+        
+        # Poll for completion
+        import asyncio
+        for _ in range(150):  # max ~5 min
+            await asyncio.sleep(2)
+            st_resp = await client.get(f"{tts_base}/api/v1/tts/status/{task_id}")
+            if st_resp.status_code != 200:
+                continue
+            st = st_resp.json()
+            if st.get("status") == "success":
+                output_path = st.get("result", {}).get("output", "")
+                if output_path:
+                    import os
+                    filename = os.path.basename(output_path)
+                    audio_url = f"/api/v1/tts/audio/{filename}"
+                    _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
+                    return {"success": True, "audio_url": audio_url}
+                raise HTTPException(500, "TTS success but no output file")
+            elif st.get("status") == "error":
+                msg = st.get("result", {}).get("message", "Unknown error")
+                raise HTTPException(500, f"TTS error: {msg}")
+        
+        raise HTTPException(504, "TTS generation timed out")
+
+
 @router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")
 async def start_export_ffmpeg(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start FFmpeg video assembly."""
@@ -1889,7 +2043,7 @@ async def serve_export_video(filename: str):
     """Serve an exported FFmpeg video."""
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "exports")
+        out_dir = os.path.join(str(DATA_DIR), "content_studio", "outputs", "exports")
     except Exception:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "exports")
 

@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS storyboards (
     last_frame_image TEXT DEFAULT '',
     reference_images TEXT DEFAULT '[]',
     video_url TEXT DEFAULT '',
+    narration_text TEXT DEFAULT '',
     tts_audio_url TEXT DEFAULT '',
     subtitle_url TEXT DEFAULT '',
     composed_video_url TEXT DEFAULT '',
