@@ -32,7 +32,25 @@ class ContentAgent:
                         context: Optional[dict] = None) -> List[dict]:
         """Build messages array with system prompt + language instructions."""
         lang_prompt = LANGUAGE_PROMPTS.get(language, LANGUAGE_PROMPTS["en"])
-        full_system = f"{self.system_prompt}\n\n## Language Requirement\n{lang_prompt}"
+        
+        base_prompt = self.system_prompt
+
+        # ── Skill-based Format Override ──
+        # Instead of hacking/neutering the drama prompt, load a dedicated
+        # skill template that REPLACES the system prompt entirely.
+        if context:
+            content_format = context.get("content_format", "Drama / Narrative")
+            if content_format and "Drama" not in content_format and "Phim" not in content_format:
+                skill_prompt = self._load_format_skill(content_format)
+                if skill_prompt:
+                    base_prompt = skill_prompt
+                    logger.info(f"[{self.agent_type}] Loaded skill template for: {content_format}")
+                else:
+                    # Fallback: generic override if no skill file found
+                    base_prompt += f"\n\n## CRITICAL FORMAT OVERRIDE\nThe user requested CONTENT FORMAT: [{content_format}]. ADAPT your output completely to this format instead of a standard drama."
+                    logger.warning(f"[{self.agent_type}] No skill file for '{content_format}', using generic override")
+
+        full_system = f"{base_prompt}\n\n## Language Requirement\n{lang_prompt}"
 
         messages = [{"role": "system", "content": full_system}]
 
@@ -46,6 +64,60 @@ class ContentAgent:
 
         messages.append({"role": "user", "content": user_message})
         return messages
+
+    def _load_format_skill(self, content_format: str) -> Optional[str]:
+        """Load a dedicated system prompt from a format skill JSON file.
+        
+        Skill files live in agents/format_skills/*.json and contain
+        per-agent system prompts that REPLACE the default drama prompts entirely.
+        """
+        import os
+        
+        # Map content_format to skill file name
+        FORMAT_TO_FILE = {
+            "Educational / Learning": "educational.json",
+            "Commercial / Advertisement": "commercial.json",
+            "Podcast / Talkshow": "podcast.json",
+            "Health & Wellness": "health.json",
+            "Faith & Religion": "faith.json",
+            "Xianxia Donghua": "xianxia.json",
+        }
+        
+        filename = FORMAT_TO_FILE.get(content_format)
+        if not filename:
+            return None
+        
+        skill_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "format_skills",
+            filename
+        )
+        
+        if not os.path.exists(skill_path):
+            logger.warning(f"Skill file not found: {skill_path}")
+            return None
+        
+        try:
+            with open(skill_path, "r", encoding="utf-8") as f:
+                skill_data = json.load(f)
+            
+            # Map agent_type to skill key
+            AGENT_TO_KEY = {
+                "series_planner": "series_planner",
+                "novel_writer": "novel_writer",
+                "script_rewriter": "script_rewriter",
+                "extractor": "extractor",
+                "storyboard_breaker": "storyboard_breaker",
+            }
+            
+            key = AGENT_TO_KEY.get(self.agent_type)
+            if key and key in skill_data:
+                return skill_data[key]
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error loading skill file {filename}: {e}")
+            return None
 
     async def chat_stream(self, user_message: str, language: str,
                           base_url: str, api_key: str, model: str,

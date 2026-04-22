@@ -113,6 +113,7 @@ class StudioSettings:
         "deepseek": "https://api.deepseek.com/v1",
         "grok": "https://api.x.ai/v1",
         "github": "https://models.inference.ai.azure.com",
+        "openrouter": "https://openrouter.ai/api/v1",
     }
 
     PROVIDER_DEFAULT_MODELS = {
@@ -122,6 +123,7 @@ class StudioSettings:
         "deepseek": "deepseek-chat",
         "grok": "grok-2",
         "github": "gpt-4o-mini",
+        "openrouter": "google/gemini-2.5-flash",
     }
 
     def get_ai_client_params(self) -> Tuple[str, str, str, float]:

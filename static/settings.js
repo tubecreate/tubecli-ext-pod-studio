@@ -40,6 +40,7 @@ function populateForm() {
     // Cloud
     if (ai.cloud_provider) document.getElementById('cloudProvider').value = ai.cloud_provider;
     if (ai.cloud_model) document.getElementById('cloudModel').value = ai.cloud_model;
+    loadCloudModels(true);
 
     // Ollama
     if (ai.ollama_model) {
@@ -112,16 +113,47 @@ async function loadOllamaModels() {
     } catch (e) {}
 }
 
-function loadCloudModels() {
+let cloudProvidersCache = null;
+
+async function loadCloudModels(keepValue = false) {
     const provider = document.getElementById('cloudProvider').value;
-    const models = {
-        openai: 'gpt-4o',
-        gemini: 'gemini-2.5-flash',
-        claude: 'claude-sonnet-4-20250514',
-        deepseek: 'deepseek-chat',
-        grok: 'grok-2',
-    };
-    document.getElementById('cloudModel').value = models[provider] || '';
+    
+    if (!cloudProvidersCache) {
+        try {
+            const resp = await fetch('/api/v1/cloud-api/providers');
+            cloudProvidersCache = await resp.json();
+        } catch(e) { }
+    }
+    
+    const select = document.getElementById('cloudModel');
+    let currentValue = select.value;
+    
+    if (cloudProvidersCache && cloudProvidersCache.providers) {
+        const pData = cloudProvidersCache.providers.find(p => p.id === provider);
+        if (pData && pData.models) {
+            select.innerHTML = pData.models.map(m => `<option value="${m}">${m}</option>`).join('');
+        }
+    }
+
+    if (!keepValue) {
+        const models = {
+            openai: 'gpt-4o',
+            gemini: 'gemini-2.5-flash',
+            claude: 'claude-sonnet-4-20250514',
+            deepseek: 'deepseek-chat',
+            grok: 'grok-2',
+            openrouter: 'google/gemini-2.5-flash',
+        };
+        currentValue = models[provider] || '';
+    }
+    
+    if (currentValue) {
+        const exists = Array.from(select.options).some(o => o.value === currentValue);
+        if (!exists) {
+            select.insertAdjacentHTML('afterbegin', `<option value="${currentValue}">${currentValue}</option>`);
+        }
+        select.value = currentValue;
+    }
 }
 
 function renderAgentGrid() {

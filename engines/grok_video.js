@@ -175,15 +175,55 @@ async function sleep(ms) {
                 }
             } catch(e) {}
 
-            // Setup 16:9 aspect ratio
+            // Setup aspect ratio from shot data (dynamic)
             try {
-                const btn169 = page.locator('button:has-text("16:9"), div:text-is("16:9"), span:text-is("16:9"), button:has-text("16:9")').last();
-                if (await btn169.isVisible({ timeout: 1000 })) {
-                    log('Selecting 16:9 aspect ratio...');
-                    await btn169.evaluate(el => el.click());
-                    await sleep(500);
+                // Map project AR to Grok-supported AR (Grok only has: 2:3, 3:2, 1:1, 9:16, 16:9)
+                const arMap = { '4:3': '3:2', '3:4': '2:3' };
+                const rawAR = shot.aspect_ratio || '16:9';
+                const targetAR = arMap[rawAR] || rawAR;
+                log(`Setting aspect ratio to ${targetAR} (project: ${rawAR})...`);
+                
+                // The trigger button has aria-label="Aspect Ratio" (Radix UI dropdown)
+                const arTrigger = page.locator('button[aria-label="Aspect Ratio"]');
+                if (await arTrigger.isVisible({ timeout: 2000 }).catch(()=>false)) {
+                    // Read current AR from the span inside the button
+                    const currentAR = await arTrigger.locator('span').textContent().catch(()=>'');
+                    log(`Current aspect ratio: ${currentAR}`);
+                    
+                    if (currentAR.trim() !== targetAR) {
+                        // Click to open the Radix dropdown menu
+                        await arTrigger.click();
+                        await sleep(600);
+                        
+                        // Radix UI renders menu items with role="menuitemradio" or role="menuitem"
+                        // Try multiple selectors for the menu item
+                        const menuItem = page.locator(`[role="menuitemradio"]:has-text("${targetAR}"), [role="menuitem"]:has-text("${targetAR}"), [data-radix-collection-item]:has-text("${targetAR}")`).first();
+                        if (await menuItem.isVisible({ timeout: 1500 }).catch(()=>false)) {
+                            await menuItem.click();
+                            await sleep(500);
+                            log(`Successfully selected ${targetAR}`);
+                        } else {
+                            // Fallback: try any clickable element with exact text in the popup
+                            const fallback = page.locator(`div[role="menu"] >> text="${targetAR}"`).first();
+                            if (await fallback.isVisible({ timeout: 500 }).catch(()=>false)) {
+                                await fallback.click();
+                                await sleep(500);
+                                log(`Selected ${targetAR} via fallback`);
+                            } else {
+                                log(`Could not find ${targetAR} in dropdown menu`);
+                                await page.keyboard.press('Escape');
+                            }
+                        }
+                    } else {
+                        log(`Aspect ratio already set to ${targetAR}, skipping`);
+                    }
+                } else {
+                    log('Aspect Ratio button not found');
                 }
-            } catch(e) {}
+            } catch(e) {
+                log('Failed to set aspect ratio: ' + e.message);
+                try { await page.keyboard.press('Escape'); } catch(x) {}
+            }
 
             // Input Prompt
             let inputEl = null;
@@ -279,11 +319,12 @@ async function sleep(ms) {
                 await inputEl.fill('');
                 await sleep(200);
 
-                // Use robust filling — append aspect ratio to ensure widescreen output
+                // Use robust filling — append aspect ratio to ensure correct output
                 let promptClean = shot.prompt.replace(/\n+/g, ' ').trim();
                 const aspectRatio = shot.aspect_ratio || '16:9';
                 if (!promptClean.includes('aspect ratio') && !promptClean.includes('16:9') && !promptClean.includes('9:16')) {
-                    promptClean += ` Output in ${aspectRatio} widescreen aspect ratio.`;
+                    const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
+                    promptClean += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
                 }
                 try {
                     await inputEl.fill(promptClean);

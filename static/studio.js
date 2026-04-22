@@ -101,6 +101,11 @@ window.showCreateDrama = function() {
     document.getElementById('wizTitle').value = '';
     document.getElementById('wizPremise').value = '';
     document.getElementById('wizOutlineReview').textContent = '';
+
+    // Load presets dropdown and restore last-used config
+    loadWizPresets();
+    restoreLastWizConfig();
+
     document.getElementById('wizTitle').focus();
 }
 
@@ -151,6 +156,115 @@ function toggleCustomStyleInput(selectId, inputId) {
     }
 }
 
+// ── Wizard Preset System ──────────────────────────────────
+const WIZ_PRESETS_KEY = 'studio_wiz_presets';
+const WIZ_LAST_KEY = 'studio_wiz_last';
+
+const WIZ_FIELD_IDS = [
+    'wizContentFormat', 'wizEpisodes', 'wizStyle', 'wizStyleCustom',
+    'wizCharacterStyle', 'wizCharStyleCustom', 'wizCameraAngle',
+    'wizEthnicity', 'wizPromptFocus', 'wizAspectRatio',
+    'wizNarrationSource', 'wizLanguage', 'wizPipelineTemplate',
+];
+const WIZ_CHECKBOX_IDS = ['wizNoTextPrompt'];
+
+function _getWizValues() {
+    const data = {};
+    for (const id of WIZ_FIELD_IDS) {
+        const el = document.getElementById(id);
+        if (el) data[id] = el.value;
+    }
+    for (const id of WIZ_CHECKBOX_IDS) {
+        const el = document.getElementById(id);
+        if (el) data[id] = el.checked;
+    }
+    return data;
+}
+
+function _setWizValues(data) {
+    if (!data) return;
+    for (const id of WIZ_FIELD_IDS) {
+        const el = document.getElementById(id);
+        if (el && data[id] !== undefined) {
+            el.value = data[id];
+            // Show custom input if needed
+            if (id === 'wizStyle' && data[id] === '__custom__') toggleCustomStyleInput('wizStyle', 'wizStyleCustom');
+            if (id === 'wizCharacterStyle' && data[id] === '__custom__') toggleCustomStyleInput('wizCharacterStyle', 'wizCharStyleCustom');
+        }
+    }
+    for (const id of WIZ_CHECKBOX_IDS) {
+        const el = document.getElementById(id);
+        if (el && data[id] !== undefined) el.checked = data[id];
+    }
+}
+
+function _getPresets() {
+    try { return JSON.parse(localStorage.getItem(WIZ_PRESETS_KEY) || '{}'); }
+    catch { return {}; }
+}
+
+function _savePresets(presets) {
+    localStorage.setItem(WIZ_PRESETS_KEY, JSON.stringify(presets));
+}
+
+function loadWizPresets() {
+    const sel = document.getElementById('wizPresetSelect');
+    if (!sel) return;
+    const presets = _getPresets();
+    // Keep default option, clear rest
+    sel.innerHTML = '<option value="">-- Mặc định --</option>';
+    for (const name of Object.keys(presets).sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+    }
+}
+
+function saveWizPreset() {
+    const name = prompt('Đặt tên cho preset này:');
+    if (!name || !name.trim()) return;
+    const presets = _getPresets();
+    presets[name.trim()] = _getWizValues();
+    _savePresets(presets);
+    loadWizPresets();
+    document.getElementById('wizPresetSelect').value = name.trim();
+    toast(`💾 Preset "${name.trim()}" đã lưu!`, 'success');
+}
+
+function applyWizPreset() {
+    const sel = document.getElementById('wizPresetSelect');
+    if (!sel || !sel.value) return;
+    const presets = _getPresets();
+    const data = presets[sel.value];
+    if (data) {
+        _setWizValues(data);
+        toast(`⚡ Đã áp dụng preset "${sel.value}"`, 'success');
+    }
+}
+
+function deleteWizPreset() {
+    const sel = document.getElementById('wizPresetSelect');
+    if (!sel || !sel.value) { toast('Chọn preset cần xóa', 'info'); return; }
+    if (!confirm(`Xóa preset "${sel.value}"?`)) return;
+    const presets = _getPresets();
+    delete presets[sel.value];
+    _savePresets(presets);
+    loadWizPresets();
+    toast('🗑 Preset đã xóa', 'success');
+}
+
+function saveLastWizConfig() {
+    localStorage.setItem(WIZ_LAST_KEY, JSON.stringify(_getWizValues()));
+}
+
+function restoreLastWizConfig() {
+    try {
+        const data = JSON.parse(localStorage.getItem(WIZ_LAST_KEY) || 'null');
+        if (data) _setWizValues(data);
+    } catch {}
+}
+
 async function wizSkipToManual() {
     const drama = await _createDramaFromWiz();
     if (drama) {
@@ -179,7 +293,9 @@ async function _createDramaFromWiz() {
     metadata.ethnicity = document.getElementById('wizEthnicity').value;
     metadata.prompt_focus = document.getElementById('wizPromptFocus').value;
     metadata.aspect_ratio = document.getElementById('wizAspectRatio').value;
+    metadata.content_format = document.getElementById('wizContentFormat').value;
     metadata.narration_source = document.getElementById('wizNarrationSource').value;
+    metadata.no_text_in_prompt = !!document.getElementById('wizNoTextPrompt')?.checked;
     
     // Save TTS voice config
     const voiceSelect = document.getElementById('wizVoiceProfileExec');
@@ -188,6 +304,9 @@ async function _createDramaFromWiz() {
         metadata.tts_voice = voiceSelect.value;
         metadata.tts_engine = opt?.dataset?.engine || 'edge';
     }
+
+    // Save last used config to localStorage for next time
+    saveLastWizConfig();
 
     try {
         return await apiFetch('/dramas', {
@@ -240,7 +359,6 @@ async function wizFetchYoutube() {
     try {
         const payload = {
             url: url,
-            languages: [document.getElementById('wizLanguage').value || "vi"]
         };
         const res = await fetch("/api/v1/subtitle/extract/youtube", {
             method: "POST",
@@ -252,9 +370,11 @@ async function wizFetchYoutube() {
             const text = data.subtitles.map(s => s.text).join("\n");
             document.getElementById('wizPremise').value = text;
             updateWizPremiseCount();
-            toast("Fetched YouTube subtitles successfully!", "success");
+            const langInfo = data.original_language ? ` (${data.original_language})` : '';
+            const titleInfo = data.title ? ` — ${data.title.substring(0, 40)}` : '';
+            toast(`✅ ${data.count} subtitles fetched${langInfo}${titleInfo}`, "success");
         } else {
-            toast(data.message || "Failed to fetch YouTube subtitles", "error");
+            toast(data.message || data.detail || "Failed to fetch YouTube subtitles", "error");
         }
     } catch (e) {
         toast("Error connecting to subtitle service: " + e.message, "error");
@@ -299,20 +419,26 @@ async function wizGenerateOutline() {
     let errBox = document.getElementById('wizOutlineError');
     if (errBox) errBox.remove();
 
+    const btn = document.querySelector('#wizStep2 .btn-primary');
+    const oldHtml = btn.innerHTML;
+    btn.innerHTML = 'Creating Project...';
+    btn.disabled = true;
+
     toast("Creating project and generating outline...", "info");
     
     // Create drama first so we have an ID
     const drama = await _createDramaFromWiz();
-    if (!drama) return;
+    if (!drama) {
+        btn.innerHTML = oldHtml;
+        btn.disabled = false;
+        return;
+    }
     pendingAutoPilotDramaId = drama.id;
     
     const rawCount = parseInt(document.getElementById('wizEpisodes').value);
     const count = isNaN(rawCount) ? 1 : rawCount;
     
-    const btn = document.querySelector('#wizStep2 .btn-primary');
-    const oldHtml = btn.innerHTML;
-    btn.innerHTML = 'Generating...';
-    btn.disabled = true;
+    btn.innerHTML = 'Generating Outline...';
 
     try {
         const res = await apiFetch(`/dramas/${drama.id}/generate-outline`, {
@@ -1235,6 +1361,24 @@ function _pollCharGenStatus(taskId, charId, btn) {
 }
 
 // ── Storyboard Breakdown ───────────────────────────────────
+async function clearStoryboards() {
+    if (!currentEpisode) return;
+    if (!confirm('Xóa tất cả storyboard của tập này?')) return;
+    try {
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`, { method: 'DELETE' });
+        if (res.status === 'ok') {
+            toast('🗑 Storyboards cleared', 'success');
+            // Reset UI
+            document.getElementById('sbList').innerHTML = '';
+            document.getElementById('sbList').style.display = 'none';
+            document.getElementById('storyboardEmpty').style.display = '';
+            document.getElementById('sbCount').textContent = '0 shots';
+        }
+    } catch(e) {
+        toast(e.message || 'Error clearing storyboards', 'error');
+    }
+}
+
 async function doBreakdown(append = false) {
     if (isStreaming) return;
     if (!currentEpisode) {
@@ -1422,6 +1566,9 @@ function renderStoryboard(shots) {
     window.currentRenderedShots = shots;
     const sbList = document.getElementById('sbList');
     sbList.style.display = '';
+
+    // Hide the empty-state placeholder
+    document.getElementById('storyboardEmpty').style.display = 'none';
 
     document.getElementById('sbCount').textContent = `${shots.length} shots`;
 
@@ -2955,6 +3102,24 @@ async function loadEpisodeImages() {
 // ── Gen Videos (Step 5.5) ──────────────────────────────────
 let _genVidPollTimer = null;
 
+async function clearAllVideos() {
+    if (!currentEpisode) { toast('No episode selected', 'error'); return; }
+    
+    if (!confirm('Xóa toàn bộ video đã tạo cho episode này? Thao tác này không thể hoàn tác.')) return;
+    
+    try {
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/clear-videos`, { method: 'POST' });
+        if (res.success) {
+            toast(`🗑 Đã xóa ${res.deleted || 0} video`, 'success');
+            await loadEpisodeVideos();
+        } else {
+            toast('❌ ' + (res.detail || res.message || 'Lỗi xóa video'), 'error');
+        }
+    } catch(e) {
+        toast('❌ ' + (e.message || String(e)), 'error');
+    }
+}
+
 async function openGenVideosDialog() {
     if (!currentEpisode) { toast('No episode selected', 'error'); return; }
 
@@ -3054,6 +3219,8 @@ async function startGrokVideoGen() {
             document.getElementById('vidProgressBar').style.width = '0%';
             document.getElementById('vidProgressCount').textContent = `0 / ${res.total || 1}`;
             document.getElementById('vidProgressLabel').textContent = 'Khởi tạo Grok Video...';
+            // Refresh grid to show cleared state (all skeleton cards in overwrite mode)
+            if (overwrite) await loadEpisodeVideos().catch(e => {});
             _startGenVidPolling(res.task_id, res.total);
         } else {
             showDialogError(res.detail || res.message || JSON.stringify(res));
@@ -3466,86 +3633,123 @@ async function generateShotAudio(shotId, idx) {
 async function generateAllShotAudio() {
     if (!currentEpisode) return;
     
-    // Step 1: Ensure cards are rendered first
-    await loadEpisodeAudio();
-    
     const btn = document.getElementById('btnGenAllAudio');
-    if (btn) btn.disabled = true;
-    
-    // Step 2: Get shots from already-loaded cards data
-    let shots = [];
-    try {
-        const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
-        shots = sbRes.items || [];
-    } catch(e) { toast('Failed to fetch shots', 'error'); if (btn) btn.disabled = false; return; }
-    
-    const pending = shots.filter(s => !s.tts_audio_url || !s.tts_audio_url.trim());
-    if (pending.length === 0) {
-        toast('All shots already have audio!', 'info');
-        if (btn) btn.disabled = false;
-        return;
-    }
-    
     const statusEl = document.getElementById('audioStatus');
-    let done = 0;
-    let success = 0;
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = '🎙 Starting batch TTS...';
     
-    // Step 3: Process pending cards one by one
-    for (const shot of pending) {
-        done++;
-        if (statusEl) statusEl.textContent = `🎙 ${done}/${pending.length}...`;
-        
-        const cardBtn = document.getElementById(`btnGenShot_${shot.id}`);
-        const card = document.getElementById(`audioCard_${shot.id}`);
-        
-        // Visual: mark card as generating
-        if (cardBtn) { cardBtn.disabled = true; cardBtn.innerHTML = '<span class="spin-icon">⏳</span>'; }
-        if (card) { card.classList.add('generating'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
-        
-        try {
-            const res = await apiFetch(`/storyboards/${shot.id}/generate-tts`, { method: 'POST' });
-            if (res.success && res.audio_url) {
-                success++;
-                // Update card inline — add audio player
-                if (card) {
-                    card.classList.remove('generating');
-                    card.classList.add('has-audio');
-                }
-                if (cardBtn) { cardBtn.innerHTML = '🔄'; cardBtn.disabled = false; }
-                
-                // Add mini player
-                const body = card?.querySelector('.audio-shot-body');
-                if (body && !body.querySelector('.mini-player')) {
-                    body.insertAdjacentHTML('beforeend', `
-                    <div class="mini-player" id="mp_${shot.id}">
-                        <button class="mp-play" onclick="toggleMiniPlayer(${shot.id})">▶</button>
-                        <div class="mp-bar" onclick="seekMiniPlayer(event, ${shot.id})">
-                            <div class="mp-progress" id="mpProg_${shot.id}"></div>
-                        </div>
-                        <span class="mp-time" id="mpTime_${shot.id}">0:00</span>
-                        <audio id="mpAudio_${shot.id}" preload="none" src="${res.audio_url}" 
-                            ontimeupdate="updateMiniPlayer(${shot.id})" 
-                            onended="endMiniPlayer(${shot.id})"
-                            onloadedmetadata="initMiniPlayer(${shot.id})"></audio>
-                    </div>`);
-                }
-                // Update status icon
-                const statusIcon = card?.querySelector('.audio-shot-title span:first-of-type');
-                if (statusIcon) { statusIcon.style.color = '#22c55e'; statusIcon.textContent = '✅'; }
-            } else {
-                throw new Error(res.detail || res.message || 'TTS failed');
-            }
-        } catch(e) {
-            console.error(`Shot ${shot.id} TTS error:`, e);
-            if (card) card.classList.remove('generating');
-            if (cardBtn) { cardBtn.innerHTML = '❌'; cardBtn.disabled = false; }
+    // Immediately mark all pending cards as "generating" with pulse animation
+    document.querySelectorAll('.audio-shot-card:not(.has-audio)').forEach(card => {
+        card.classList.add('generating');
+        const titleEl = card.querySelector('.audio-shot-title span:first-of-type');
+        if (titleEl) { titleEl.style.color = '#f59e0b'; titleEl.textContent = '⏳'; }
+    });
+
+    // Show progress bar in the toolbar area
+    let progressContainer = document.getElementById('ttsProgressContainer');
+    if (!progressContainer) {
+        const toolbar = document.querySelector('#stepAudio .step-toolbar .toolbar-left');
+        if (toolbar) {
+            toolbar.insertAdjacentHTML('afterend', `
+                <div id="ttsProgressContainer" style="display:flex; align-items:center; gap:8px; flex:1; padding:0 12px;">
+                    <div style="flex:1; height:6px; background:var(--bg-3); border-radius:3px; overflow:hidden;">
+                        <div id="ttsProgressBar" style="width:0%; height:100%; background:var(--accent-gradient); transition:width 0.4s ease; border-radius:3px;"></div>
+                    </div>
+                    <span id="ttsProgressText" style="font-size:11px; color:var(--text-2); font-family:var(--font-mono); white-space:nowrap;">0%</span>
+                </div>
+            `);
+            progressContainer = document.getElementById('ttsProgressContainer');
         }
+    } else {
+        progressContainer.style.display = 'flex';
+        document.getElementById('ttsProgressBar').style.width = '0%';
+        document.getElementById('ttsProgressText').textContent = '0%';
     }
     
-    // Step 4: Final refresh
-    if (statusEl) statusEl.textContent = `✅ ${success}/${shots.length} audio ready`;
-    if (btn) btn.disabled = false;
-    toast(`🎙 ${success}/${pending.length} audio generated!`, 'success');
+    try {
+        // Fire background batch TTS
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/batch-tts`, { method: 'POST' });
+        if (!res.success || !res.task_id) throw new Error('Failed to start batch TTS');
+        
+        const taskId = res.task_id;
+        const total = res.total || 0;
+        toast(`🎙 TTS started for ${total} shots`, 'info');
+        
+        // Poll for progress
+        const pollId = setInterval(async () => {
+            try {
+                const st = await apiFetch(`/batch-tts/${taskId}`);
+                const done = st.done || 0;
+                const success = st.success || 0;
+                const failed = st.failed || 0;
+                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                
+                if (statusEl) statusEl.textContent = `🎙 ${done}/${total} (✅${success} ❌${failed})`;
+                
+                // Update progress bar
+                const bar = document.getElementById('ttsProgressBar');
+                const txt = document.getElementById('ttsProgressText');
+                if (bar) bar.style.width = pct + '%';
+                if (txt) txt.textContent = `${done}/${total}`;
+                
+                // Update individual cards if visible
+                if (st.results) {
+                    for (const r of st.results) {
+                        const card = document.getElementById(`audioCard_${r.shot_id}`);
+                        const cardBtn = document.getElementById(`btnGenShot_${r.shot_id}`);
+                        if (r.status === 'ok') {
+                            if (card) { card.classList.remove('generating'); card.classList.add('has-audio'); }
+                            if (cardBtn) { cardBtn.innerHTML = '🔄'; cardBtn.disabled = false; }
+                            // Add mini player if missing
+                            const body = card?.querySelector('.audio-shot-body');
+                            if (body && !body.querySelector('.mini-player') && r.audio_url) {
+                                body.insertAdjacentHTML('beforeend', `
+                                <div class="mini-player" id="mp_${r.shot_id}">
+                                    <button class="mp-play" onclick="toggleMiniPlayer(${r.shot_id})">▶</button>
+                                    <div class="mp-bar" onclick="seekMiniPlayer(event, ${r.shot_id})">
+                                        <div class="mp-progress" id="mpProg_${r.shot_id}"></div>
+                                    </div>
+                                    <span class="mp-time" id="mpTime_${r.shot_id}">0:00</span>
+                                    <audio id="mpAudio_${r.shot_id}" preload="none" src="${r.audio_url}" 
+                                        ontimeupdate="updateMiniPlayer(${r.shot_id})" 
+                                        onended="endMiniPlayer(${r.shot_id})"
+                                        onloadedmetadata="initMiniPlayer(${r.shot_id})"></audio>
+                                </div>`);
+                            }
+                            const statusIcon = card?.querySelector('.audio-shot-title span:first-of-type');
+                            if (statusIcon) { statusIcon.style.color = '#22c55e'; statusIcon.textContent = '✅'; }
+                        } else if (r.status === 'error' || r.status === 'timeout') {
+                            if (card) card.classList.remove('generating');
+                            if (cardBtn) { cardBtn.innerHTML = '❌'; cardBtn.disabled = false; }
+                            const statusIcon = card?.querySelector('.audio-shot-title span:first-of-type');
+                            if (statusIcon) { statusIcon.style.color = '#ef4444'; statusIcon.textContent = '❌'; }
+                        }
+                    }
+                }
+                
+                if (st.status === 'done' || st.status === 'error') {
+                    clearInterval(pollId);
+                    if (btn) btn.disabled = false;
+                    if (statusEl) statusEl.textContent = `✅ ${success}/${total} audio ready`;
+                    // Hide progress bar
+                    const pc = document.getElementById('ttsProgressContainer');
+                    if (pc) pc.style.display = 'none';
+                    toast(`🎙 Batch TTS done: ${success}/${total} success`, st.status === 'done' ? 'success' : 'error');
+                    // Refresh audio cards
+                    loadEpisodeAudio();
+                }
+            } catch(e) {
+                console.warn('TTS poll error', e);
+            }
+        }, 2000);
+        
+    } catch(e) {
+        toast('TTS Error: ' + e.message, 'error');
+        if (btn) btn.disabled = false;
+        if (statusEl) statusEl.textContent = '❌ TTS failed';
+        const pc = document.getElementById('ttsProgressContainer');
+        if (pc) pc.style.display = 'none';
+    }
 }
 
 function openAudioGenStep() {
@@ -3827,6 +4031,14 @@ function confirmBuildVideoPreview() {
 async function _doBuildVideoPreview(options = { randomSlides: true, addAudio: true }) {
     const empty = document.getElementById('videoEmpty');
     const container = document.getElementById('videoPlayerContainer');
+    const canvas = document.getElementById('videoCanvas');
+    if (typeof currentDrama !== 'undefined' && currentDrama && canvas) {
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const ar = meta.aspect_ratio || '16:9';
+            canvas.style.aspectRatio = ar.replace(':', '/');
+        } catch(e) {}
+    }
     const progress = document.getElementById('videoBuildProgress');
     const statusEl = document.getElementById('videoStatus');
     const audioPlayer = document.getElementById('videoAudioPlayer');
@@ -4134,28 +4346,60 @@ async function _generateVideoTTS() {
     if (_emptyTitle) _emptyTitle.textContent = '🔊 Generating Audio for all shots...';
     
     try {
-        // We use the new UI per-shot audio generator for reliable processing
-        await generateAllShotAudio();
+        if (!currentEpisode) throw new Error('No episode selected');
         
-        // Re-check shots to see if any are still pending
-        let shots = [];
-        if (currentEpisode) {
-            const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
-            shots = sbRes.items || [];
+        // Start batch TTS in background (with retry)
+        let res = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                res = await apiFetch(`/episodes/${currentEpisode.id}/batch-tts`, { method: 'POST' });
+                if (res.success && res.task_id) break;
+            } catch(retryErr) {
+                console.warn(`Batch TTS attempt ${attempt} failed:`, retryErr.message);
+                if (attempt < 3) await new Promise(r => setTimeout(r, 5000));
+            }
+        }
+        if (!res || !res.success || !res.task_id) throw new Error('Failed to start batch TTS after 3 attempts');
+        
+        const taskId = res.task_id;
+        const total = res.total || 0;
+        
+        // Wait for completion via polling (Auto-Pilot needs to block here)
+        // Timeout after 10 minutes to prevent infinite wait
+        const TTS_TIMEOUT = 10 * 60 * 1000;
+        const result = await Promise.race([
+            new Promise((resolve) => {
+                const pollId = setInterval(async () => {
+                    try {
+                        const st = await apiFetch(`/batch-tts/${taskId}`);
+                        const done = st.done || 0;
+                        const success = st.success || 0;
+                        if (_emptyTitle) _emptyTitle.textContent = `🔊 TTS: ${done}/${total} (✅${success})`;
+                        
+                        if (st.status === 'done' || st.status === 'error') {
+                            clearInterval(pollId);
+                            resolve(st);
+                        }
+                    } catch(e) {
+                        // Ignore poll errors, keep trying
+                    }
+                }, 3000);
+            }),
+            new Promise((resolve) => setTimeout(() => resolve({ status: 'timeout', success: 0, failed: total }), TTS_TIMEOUT))
+        ]);
+        
+        const successCount = result.success || 0;
+        const failedCount = result.failed || 0;
+        
+        if (failedCount > 0 && total > 0) {
+            console.warn(`TTS: ${failedCount}/${total} shots failed audio generation`);
+            toast(`⚠️ Audio: ${successCount}/${total} thành công, ${failedCount} thất bại`, 'warning');
         }
         
-        const pending = shots.filter(s => !s.tts_audio_url || !s.tts_audio_url.trim());
-        
-        if (pending.length > 0 && shots.length > 0) {
-            throw new Error(`Failed to generate audio for ${pending.length} shot(s).`);
-        }
-        
-        if (_emptyTitle) _emptyTitle.textContent = '✅ Audio Complete!';
+        if (_emptyTitle) _emptyTitle.textContent = successCount > 0 ? `✅ Audio: ${successCount}/${total}` : '⚠️ Audio Failed';
         if (_spinner) _spinner.style.display = 'none';
         if (_btnGenTop) _btnGenTop.disabled = false;
         
-        // Return a dummy string to satisfy AutoPilot's `episode.audio_url` requirement 
-        // Backend FFmpeg pipeline natively overrides this if per-shot audio exists.
         return "per_shot_audio";
     } catch(e) {
         console.error("TTS Exception:", e);
@@ -4164,7 +4408,10 @@ async function _generateVideoTTS() {
         if (_spinner) _spinner.style.display = 'none';
         if (_emptyVisual) _emptyVisual.style.display = '';
         if (_emptyTitle) _emptyTitle.textContent = 'Generate Audio (TTS)';
-        throw new Error(`TTS Exception: ${e.message}`);
+        // DON'T throw - log and continue for autopilot resilience
+        console.warn(`TTS step failed: ${e.message}, continuing pipeline...`);
+        toast(`⚠️ TTS failed: ${e.message}`, 'warning');
+        return "tts_skipped";
     }
 }
 

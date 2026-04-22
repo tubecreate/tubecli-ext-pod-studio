@@ -221,6 +221,10 @@
                                     <span class="char-count" id="sbCount"></span>
                                 </div>
                                 <div class="toolbar-right">
+                                    <button class="btn btn-secondary btn-sm tooltip-btn" id="btnClearSB" onclick="clearStoryboards()" title="Clear Storyboards" style="margin-right: 8px;">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                        Clear
+                                    </button>
                                     <button class="btn btn-primary btn-sm" id="btnBreakdown" onclick="doBreakdown()">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="8" x2="7" y2="16"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/></svg>
                                         AI Storyboard
@@ -284,7 +288,11 @@
                                 <div class="toolbar-left">
                                     <span class="char-count" id="vidCount">0 videos</span>
                                 </div>
-                                <div class="toolbar-right">
+                                <div class="toolbar-right" style="display:flex; gap:6px;">
+                                    <button class="btn btn-sm" style="color:#ef4444;" onclick="clearAllVideos()" title="Xóa toàn bộ video đã tạo">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                        Clear All
+                                    </button>
                                     <button class="btn btn-sm" id="btnGenVideos" onclick="openGenVideosDialog()">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                                         Gen Videos (Grok)
@@ -330,7 +338,7 @@
                             </div>
                             
                             <!-- Per-shot audio cards -->
-                            <div id="audioShotCards" style="padding: 16px; display: grid; grid-template-columns: 1fr; gap: 12px;"></div>
+                            <div id="audioShotCards" style="flex: 1; overflow-y: auto; padding: 16px; display: grid; grid-template-columns: 1fr; gap: 12px;"></div>
                             
                             <!-- Empty state -->
                             <div class="step-empty" id="audioEmpty">
@@ -422,9 +430,9 @@
                                 <div id="videoBuildCount" style="font-size:11px; color:var(--text-3); font-family:var(--font-mono);">0 / 0</div>
                             </div>
                             <!-- Video Player Container -->
-                            <div id="videoPlayerContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px;">
-                                <div id="videoCanvas" style="position:relative; width:100%; max-width:720px; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; cursor:pointer;" onclick="toggleVideoPlay()">
-                                    <img id="videoSlideImg" style="width:100%; height:100%; object-fit:cover;" />
+                            <div id="videoPlayerContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px; overflow-y:auto; max-height:calc(100vh - 140px);">
+                                <div id="videoCanvas" style="position:relative; width:100%; max-width:720px; max-height:55vh; margin:0 auto; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; cursor:pointer; flex-shrink:0;" onclick="toggleVideoPlay()">
+                                    <img id="videoSlideImg" style="width:100%; height:100%; object-fit:contain;" />
                                     <div id="videoShotLabel" style="position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,0.7); color:#fff; padding:4px 10px; border-radius:4px; font-size:12px;"></div>
                                     <div id="videoSlideCounter" style="position:absolute; top:8px; right:8px; background:rgba(0,0,0,0.7); color:#fff; padding:4px 10px; border-radius:4px; font-size:12px;">0/0</div>
                                     <!-- Play overlay icon -->
@@ -448,9 +456,9 @@
                                 <audio id="videoAudioPlayer" controls style="width:100%; max-width:720px; display:none; height:32px;"></audio>
                             </div>
                             <!-- Exported MP4 Video Player -->
-                            <div id="videoExportedContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px; width:100%;">
-                                <div style="width:100%; max-width:720px; border-radius:10px; overflow:hidden; background:#000;">
-                                    <video id="videoExportedPlayer" controls style="width:100%; display:block; border-radius:10px;" preload="metadata"></video>
+                            <div id="videoExportedContainer" style="display:none; flex-direction:column; align-items:center; padding:16px; gap:12px; width:100%; max-height:calc(100vh - 140px); overflow-y:auto;">
+                                <div style="width:100%; max-width:720px; max-height:60vh; border-radius:10px; overflow:hidden; background:#000; flex-shrink:0;">
+                                    <video id="videoExportedPlayer" controls style="width:100%; max-height:60vh; display:block; border-radius:10px; object-fit:contain;" preload="metadata"></video>
                                 </div>
                                 <div style="display:flex; gap:10px; align-items:center;">
                                     <a id="videoExportedDownload" class="btn btn-sm btn-primary" download style="text-decoration:none;">
@@ -529,6 +537,16 @@
                     </div>
                 </div>
                 
+                <!-- Preset Selector Bar -->
+                <div id="wizPresetBar" style="display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--bg-1); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; font-size:12px;">
+                    <span style="color:var(--text-3); white-space:nowrap;">⚡ Preset:</span>
+                    <select id="wizPresetSelect" class="input" style="flex:1; height:28px; font-size:12px; padding:2px 8px;" onchange="applyWizPreset()">
+                        <option value="">-- Mặc định --</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-outline" style="padding:2px 10px; height:28px; font-size:11px; white-space:nowrap;" onclick="saveWizPreset()" title="Lưu cấu hình hiện tại">💾 Save</button>
+                    <button type="button" class="btn btn-sm btn-outline" style="padding:2px 8px; height:28px; font-size:11px; color:#f87171;" onclick="deleteWizPreset()" title="Xóa preset đang chọn">🗑</button>
+                </div>
+                
                 <hr style="border:0; border-top:1px solid var(--border); margin: 0 0 20px 0;">
                 
                 <!-- Step 1: Basic Info -->
@@ -538,7 +556,19 @@
                             <span class="field-label">Project Title <span class="required">*</span></span>
                             <input id="wizTitle" class="input" placeholder='e.g. "The Last Letter" — Urban Romance' required autofocus />
                         </label>
-                        <div class="field-row" style="display:flex;gap:10px;">
+                        <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
+                            <label class="field" style="flex: 1.5;">
+                                <span class="field-label">Content Format <span class="required">*</span></span>
+                                <select id="wizContentFormat" class="input">
+                                    <option value="Drama / Narrative" selected>🎬 Phim / Drama (Mặc định)</option>
+                                    <option value="Commercial / Advertisement">🛒 Quảng cáo / Thương hiệu</option>
+                                    <option value="Podcast / Talkshow">🎙️ Podcast / Talkshow</option>
+                                    <option value="Educational / Learning">📚 Giáo dục / Bài giảng</option>
+                                    <option value="Health & Wellness">⚕️ Sức khoẻ / Đời sống</option>
+                                    <option value="Faith & Religion">🙏 Tôn giáo / Tín ngưỡng</option>
+                                    <option value="Xianxia Donghua">⚔️ Hoạt hình Tu tiên</option>
+                                </select>
+                            </label>
                             <label class="field" style="flex: 0.5;">
                                 <span class="field-label">Episodes</span>
                                 <select id="wizEpisodes" class="input">
@@ -622,7 +652,7 @@
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
                             <label class="field" style="flex: 1;">
-                                <span class="field-label" style="font-size:11px;">Camera Angle</span>
+                                <span class="field-label" style="font-size:11px;">🎥 Camera Angle</span>
                                 <select id="wizCameraAngle" class="input">
                                     <option value="Default">Mặc định</option>
                                     <option value="Cinematic Wide Shots">Wide Shots (Tránh mặt gần)</option>
@@ -633,7 +663,7 @@
                                 </select>
                             </label>
                             <label class="field" style="flex: 1;">
-                                <span class="field-label" style="font-size:11px;">Ethnicity Sync</span>
+                                <span class="field-label" style="font-size:11px;">🌍 Ethnicity Sync</span>
                                 <select id="wizEthnicity" class="input">
                                     <option value="Default">Mặc định</option>
                                     <option value="East Asian">Đông Á (TQ, HQ, VN)</option>
@@ -645,7 +675,7 @@
                                 </select>
                             </label>
                             <label class="field" style="flex: 1;">
-                                <span class="field-label" style="font-size:11px;">Aesthetic Focus</span>
+                                <span class="field-label" style="font-size:11px;">🎯 Aesthetic Focus</span>
                                 <select id="wizPromptFocus" class="input">
                                     <option value="Default">Cân bằng</option>
                                     <option value="Costumes and Scenery">Nhấn mạnh Trang phục & Bối cảnh</option>
@@ -653,6 +683,14 @@
                                     <option value="Action and Motion">Nhấn mạnh Hành động</option>
                                     <option value="Lighting and Atmosphere">Nhấn mạnh Ánh sáng & Cinematic</option>
                                 </select>
+                            </label>
+                        </div>
+                        <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">🔤 NOTEXT</span>
+                                <label style="display:flex; align-items:center; gap:8px; height: 32px; background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:0 8px; font-size:12px; cursor:pointer;" title="Chặn AI vẽ text dính vào video">
+                                    <input type="checkbox" id="wizNoTextPrompt" checked /> No Text in Video
+                                </label>
                             </label>
                             <label class="field" style="flex: 1;">
                                 <span class="field-label" style="font-size:11px;">📐 Video Aspect Ratio</span>
@@ -1083,6 +1121,6 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/content-studio-static/studio.js?v=20260419_16"></script>
+    <script src="/content-studio-static/studio.js?v=20260422_02"></script>
 </body>
 </html>

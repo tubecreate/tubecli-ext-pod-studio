@@ -22,6 +22,81 @@ if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 
 
+def _repair_json(text: str) -> dict:
+    """Try to parse JSON with automatic repair for common AI errors."""
+    import re as _re
+    
+    # Step 1: Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Step 2: Strip markdown fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+    if cleaned.startswith("json"):
+        cleaned = cleaned[4:].strip()
+    
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    
+    # Step 3: Extract JSON object via regex
+    match = _re.search(r'(\{[\s\S]*\})', cleaned)
+    if match:
+        raw = match.group(1)
+    else:
+        raise ValueError(f"No JSON object found in response")
+    
+    # Step 4: Apply repairs
+    repaired = raw
+    
+    # Fix trailing commas before } or ]
+    repaired = _re.sub(r',\s*([}\]])', r'\1', repaired)
+    
+    # Fix missing commas between } { or ] [ or "value" "key"
+    repaired = _re.sub(r'(\})\s*(\{)', r'\1,\2', repaired)
+    repaired = _re.sub(r'(\])\s*(\[)', r'\1,\2', repaired)
+    # Missing comma between "..." \n "..." (two strings on separate lines)
+    repaired = _re.sub(r'(")\s*\n\s*(")', r'\1,\n\2', repaired)
+    # Missing comma between number/bool/null and next "key"
+    repaired = _re.sub(r'(\d|true|false|null)\s*\n\s*(")', r'\1,\n\2', repaired)
+    
+    # Fix unescaped newlines inside string values (but not between key-value pairs)
+    # This is tricky, so we only do simple cases
+    
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+    
+    # Step 5: Try to fix truncated JSON by closing brackets
+    bracket_stack = []
+    for ch in repaired:
+        if ch in '{[':
+            bracket_stack.append('}' if ch == '{' else ']')
+        elif ch in '}]':
+            if bracket_stack:
+                bracket_stack.pop()
+    
+    if bracket_stack:
+        # Remove potential trailing comma before closing
+        repaired = repaired.rstrip().rstrip(',')
+        repaired += ''.join(reversed(bracket_stack))
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as final_err:
+            raise ValueError(f"JSON repair failed: {final_err}")
+    
+    raise ValueError(f"JSON repair failed")
+
+
 def _db():
     from db.database import Database
     return Database.get_instance()
@@ -295,20 +370,31 @@ async def generate_outline(drama_id: int, request: Request):
     if not api_key:
         raise HTTPException(400, "No API key configured.")
 
+    # Get content_format override if any
+    content_format = "Drama / Narrative"
+    if drama_doc:
+        try:
+            d_meta = json.loads(drama_doc.get("metadata", "{}") or "{}")
+            content_format = d_meta.get("content_format", "Drama / Narrative")
+        except:
+            pass
+
     from agents.series_planner import SeriesPlannerAgent
     agent = SeriesPlannerAgent()
     if episode_count <= 0:
         char_count = len(premise)
         min_eps = max(3, char_count // 5000)
-        target_eps_str = f"Auto (The premise is {char_count} characters long. You MUST break it down into at least {min_eps} episodes. DO NOT summarize it mathematically into 1 episode!)"
+        target_eps_str = f"Auto (The premise is {char_count} characters long. You MUST break it down into at least {min_eps} plots. DO NOT summarize it mathematically into 1 episode!)"
     else:
         target_eps_str = str(episode_count)
 
-    user_msg = f"Premise Length: {len(premise)} characters\nPremise: {premise}\nTarget Episodes: {target_eps_str}\nLanguage: {language}"
+    user_msg = f"Premise Length: {len(premise)} characters\nPremise: {premise}\nTarget Outputs: {target_eps_str}\nLanguage: {language}"
+    
+    agent_context = {"content_format": content_format}
 
     full_response = []
     try:
-        async for chunk in agent.chat_stream(user_msg, language, base_url, api_key, model, agent_temp, {}):
+        async for chunk in agent.chat_stream(user_msg, language, base_url, api_key, model, agent_temp, agent_context):
             full_response.append(chunk)
     except Exception as e:
         import traceback
@@ -413,7 +499,11 @@ async def _autopilot_runner(drama_id: int):
             ep_id = new_ep["id"]
 
             # Context for continuity and visual styles
-            context = {"visual_style": drama.get("style", "realistic") if drama else "realistic"}
+            content_format = meta.get("content_format", "Drama / Narrative")
+            context = {
+                "visual_style": drama.get("style", "realistic") if drama else "realistic",
+                "content_format": content_format
+            }
             if idx > 0:
                 # Fetch prev ep
                 eps = _db().list_episodes(drama_id)
@@ -458,12 +548,9 @@ async def _autopilot_runner(drama_id: int):
             )
             # Parse extracted JSON loosely
             try:
-                import re
-                match = re.search(r'\{[\s\S]*\}', extract_json_str)
-                if match:
-                    extracted = json.loads(match.group())
-                    _db().save_characters_dedup(drama_id, ep_id, extracted.get("characters", []))
-                    _db().save_scenes_dedup(drama_id, ep_id, extracted.get("scenes", []))
+                extracted = _repair_json(extract_json_str)
+                _db().save_characters_dedup(drama_id, ep_id, extracted.get("characters", []))
+                _db().save_scenes_dedup(drama_id, ep_id, extracted.get("scenes", []))
             except Exception as e:
                 logger.error(f"Autopilot Extractor error: {e}")
 
@@ -596,7 +683,7 @@ async def _autopilot_runner(drama_id: int):
                 if match:
                     parsed_array = json.loads(match.group())
                     if isinstance(parsed_array, list):
-                        _db().save_storyboards_bulk(drama_id, ep_id, parsed_array)
+                        _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
             except Exception as e:
                 logger.error(f"Autopilot Storyboard error: {e}")
 
@@ -917,7 +1004,18 @@ async def update_scene(scene_id: int, request: Request):
 
 @router.get("/api/v1/studio/episodes/{episode_id}/storyboards")
 async def list_storyboards(episode_id: int):
-    return {"items": _db().list_storyboards(episode_id)}
+    db = _db()
+    items = db.list_storyboards(episode_id)
+    # Resolve character_ids → character_names for UI display
+    if items:
+        ep = db.get_episode(episode_id)
+        drama_id = ep.get("drama_id") if ep else None
+        if drama_id:
+            all_chars = {c["id"]: c["name"] for c in db.list_characters(drama_id)}
+            for item in items:
+                char_ids = item.get("character_ids", [])
+                item["character_names"] = [all_chars[cid] for cid in char_ids if cid in all_chars]
+    return {"items": items}
 
 
 @router.put("/api/v1/studio/storyboards/{sb_id}")
@@ -999,6 +1097,7 @@ async def agent_chat(request: Request):
         chars = _db().list_characters(drama_id)
         scenes = _db().list_scenes(drama_id)
         context["visual_style"] = drama.get("style", "realistic") if drama else "realistic"
+        context["content_format"] = json.loads(drama.get("metadata", "{}") or "{}").get("content_format", "Drama / Narrative") if drama else "Drama / Narrative"
         context["characters"] = [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c.get("appearance", ""), "personality": c.get("personality", "")} for c in chars]
         context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s.get("description", "")} for s in scenes]
 
@@ -1101,6 +1200,7 @@ async def extract_characters_scenes(episode_id: int):
     drama = _db().get_drama(drama_id)
     context = {
         "visual_style": drama.get("style", "realistic") if drama else "realistic",
+        "content_format": json.loads(drama.get("metadata", "{}") or "{}").get("content_format", "Drama / Narrative") if drama else "Drama / Narrative",
         "existing_characters": [{"name": c["name"], "role": c["role"]} for c in existing_chars],
         "existing_scenes": [{"location": s["location"], "time": s["time"]} for s in existing_scenes],
     }
@@ -1121,34 +1221,14 @@ async def extract_characters_scenes(episode_id: int):
 
         full_text = "".join(full_response)
 
-        # Parse JSON from AI response
+        # Parse JSON from AI response (with auto-repair)
         try:
-            # Clean: strip markdown fences if present
-            cleaned = full_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:].strip()
-
-            extracted = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Try to find JSON in the response
-            import re
-            match = re.search(r'\{[\s\S]*\}', full_text)
-            if match:
-                try:
-                    extracted = json.loads(match.group())
-                except json.JSONDecodeError:
-                    yield f"data: {json.dumps({'event': 'error', 'message': 'AI did not return valid JSON. Please try again.'})}\n\n"
-                    yield "data: [DONE]\n\n"
-                    return
-            else:
-                yield f"data: {json.dumps({'event': 'error', 'message': 'Could not parse extraction results.'})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+            extracted = _repair_json(full_text)
+        except (ValueError, json.JSONDecodeError) as parse_err:
+            snippet = full_text[:150] + ("..." if len(full_text) > 150 else "")
+            yield f"data: {json.dumps({'event': 'error', 'message': f'JSON parse error: {parse_err}. Raw: {snippet}'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         # Save to DB with deduplication
         characters = extracted.get("characters", [])
@@ -1293,6 +1373,16 @@ async def extract_characters_scenes(episode_id: int):
 
 # ── Storyboard Breakdown ───────────────────────────────
 
+@router.delete("/api/v1/studio/episodes/{episode_id}/storyboards")
+async def clear_storyboards(episode_id: int):
+    """Clear (soft delete) all storyboards for an episode."""
+    import datetime
+    now = datetime.datetime.now().isoformat()
+    _db().conn.execute("UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL", (now, episode_id))
+    _db().conn.commit()
+    return {"status": "ok"}
+
+
 @router.post("/api/v1/studio/episodes/{episode_id}/storyboard")
 async def generate_storyboard(episode_id: int, request: Request):
     """AI breaks script into storyboard shots, saves to DB.
@@ -1336,10 +1426,12 @@ async def generate_storyboard(episode_id: int, request: Request):
     
     context = {
         "visual_style": drama.get("style", "realistic") if drama else "realistic",
+        "content_format": drama_metadata.get("content_format", "Drama / Narrative"),
         "shot_density": drama_metadata.get("shot_density", "normal"),
         "camera_angle": drama_metadata.get("camera_angle", "Default"),
         "ethnicity": drama_metadata.get("ethnicity", "Default"),
         "prompt_focus": drama_metadata.get("prompt_focus", "Default"),
+        "no_text_in_prompt": drama_metadata.get("no_text_in_prompt", False),
         "narration_source": drama_metadata.get("narration_source", "prose"),
         "characters": [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c["appearance"], "personality": c["personality"]} for c in characters],
         "scenes": [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes],
@@ -1357,10 +1449,12 @@ async def generate_storyboard(episode_id: int, request: Request):
     async def generate():
         try:
             import re
-            parts = re.split(r'(?m)(?=^## S\d+)', script)
+            # Generic section heading pattern: matches ## S01, ## N01, ## L01, ## AD01, ## H01, ## D01, ## EP01, etc.
+            section_pattern = r'(?m)(?=^## (?:S|N|L|AD|H|D|EP)\d+)'
+            parts = re.split(section_pattern, script)
             parts = [p.strip() for p in parts if p.strip()]
             
-            has_tags = any(p.startswith("## S") for p in parts)
+            has_tags = any(re.match(r'^## (?:S|N|L|AD|H|D|EP)\d+', p) for p in parts)
             if not has_tags:
                 chunk_size = 1
                 chunks = [script]
@@ -1371,7 +1465,7 @@ async def generate_storyboard(episode_id: int, request: Request):
                 scene_count = 0
                 for part in parts:
                     current_chunk += part + "\n\n"
-                    if part.startswith("## S"):
+                    if re.match(r'^## (?:S|N|L|AD|H|D|EP)\d+', part):
                         scene_count += 1
                     if scene_count >= chunk_size:
                         chunks.append(current_chunk.strip())
@@ -1386,7 +1480,7 @@ async def generate_storyboard(episode_id: int, request: Request):
             pending_chunk_indices = []
             scenes_so_far = 0
             for idx, chunk_text in enumerate(chunks):
-                scenes_in_chunk = chunk_text.count("## S") if has_tags else 1
+                scenes_in_chunk = len(re.findall(r'^## (?:S|N|L|AD|H|D|EP)\d+', chunk_text, re.MULTILINE)) if has_tags else 1
                 scenes_so_far += scenes_in_chunk
                 
                 if scenes_so_far <= existing_shots_count and existing_shots_count > 0:
@@ -1402,9 +1496,9 @@ async def generate_storyboard(episode_id: int, request: Request):
 
                 # Count scenes in this chunk and list their headings
                 import re as _re_sb
-                scene_headings = _re_sb.findall(r'^## S\d+[^\n]*', chunk_text, _re_sb.MULTILINE)
+                scene_headings = _re_sb.findall(r'^## (?:S|N|L|AD|H|D|EP)\d+[^\n]*', chunk_text, _re_sb.MULTILINE)
                 scene_count_in_chunk = len(scene_headings) if scene_headings else 1
-                headings_list = '\n'.join(scene_headings) if scene_headings else '(no scene headings found)'
+                headings_list = '\n'.join(scene_headings) if scene_headings else '(no section headings found)'
                 
                 prompt = (
                     f"Break this portion of the screenplay into storyboard shots.\n"
@@ -1419,7 +1513,8 @@ async def generate_storyboard(episode_id: int, request: Request):
 
                 full_response = []
                 # We yield a new line to separate JSON blocks in the UI stream
-                yield f"data: {json.dumps({'event': 'progress', 'content': '\n\n---\n\n'})}\n\n"
+                data_json = json.dumps({'event': 'progress', 'content': '\n\n---\n\n'})
+                yield f"data: {data_json}\n\n"
             
                 async for chunk in agent.chat_stream(
                     prompt,
@@ -1429,21 +1524,17 @@ async def generate_storyboard(episode_id: int, request: Request):
                     yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
 
                 full_text = "".join(full_response)
-                cleaned = full_text.strip()
-                if cleaned.startswith("```json"): cleaned = cleaned[7:]
-                elif cleaned.startswith("```"): cleaned = cleaned[3:]
-                cleaned = cleaned.strip()
-                if cleaned.endswith("```"): cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
 
                 parsed = None
                 try:
-                    parsed = json.loads(cleaned)
-                except json.JSONDecodeError:
+                    parsed = _repair_json(full_text)
+                except (ValueError, json.JSONDecodeError):
                     pass
-            
+                
+                # Fallback: try to find a raw JSON array
                 if not parsed:
-                    array_match = re.search(r'\[[\s\S]*\]', cleaned)
+                    import re as _re_arr
+                    array_match = _re_arr.search(r'\[[\s\S]*\]', full_text)
                     if array_match:
                         try:
                             parsed_array = json.loads(array_match.group())
@@ -1451,22 +1542,6 @@ async def generate_storyboard(episode_id: int, request: Request):
                                 parsed = {"storyboards": parsed_array}
                         except Exception:
                             pass
-
-                if not parsed:
-                    idx = cleaned.find("[")
-                    if idx != -1:
-                        salvage_target = cleaned[idx:]
-                        for i in range(len(salvage_target), 0, -1):
-                            if salvage_target[i-1] in '}]':
-                                candidate = salvage_target[:i]
-                                if candidate.endswith('}'): candidate += ']'
-                                try:
-                                    parsed_array = json.loads(candidate)
-                                    if isinstance(parsed_array, list) and len(parsed_array) > 0:
-                                        parsed = {"storyboards": parsed_array}
-                                        break
-                                except Exception:
-                                    continue
 
                 shots = []
                 if parsed:
@@ -1498,7 +1573,7 @@ async def generate_storyboard(episode_id: int, request: Request):
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(all_shots)} shots...'})}\n\n"
 
             for shot in all_shots:
-                names = shot.pop("character_names", [])
+                names = shot.get("character_names", [])
                 char_ids = []
                 for name in (names or []):
                     cid = char_name_map.get(name.lower().strip())
@@ -1714,6 +1789,184 @@ async def get_gen_images_status(task_id: str):
 
 
 _video_tasks: dict = {}
+_tts_tasks: dict = {}
+
+
+def _generate_fallback_slide(shot, episode_id, aspect_ratio="16:9", engines_dir=None):
+    """
+    Generate a fallback slide image (then convert to mp4) for a shot that failed video gen.
+    Uses Pillow to draw text on a dark gradient background.
+    """
+    import os
+    from pathlib import Path
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        logger.warning("Pillow not installed, cannot generate fallback slide")
+        return None
+
+    # Determine dimensions from aspect ratio
+    ar_map = {
+        "16:9": (1280, 720),
+        "9:16": (720, 1280),
+        "1:1": (720, 720),
+        "4:3": (960, 720),
+        "3:4": (720, 960),
+    }
+    w, h = ar_map.get(aspect_ratio, (1280, 720))
+
+    # Create dark gradient background
+    img = Image.new("RGB", (w, h))
+    draw = ImageDraw.Draw(img)
+
+    for y in range(h):
+        ratio = y / h
+        r = int(15 + ratio * 25)
+        g = int(15 + ratio * 20)
+        b = int(30 + ratio * 40)
+        draw.line([(0, y), (w, y)], fill=(r, g, b))
+
+    # Try to load a decent font
+    font_big = None
+    font_small = None
+    font_paths = [
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                font_big = ImageFont.truetype(fp, max(28, w // 25))
+                font_small = ImageFont.truetype(fp, max(18, w // 40))
+                break
+            except:
+                pass
+    if not font_big:
+        font_big = ImageFont.load_default()
+        font_small = font_big
+
+    # Draw shot number badge
+    shot_num = shot.get("storyboard_number", "?")
+    title = shot.get("title", "")
+    desc = shot.get("description", shot.get("narration_text", ""))
+
+    badge = f"Shot #{shot_num}"
+    draw.rounded_rectangle(
+        [w // 2 - 80, int(h * 0.15), w // 2 + 80, int(h * 0.15) + 36],
+        radius=18, fill=(100, 80, 200)
+    )
+    bbox = draw.textbbox((0, 0), badge, font=font_small)
+    tw = bbox[2] - bbox[0]
+    draw.text((w // 2 - tw // 2, int(h * 0.15) + 8), badge, fill="white", font=font_small)
+
+    # Draw title
+    if title:
+        # Word wrap title
+        max_chars = max(20, w // 20)
+        lines = []
+        words = title.split()
+        current = ""
+        for word in words:
+            if len(current) + len(word) + 1 > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = (current + " " + word).strip()
+        if current:
+            lines.append(current)
+        
+        y_pos = int(h * 0.30)
+        for line in lines[:3]:
+            bbox = draw.textbbox((0, 0), line, font=font_big)
+            tw = bbox[2] - bbox[0]
+            draw.text((w // 2 - tw // 2, y_pos), line, fill=(230, 230, 255), font=font_big)
+            y_pos += int(font_big.size * 1.4) if hasattr(font_big, 'size') else 40
+
+    # Draw description (smaller, dimmer)
+    if desc:
+        max_chars = max(30, w // 14)
+        lines = []
+        words = desc.split()
+        current = ""
+        for word in words:
+            if len(current) + len(word) + 1 > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = (current + " " + word).strip()
+        if current:
+            lines.append(current)
+        
+        y_pos = int(h * 0.50)
+        for line in lines[:5]:
+            bbox = draw.textbbox((0, 0), line, font=font_small)
+            tw = bbox[2] - bbox[0]
+            draw.text((w // 2 - tw // 2, y_pos), line, fill=(160, 160, 190), font=font_small)
+            y_pos += int(font_small.size * 1.3) if hasattr(font_small, 'size') else 28
+
+    # Draw "fallback" watermark
+    wm = "⚠ Fallback Slide"
+    bbox = draw.textbbox((0, 0), wm, font=font_small)
+    draw.text((w - (bbox[2] - bbox[0]) - 16, h - 30), wm, fill=(80, 80, 100), font=font_small)
+
+    # Save image
+    try:
+        from tubecli.config import DATA_DIR
+        out_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
+    except:
+        out_dir = str(Path(__file__).parent / "outputs" / "grok_videos")
+    os.makedirs(out_dir, exist_ok=True)
+
+    img_path = os.path.join(out_dir, f"ep{episode_id}_shot{shot_num:03d}_fallback.png")
+    img.save(img_path, "PNG")
+
+    # Convert to MP4 using ffmpeg (5s still image video)
+    mp4_path = img_path.replace(".png", ".mp4")
+    try:
+        import subprocess
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", img_path,
+            "-c:v", "libx264", "-t", "5",
+            "-pix_fmt", "yuv420p", "-vf", f"scale={w}:{h}",
+            "-r", "24",
+            mp4_path,
+        ], capture_output=True, timeout=30)
+        if os.path.exists(mp4_path):
+            return mp4_path
+    except Exception as e:
+        logger.warning(f"FFmpeg fallback conversion failed: {e}, using PNG")
+
+    # If ffmpeg fails, return the image path
+    return img_path
+
+
+@router.post("/api/v1/studio/episodes/{episode_id}/clear-videos")
+async def clear_episode_videos(episode_id: int):
+    """Delete all generated videos for an episode and clear video_url in DB."""
+    db = _db()
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    shots = db.list_storyboards(episode_id)
+    deleted = 0
+    for s in shots:
+        video_url = s.get("video_url", "")
+        if video_url:
+            if os.path.isfile(video_url):
+                try:
+                    os.remove(video_url)
+                    deleted += 1
+                    logger.info(f"Deleted video: {video_url}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete {video_url}: {e}")
+            db.update_storyboard(s["id"], {"video_url": ""})
+
+    return {"success": True, "deleted": deleted, "total": len(shots)}
 
 
 @router.post("/api/v1/studio/episodes/{episode_id}/gen-videos")
@@ -1746,6 +1999,12 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     
     for shot in shots:
         char_ids = shot.get("character_ids", [])
+        # Handle character_ids stored as JSON string
+        if isinstance(char_ids, str):
+            try:
+                char_ids = json.loads(char_ids)
+            except:
+                char_ids = []
         ref_images = []
         for cid in char_ids:
             char = all_chars.get(cid)
@@ -1765,6 +2024,9 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                     pass
         if ref_images:
             shot["ref_images"] = ref_images[:3]
+            logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
+        elif char_ids:
+            logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
 
     # Inject aspect ratio from drama metadata
     try:
@@ -1779,7 +2041,20 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     task_id = str(uuid.uuid4())[:8]
 
     pending = [s for s in shots if s.get("image_prompt", "").strip()]
-    if not overwrite:
+    if overwrite:
+        # Delete old video files from disk and clear video_url in DB
+        for s in pending:
+            old_video = s.get("video_url", "")
+            if old_video and os.path.isfile(old_video):
+                try:
+                    os.remove(old_video)
+                    logger.info(f"Deleted old video: {old_video}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete old video {old_video}: {e}")
+            # Clear video_url in database
+            db.update_storyboard(s["id"], {"video_url": ""})
+            s["video_url"] = ""
+    else:
         pending = [s for s in pending if not s.get("video_url", "").strip()]
 
     _video_tasks[task_id] = {
@@ -1830,9 +2105,113 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 progress_callback=on_progress,
             )
 
+            # ── Phase 2: Retry failed shots with simplified prompt ──
+            failed_ids = set(_video_tasks[task_id].get("errors", []))
+            failed_shots = [s for s in shots if s["id"] in failed_ids]
+            
+            if failed_shots:
+                logger.info(f"Retrying {len(failed_shots)} failed shots with simplified prompts...")
+                _video_tasks[task_id]["status"] = f"retrying {len(failed_shots)} failed shots"
+                
+                # Simplify prompts: keep only first 2 sentences, add style cue
+                for shot in failed_shots:
+                    raw = shot.get("image_prompt", "")
+                    # Extract just core visual from [VIDEO PROMPT] or [IMAGE PROMPT]
+                    import re
+                    for tag in ["[VIDEO PROMPT]", "[IMAGE PROMPT]"]:
+                        if tag in raw:
+                            match = re.search(re.escape(tag) + r'\s*(.*?)(?:\[|$)', raw, re.DOTALL)
+                            if match:
+                                raw = match.group(1).strip()
+                                break
+                    
+                    # ── Filter sensitive/NSFW words that trigger content policies ──
+                    _sensitive_words = [
+                        # Violence / weapons
+                        "kill", "murder", "blood", "gore", "violent", "violence",
+                        "weapon", "gun", "knife", "sword", "attack", "stab", "shoot",
+                        "dead", "death", "die", "dying", "corpse", "wound", "bleeding",
+                        "fight", "punch", "slap", "hit", "beat", "abuse", "torture",
+                        "war", "bomb", "explosion", "destroy", "destruction",
+                        # Sexual / NSFW
+                        "nude", "naked", "sexy", "sexual", "erotic", "kiss", "kissing",
+                        "hug", "hugging", "embrace", "intimate", "romance", "romantic",
+                        "seductive", "seduce", "lust", "desire", "passion", "passionate",
+                        "breast", "thigh", "body", "skin", "touch", "touching",
+                        "bed", "bedroom", "undress", "strip",
+                        # Drugs / substance
+                        "drug", "drugs", "alcohol", "drunk", "smoking", "cigarette",
+                        "inject", "needle", "overdose",
+                        # Hate / discrimination  
+                        "hate", "racist", "racism", "discriminat",
+                        # Self-harm
+                        "suicide", "self-harm", "cut", "hang",
+                        # Vietnamese equivalents
+                        "giết", "chết", "máu", "bạo lực", "vũ khí", "súng", "dao",
+                        "khỏa thân", "gợi cảm", "tình dục", "ôm", "hôn",
+                        "ma túy", "rượu", "thuốc lá",
+                    ]
+                    
+                    # Case-insensitive word replacement
+                    cleaned = raw
+                    for word in _sensitive_words:
+                        pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+                        cleaned = pattern.sub('', cleaned)
+                    # Clean up extra whitespace
+                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                    raw = cleaned
+                    
+                    # Keep first 2 sentences max
+                    sentences = re.split(r'[.!?]+', raw)
+                    simplified = '. '.join(s.strip() for s in sentences[:2] if s.strip())
+                    if simplified:
+                        simplified += '.'
+                    # Reset video_url so it's picked up again
+                    shot["video_url"] = ""
+                    shot["image_prompt"] = f"[VIDEO PROMPT]\n{simplified}\nSimple animation, clean composition, minimal details."
+                    logger.info(f"Retry shot {shot['id']}: simplified prompt = {simplified[:80]}...")
+                
+                # Clear errors for retry
+                _video_tasks[task_id]["errors"] = []
+                retry_results = await batch_generate(
+                    shots=failed_shots,
+                    profile_names=profile_names,
+                    episode_id=episode_id,
+                    headless=headless,
+                    overwrite=True,
+                    progress_callback=on_progress,
+                )
+                results.extend(retry_results)
+
+            # ── Phase 3: Generate fallback slide for persistent failures ──
+            still_failed_ids = set(_video_tasks[task_id].get("errors", []))
+            still_failed = [s for s in shots if s["id"] in still_failed_ids]
+            
+            if still_failed:
+                logger.info(f"Generating {len(still_failed)} fallback slide images...")
+                _video_tasks[task_id]["status"] = f"creating {len(still_failed)} fallback slides"
+                
+                for shot in still_failed:
+                    try:
+                        slide_path = _generate_fallback_slide(
+                            shot, episode_id, video_aspect_ratio,
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines")
+                        )
+                        if slide_path:
+                            _db().update_storyboard(shot["id"], {"video_url": slide_path, "status": "video_fallback"})
+                            _video_tasks[task_id]["done"] = _video_tasks[task_id].get("done", 0)
+                            logger.info(f"Fallback slide for shot {shot['id']}: {slide_path}")
+                    except Exception as e:
+                        logger.error(f"Fallback slide error shot {shot['id']}: {e}")
+
             successful = [r for r in results if r.get("status") == "success"]
-            if successful:
+            fallback_count = len(still_failed)
+            total_ok = len(successful) + fallback_count
+            
+            if total_ok > 0:
                 _video_tasks[task_id]["status"] = "completed"
+                if fallback_count > 0:
+                    _video_tasks[task_id]["status"] = f"completed ({fallback_count} fallback slides)"
                 _video_tasks[task_id]["done"] = _video_tasks[task_id]["total"]
             elif results:
                 _video_tasks[task_id]["status"] = f"error: {len(results)} shots failed"
@@ -1865,10 +2244,16 @@ async def generate_shot_tts(shot_id: int, request: Request):
         raise HTTPException(404, "Shot not found")
     shot = dict(shot)
     
-    narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or ""
+    narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
     narration = narration.strip()
-    if not narration:
-        raise HTTPException(400, "No narration text for this shot")
+    
+    # Clean out stage directions / visual cues that shouldn't be spoken
+    import re
+    narration = re.sub(r'\[.*?\]', '', narration).strip()
+    
+    if not narration or len(narration) < 3:
+        logger.warning(f"Shot {shot_id} has no narration text, skipping TTS")
+        return {"success": False, "message": "No narration text for this shot", "audio_url": None}
     
     # Get voice config from request body
     body = {}
@@ -1940,6 +2325,153 @@ async def generate_shot_tts(shot_id: int, request: Request):
         raise HTTPException(504, "TTS generation timed out")
 
 
+# ── Batch TTS (Background) ────────────────────────────────
+
+@router.post("/api/v1/studio/episodes/{episode_id}/batch-tts")
+async def start_batch_tts(episode_id: int, request: Request):
+    """Start batch TTS for all shots missing audio. Runs in background."""
+    import uuid
+
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    shots = _db().list_storyboards(episode_id)
+    if not shots:
+        raise HTTPException(400, "No storyboard shots")
+
+    # Resolve voice/engine from project metadata
+    voice_id = "vi-VN-HoaiMyNeural"
+    engine = "edge"
+    drama_id = ep.get("drama_id")
+    if drama_id:
+        drama = _db().get_drama(drama_id)
+        if drama and drama.get("metadata"):
+            try:
+                meta = json.loads(drama["metadata"])
+                voice_id = meta.get("tts_voice", voice_id)
+                engine = meta.get("tts_engine", engine)
+            except:
+                pass
+
+    task_id = str(uuid.uuid4())[:8]
+    base_url = str(request.base_url).rstrip("/")
+
+    _tts_tasks[task_id] = {
+        "status": "running",
+        "episode_id": episode_id,
+        "done": 0,
+        "total": len(shots),
+        "success": 0,
+        "failed": 0,
+        "results": [],
+    }
+
+    import threading
+
+    def _run_batch():
+        import asyncio as _aio
+        loop = _aio.new_event_loop()
+        _aio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_url))
+        except Exception as e:
+            logger.error(f"Batch TTS error: {e}")
+            _tts_tasks[task_id]["status"] = "error"
+            _tts_tasks[task_id]["message"] = str(e)
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_run_batch, daemon=True)
+    t.start()
+
+    return {"success": True, "task_id": task_id, "total": len(shots)}
+
+
+async def _batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_url):
+    """Background worker that processes TTS for all shots."""
+    import re
+    import httpx
+
+    task = _tts_tasks[task_id]
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        for shot in shots:
+            shot_id = shot["id"]
+
+            # Skip if already has audio
+            if shot.get("tts_audio_url") and shot["tts_audio_url"].strip():
+                task["done"] += 1
+                task["success"] += 1
+                continue
+
+            narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
+            narration = re.sub(r'\[.*?\]', '', narration).strip()
+
+            if not narration or len(narration) < 3:
+                task["done"] += 1
+                task["results"].append({"shot_id": shot_id, "status": "skipped"})
+                continue
+
+            try:
+                # Start TTS
+                resp = await client.post(f"{base_url}/api/v1/tts/synthesize", json={
+                    "text": narration, "voice": voice_id, "engine": engine,
+                })
+                if resp.status_code != 200:
+                    raise Exception(f"TTS API {resp.status_code}")
+
+                result = resp.json()
+                if not result.get("success") or not result.get("task_id"):
+                    raise Exception("No task_id")
+
+                tts_task_id = result["task_id"]
+
+                # Poll for this shot
+                import os
+                for _ in range(150):
+                    await asyncio.sleep(2)
+                    st_resp = await client.get(f"{base_url}/api/v1/tts/status/{tts_task_id}")
+                    if st_resp.status_code != 200:
+                        continue
+                    st = st_resp.json()
+                    if st.get("status") == "success":
+                        output_path = st.get("result", {}).get("output", "")
+                        if output_path:
+                            filename = os.path.basename(output_path)
+                            audio_url = f"/api/v1/tts/audio/{filename}"
+                            _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
+                            task["success"] += 1
+                            task["results"].append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
+                        break
+                    elif st.get("status") == "error":
+                        task["failed"] += 1
+                        task["results"].append({"shot_id": shot_id, "status": "error"})
+                        break
+                else:
+                    task["failed"] += 1
+                    task["results"].append({"shot_id": shot_id, "status": "timeout"})
+
+            except Exception as e:
+                logger.error(f"Batch TTS shot {shot_id}: {e}")
+                task["failed"] += 1
+                task["results"].append({"shot_id": shot_id, "status": "error", "message": str(e)})
+
+            task["done"] += 1
+
+    task["status"] = "done"
+    logger.info(f"Batch TTS {task_id}: {task['success']}/{task['total']} success, {task['failed']} failed")
+
+
+@router.get("/api/v1/studio/batch-tts/{task_id}")
+async def get_batch_tts_status(task_id: str):
+    """Poll batch TTS task status."""
+    task = _tts_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return {"success": True, **task}
+
+
 @router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")
 async def start_export_ffmpeg(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start FFmpeg video assembly."""
@@ -1980,9 +2512,14 @@ async def start_export_ffmpeg(episode_id: int, request: Request, background_task
                 if path:
                     _video_tasks[task_id]["current_path"] = path
 
+            drama = _db().get_drama(ep["drama_id"])
+            drama_meta = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
+            video_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+
             export_path = await build_ffmpeg_video(
                 episode=ep,
                 shots=shots,
+                video_aspect_ratio=video_aspect_ratio,
                 progress_callback=on_progress,
             )
 

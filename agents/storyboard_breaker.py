@@ -72,10 +72,11 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
    CRITICAL: If an `ethnicity` is specified in the Context (e.g. "East Asian", "European"), you MUST explicitly prepend the character description with this ethnicity (e.g. "An East Asian man with short hair...") to enforce racial consistency across images.
    STYLE EXCEPTION: If `visual_style` or `character_style` is a simplified/abstract style (e.g. "Stick Figure", "Chibi", "Pixel Art", "Doodle", "Big Head", "Cute", "2D", "Cartoon"), do NOT include realistic physical attributes like height, weight, body proportions, or detailed anatomy. Instead, describe characters by their distinguishing features only (hair color, clothing, accessories).
 7. `bgm_prompt` and `sound_effect` should be specific, not generic ("tense" → "low cello tremolo with heartbeat pulse")
-8. `dialogue` MUST be in the SAME LANGUAGE as the script. If narration_source is 'prose', leave dialogue EMPTY.
-9. `character_names` should list characters visible or speaking in the shot.
-10. Empty/environmental shots can have empty character_names.
-11. Output ONLY the JSON, no other text.
+8. TYPOGRAPHY CONSTRAINT: Check `no_text_in_prompt` in Context. If true, ABSOLUTELY NO text, words, letters, or typography should be requested in the `image_prompt` and `video_prompt`! If the scene features a sign, letter, phone screen, or title, DO NOT ask the AI to write text on it. Instead, describe symbolic visuals, abstract icons, or emojis that represent the meaning (e.g. instead of 'a sign saying Danger', write 'a red warning triangle icon').
+9. `dialogue` MUST be in the SAME LANGUAGE as the script. If narration_source is 'prose', leave dialogue EMPTY.
+10. `character_names` should list characters visible or speaking in the shot.
+11. Empty/environmental shots can have empty character_names.
+12. Output ONLY the JSON, no other text.
 """
 
 
