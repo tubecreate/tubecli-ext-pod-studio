@@ -1815,6 +1815,7 @@ async function generateRawAudio() {
     if (window.ttsVoicesCache && window.ttsVoicesCache.length > 0) {
         let edgeHtml = '<optgroup label="Edge-TTS (Online)">';
         let vibeHtml = '<optgroup label="VibeVoice (Offline)">';
+        let geminiHtml = '<optgroup label="Gemini (Online via automation)">';
         
         const targetLang = (typeof currentDrama !== 'undefined' && currentDrama && currentDrama.language) 
             ? currentDrama.language.toLowerCase() 
@@ -1822,7 +1823,7 @@ async function generateRawAudio() {
             
         let hasProfiles = false;
         window.ttsVoicesCache.forEach(v => {
-            if (targetLang && targetLang !== 'auto') {
+            if (targetLang && targetLang !== 'auto' && v.engine !== 'gemini') {
                 const vLang = (v.language || '').toLowerCase();
                 const vLangName = (v.language_name || '').toLowerCase();
                 const tLangLower = targetLang.toLowerCase();
@@ -1839,10 +1840,12 @@ async function generateRawAudio() {
             
             const optionHtml = `<option value="${v.id}" data-engine="${v.engine}">${langPart} - ${namePart}${genderPart}</option>`;
             if (v.engine === 'edge') edgeHtml += optionHtml;
+            else if (v.engine === 'gemini') geminiHtml += optionHtml;
             else vibeHtml += optionHtml;
         });
         edgeHtml += '</optgroup>';
         vibeHtml += '</optgroup>';
+        geminiHtml += '</optgroup>';
         
         if (!hasProfiles) {
             select.innerHTML = '<option value="">No voices match the project language</option>';
@@ -2769,10 +2772,11 @@ async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
     if (window.ttsVoicesCache && window.ttsVoicesCache.length > 0) {
         let edgeHtml = '<optgroup label="Edge-TTS (Online)">';
         let vibeHtml = '<optgroup label="VibeVoice (Offline)">';
+        let geminiHtml = '<optgroup label="Gemini (Online via automation)">';
         
         let hasProfiles = false;
         window.ttsVoicesCache.forEach(v => {
-            if (targetLang) {
+            if (targetLang && v.engine !== 'gemini') {
                 const vLang = (v.language || '').toLowerCase();
                 const vLangName = (v.language_name || '').toLowerCase();
                 const tLangLower = targetLang.toLowerCase();
@@ -2786,6 +2790,7 @@ async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
             const langPart = v.language_name || v.language;
             const optionHtml = `<option value="${v.id}" data-engine="${v.engine}">${langPart} - ${v.name}${v.gender ? ` (${v.gender})` : ''}</option>`;
             if (v.engine === 'edge') edgeHtml += optionHtml;
+            else if (v.engine === 'gemini') geminiHtml += optionHtml;
             else vibeHtml += optionHtml;
         });
         
@@ -2796,7 +2801,8 @@ async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
         
         edgeHtml += '</optgroup>';
         vibeHtml += '</optgroup>';
-        sel.innerHTML = vibeHtml + edgeHtml;
+        geminiHtml += '</optgroup>';
+        sel.innerHTML = vibeHtml + edgeHtml + geminiHtml;
         
         // Auto-select if drama already has a saved voice
         const saved = localStorage.getItem('cs_last_voice_profile') || '';
@@ -3120,6 +3126,24 @@ async function clearAllVideos() {
     }
 }
 
+async function clearSingleVideo(shotId) {
+    if (!currentEpisode) { toast('No episode selected', 'error'); return; }
+    
+    if (!confirm('Xóa video của shot này để tạo lại?')) return;
+    
+    try {
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/storyboards/${shotId}/video`, { method: 'DELETE' });
+        if (res.success) {
+            toast('🗑 Đã xóa video', 'success');
+            await loadEpisodeVideos();
+        } else {
+            toast('❌ Lỗi xóa video', 'error');
+        }
+    } catch(e) {
+        toast('❌ ' + (e.message || String(e)), 'error');
+    }
+}
+
 async function openGenVideosDialog() {
     if (!currentEpisode) { toast('No episode selected', 'error'); return; }
 
@@ -3379,8 +3403,11 @@ async function loadEpisodeVideos(progressMap = null) {
                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                                 ></video>
                                 <div style="display:none; width:100%; aspect-ratio:16/9; align-items:center; justify-content:center; color:var(--text-3); font-size:11px;">No video</div>
-                                <div style="padding:6px 8px; font-size:11px; color:var(--text-2);">
-                                    <strong>Shot #${s.storyboard_number}</strong>${s.title ? ' — ' + esc(s.title) : ''}
+                                <div style="padding:6px 8px; font-size:11px; color:var(--text-2); display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                                    <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><strong>Shot #${s.storyboard_number}</strong>${s.title ? ' — ' + esc(s.title) : ''}</div>
+                                    <button class="btn btn-sm btn-danger" onclick="clearSingleVideo(${s.id})" title="Clear this video" style="padding:2px 6px; min-height:0; flex-shrink:0;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                    </button>
                                 </div>
                             </div>
                         `;
@@ -3428,6 +3455,87 @@ async function loadEpisodeVideos(progressMap = null) {
 
         count.textContent = `${completedVideosCount} / ${videoShots.length} videos`;
     } catch(e) { console.error('loadEpisodeVideos error', e); }
+}
+
+// ── Copy All Narration Text ─────────────────────────────────
+async function copyAllAudioText() {
+    if (!currentEpisode) { toast('Chưa chọn episode', 'error'); return; }
+    try {
+        const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+        const shots = sbRes.items || [];
+        if (!shots.length) { toast('Chưa có storyboard', 'warning'); return; }
+        
+        const lines = shots.map((s, i) => {
+            const text = (s.narration_text || s.dialogue || s.description || '').trim();
+            return text;
+        }).filter(t => t);
+        
+        if (!lines.length) { toast('Không có narration text', 'warning'); return; }
+        
+        const allText = lines.join('\n\n');
+        await navigator.clipboard.writeText(allText);
+        toast(`📋 Đã copy ${lines.length} đoạn narration (${allText.length} chars)`, 'success');
+    } catch (e) {
+        console.error('copyAllAudioText error:', e);
+        toast('❌ Copy thất bại: ' + e.message, 'error');
+    }
+}
+
+// ── Audio Upload (Manual) ───────────────────────────────────
+async function handleAudioUpload(input) {
+    if (!input.files || !input.files[0]) return;
+    if (!currentEpisode) { toast('Chưa chọn episode', 'error'); return; }
+    
+    const file = input.files[0];
+    const maxMB = 200;
+    if (file.size > maxMB * 1024 * 1024) {
+        toast(`File quá lớn (tối đa ${maxMB}MB)`, 'error');
+        input.value = '';
+        return;
+    }
+    
+    // Show progress in status bar
+    const statusEl = document.getElementById('audioStatus');
+    const btnUpload = document.getElementById('btnUploadAudio');
+    const btnGen = document.getElementById('btnGenAllAudio');
+    if (statusEl) statusEl.textContent = `⏳ Đang upload & phân tích Whisper...`;
+    if (btnUpload) btnUpload.disabled = true;
+    if (btnGen) btnGen.disabled = true;
+    
+    toast(`📤 Đang upload "${file.name}"... Whisper sẽ tự tách từng shot`, 'info');
+    
+    try {
+        const formData = new FormData();
+        formData.append('audio', file);
+        
+        const resp = await fetch(`/api/v1/studio/episodes/${currentEpisode.id}/upload-audio`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        
+        const data = await resp.json();
+        const { total, success_count } = data;
+        
+        if (statusEl) statusEl.textContent = `✅ ${success_count}/${total} audio ready`;
+        toast(`✅ Upload xong! ${success_count}/${total} shots đã có audio`, 'success');
+        
+        // Reload cards to show new audio
+        await loadEpisodeAudio();
+        
+    } catch (e) {
+        console.error('Upload audio error:', e);
+        if (statusEl) statusEl.textContent = 'No audio';
+        toast(`❌ Upload thất bại: ${e.message}`, 'error');
+    } finally {
+        if (btnUpload) btnUpload.disabled = false;
+        if (btnGen) btnGen.disabled = false;
+        input.value = ''; // Reset file input for re-upload
+    }
 }
 
 // ── Audio Step ─────────────────────────────────────────────
@@ -3885,17 +3993,20 @@ async function showVideoBuildOptions() {
                     ttsVoicesCache = res.voices;
                     let edgeHtml = '<optgroup label="Edge-TTS (Online)">';
                     let vibeHtml = '<optgroup label="VibeVoice (Offline)">';
+                    let geminiHtml = '<optgroup label="Gemini (Online via automation)">';
                     ttsVoicesCache.forEach(v => {
                         const langPart = v.language_name || v.language;
                         const namePart = v.name;
                         const genderPart = v.gender ? ` (${v.gender})` : '';
                         const optionHtml = `<option value="${v.id}" data-engine="${v.engine}">${langPart} - ${namePart}${genderPart}</option>`;
                         if (v.engine === 'edge') edgeHtml += optionHtml;
+                        else if (v.engine === 'gemini') geminiHtml += optionHtml;
                         else vibeHtml += optionHtml;
                     });
                     edgeHtml += '</optgroup>';
                     vibeHtml += '</optgroup>';
-                    select.innerHTML = vibeHtml + edgeHtml;
+                    geminiHtml += '</optgroup>';
+                    select.innerHTML = vibeHtml + edgeHtml + geminiHtml;
                     
                     for (let i = 0; i < select.options.length; i++) {
                         if (select.options[i].value.includes('HoaiMy')) {
@@ -4371,7 +4482,7 @@ async function _generateVideoTTS() {
             new Promise((resolve) => {
                 const pollId = setInterval(async () => {
                     try {
-                        const st = await apiFetch(`/batch-tts/${taskId}`);
+                        const st = await apiFetch(`/batch-tts/status/${taskId}`);
                         const done = st.done || 0;
                         const success = st.success || 0;
                         if (_emptyTitle) _emptyTitle.textContent = `🔊 TTS: ${done}/${total} (✅${success})`;
@@ -4399,6 +4510,11 @@ async function _generateVideoTTS() {
         if (_emptyTitle) _emptyTitle.textContent = successCount > 0 ? `✅ Audio: ${successCount}/${total}` : '⚠️ Audio Failed';
         if (_spinner) _spinner.style.display = 'none';
         if (_btnGenTop) _btnGenTop.disabled = false;
+        
+        // Reload audio cards to show the new audio URLs from DB
+        if (successCount > 0) {
+            try { await loadEpisodeAudio(); } catch(e) { console.warn('loadEpisodeAudio refresh failed:', e); }
+        }
         
         return "per_shot_audio";
     } catch(e) {

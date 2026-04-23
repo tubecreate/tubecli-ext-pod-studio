@@ -1944,6 +1944,28 @@ def _generate_fallback_slide(shot, episode_id, aspect_ratio="16:9", engines_dir=
     return img_path
 
 
+@router.delete("/api/v1/studio/episodes/{episode_id}/storyboards/{shot_id}/video")
+async def clear_single_video(episode_id: int, shot_id: int):
+    """Delete the generated video for a specific shot and clear video_url in DB."""
+    db = _db()
+    shots = db.list_storyboards(episode_id)
+    shot = next((s for s in shots if s["id"] == shot_id), None)
+    if not shot:
+        raise HTTPException(404, "Shot not found")
+        
+    video_url = shot.get("video_url", "")
+    if video_url:
+        if os.path.isfile(video_url):
+            try:
+                os.remove(video_url)
+                logger.info(f"Deleted single video: {video_url}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {video_url}: {e}")
+        db.update_storyboard(shot_id, {"video_url": ""})
+        
+    return {"success": True, "message": "Video cleared"}
+
+
 @router.post("/api/v1/studio/episodes/{episode_id}/clear-videos")
 async def clear_episode_videos(episode_id: int):
     """Delete all generated videos for an episode and clear video_url in DB."""
@@ -2343,6 +2365,7 @@ async def start_batch_tts(episode_id: int, request: Request):
     # Resolve voice/engine from project metadata
     voice_id = "vi-VN-HoaiMyNeural"
     engine = "edge"
+    browser_profile = None
     drama_id = ep.get("drama_id")
     if drama_id:
         drama = _db().get_drama(drama_id)
@@ -2351,6 +2374,7 @@ async def start_batch_tts(episode_id: int, request: Request):
                 meta = json.loads(drama["metadata"])
                 voice_id = meta.get("tts_voice", voice_id)
                 engine = meta.get("tts_engine", engine)
+                browser_profile = meta.get("browser_profile_name")
             except:
                 pass
 
@@ -2374,7 +2398,10 @@ async def start_batch_tts(episode_id: int, request: Request):
         loop = _aio.new_event_loop()
         _aio.set_event_loop(loop)
         try:
-            loop.run_until_complete(_batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_url))
+            if engine == "gemini":
+                loop.run_until_complete(_batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine, base_url, browser_profile))
+            else:
+                loop.run_until_complete(_batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_url))
         except Exception as e:
             logger.error(f"Batch TTS error: {e}")
             _tts_tasks[task_id]["status"] = "error"
@@ -2463,6 +2490,178 @@ async def _batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_u
     logger.info(f"Batch TTS {task_id}: {task['success']}/{task['total']} success, {task['failed']} failed")
 
 
+async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine, base_url, browser_profile=None):
+    """Special background worker for Gemini: generate full episode audio, use Whisper, then split."""
+    import re
+    import httpx
+    import asyncio
+    import os
+    import json
+    import subprocess
+    import shutil
+
+    task = _tts_tasks[task_id]
+    
+    # 1. Collect all narrations
+    shot_texts = []
+    valid_shots = []
+    
+    for shot in shots:
+
+        narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
+        narration = re.sub(r'\[.*?\]', '', narration).strip()
+        
+        if not narration or len(narration) < 3:
+            task["done"] += 1
+            task["results"].append({"shot_id": shot["id"], "status": "skipped"})
+            continue
+            
+        valid_shots.append(shot)
+        shot_texts.append(narration)
+
+    if not valid_shots:
+        task["status"] = "done"
+        return
+
+    full_text = "\n\n".join(shot_texts)
+    
+    async with httpx.AsyncClient(timeout=600) as client:
+        try:
+            # 2. Synthesize full text
+            logger.info("Starting Gemini Full TTS...")
+            payload = {
+                "text": full_text, "voice": voice_id, "engine": "gemini",
+            }
+            if browser_profile:
+                payload["browser_profile"] = browser_profile
+                
+            resp = await client.post(f"{base_url}/api/v1/tts/synthesize", json=payload)
+            if resp.status_code != 200:
+                raise Exception(f"Gemini TTS API error {resp.status_code}")
+
+            result = resp.json()
+            if not result.get("success") or not result.get("task_id"):
+                raise Exception("No task_id returned from Gemini TTS")
+
+            tts_task_id = result["task_id"]
+            
+            # Poll for full audio
+            full_audio_url = ""
+            full_audio_path = ""
+            for _ in range(300): # Up to 10 mins
+                await asyncio.sleep(2)
+                st_resp = await client.get(f"{base_url}/api/v1/tts/status/{tts_task_id}")
+                if st_resp.status_code != 200: continue
+                st = st_resp.json()
+                
+                # Mock update overall progress visually (Gemini takes time)
+                task["done"] = min(len(shots) - 1, task["done"] + 1 if task["done"] < len(shots) // 2 else task["done"])
+                
+                if st.get("status") == "success":
+                    full_audio_path = st.get("result", {}).get("output", "")
+                    filename = os.path.basename(full_audio_path)
+                    full_audio_url = f"/api/v1/tts/audio/{filename}"
+                    break
+                elif st.get("status") == "error":
+                    raise Exception(st.get("message", "Gemini TTS Generation Error"))
+            else:
+                raise Exception("Timeout waiting for Gemini TTS")
+
+            if not full_audio_path or not os.path.exists(full_audio_path):
+                raise Exception("Full audio path not found")
+
+            # 3. Whisper Alignment (DIRECT call - avoids HTTP deadlock)
+            logger.info(f"Full audio generated. Running Whisper directly on: {full_audio_path}")
+            
+            import importlib.util
+            whisper_engine_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 
+                "..", "subtitle_extractor", "engines", "whisper_engine.py"
+            )
+            spec = importlib.util.spec_from_file_location("whisper_eng", whisper_engine_path)
+            whisper_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(whisper_mod)
+            
+            whisper_result = await whisper_mod.extract_whisper(full_audio_path, language=None, model_size="small")
+            
+            if whisper_result.get("status") != "success":
+                raise Exception(f"Whisper failed: {whisper_result.get('message', 'unknown error')}")
+            
+            whisper_subs = whisper_result.get("subtitles", [])
+            if not whisper_subs:
+                raise Exception("Whisper returned no segments")
+            
+            logger.info(f"Whisper returned {len(whisper_subs)} segments")
+            
+            # 4. Build segments from Whisper result (already has start/end/text)
+            segments = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in whisper_subs]
+
+            # Naive Alignment: Match shot text length with SRT text length cumulatively
+            ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
+            out_dir = os.path.dirname(full_audio_path)
+            
+            srt_idx = 0
+            
+            for shot, s_text in zip(valid_shots, shot_texts):
+                shot_id = shot["id"]
+                target_len = len(s_text.replace(" ", ""))
+                
+                # Start time is start of current srt_idx (if available)
+                start_t = segments[srt_idx]["start"] if srt_idx < len(segments) else 0
+                end_t = start_t
+                
+                acc_len = 0
+                while srt_idx < len(segments):
+                    acc_len += len(segments[srt_idx]["text"].replace(" ", ""))
+                    end_t = segments[srt_idx]["end"]
+                    srt_idx += 1
+                    # If we have reached or exceeded the target length (allow 15% tolerance)
+                    if acc_len >= target_len * 0.85:
+                        break
+                        
+                # Split audio with ffmpeg
+                shot_out_path = os.path.join(out_dir, f"gemini_shot_{shot_id}_{task_id}.mp3")
+                duration = max(0.5, end_t - start_t)
+                
+                cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", str(start_t), "-t", str(duration), "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
+                logger.info(f"FFmpeg split shot {shot_id}: ss={start_t:.2f} t={duration:.2f} -> {shot_out_path}")
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                if os.path.exists(shot_out_path):
+                    filename = os.path.basename(shot_out_path)
+                    audio_url = f"/api/v1/tts/audio/{filename}"
+                    try:
+                        db_inst = _db()
+                        db_inst.update_storyboard(shot_id, {"tts_audio_url": audio_url})
+                        # Verify the write actually happened
+                        verify = db_inst.conn.execute("SELECT tts_audio_url FROM storyboards WHERE id = ?", (shot_id,)).fetchone()
+                        logger.info(f"DB update shot {shot_id}: url={audio_url}, verify={verify[0] if verify else 'NOT FOUND'}")
+                    except Exception as db_err:
+                        logger.error(f"DB update failed for shot {shot_id}: {db_err}")
+                    task["success"] += 1
+                    task["results"].append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
+                else:
+                    task["failed"] += 1
+                    task["results"].append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
+                    
+                task["done"] += 1
+                
+        except Exception as e:
+            logger.error(f"Gemini Batch TTS pipeline error: {e}")
+            task["status"] = "error"
+            task["message"] = str(e)
+            
+            # Fail all remaining
+            for shot in valid_shots:
+                if not any(r["shot_id"] == shot["id"] for r in task["results"]):
+                    task["failed"] += 1
+                    task["done"] += 1
+                    task["results"].append({"shot_id": shot["id"], "status": "error", "message": str(e)})
+
+    task["status"] = "done" if task["status"] != "error" else "error"
+    logger.info(f"Gemini Batch TTS {task_id}: {task['success']}/{task['total']} success, {task['failed']} failed")
+
+
 @router.get("/api/v1/studio/batch-tts/{task_id}")
 async def get_batch_tts_status(task_id: str):
     """Poll batch TTS task status."""
@@ -2470,6 +2669,130 @@ async def get_batch_tts_status(task_id: str):
     if not task:
         raise HTTPException(404, "Task not found")
     return {"success": True, **task}
+
+
+@router.post("/api/v1/studio/episodes/{episode_id}/upload-audio")
+async def upload_audio_and_split(episode_id: int, request: Request):
+    """
+    Upload a full audio file, run Whisper alignment, split by shot with FFmpeg,
+    and assign each fragment to the corresponding storyboard shot.
+    """
+    import shutil, subprocess, uuid, tempfile
+    from fastapi import UploadFile
+    import importlib.util
+
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    # Parse multipart body
+    form = await request.form()
+    audio_file: UploadFile = form.get("audio")
+    if not audio_file:
+        raise HTTPException(400, "No audio file provided")
+
+    # Save uploaded file to TTS outputs dir
+    try:
+        from tubecli.config import DATA_DIR
+        tts_output_dir = os.path.join(str(DATA_DIR), "tts_vibevoice", "outputs")
+    except Exception:
+        tts_output_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "tts_vibevoice", "outputs"
+        )
+    os.makedirs(tts_output_dir, exist_ok=True)
+
+    upload_id = uuid.uuid4().hex[:8]
+    ext = os.path.splitext(audio_file.filename)[-1] or ".mp3"
+    full_audio_path = os.path.join(tts_output_dir, f"upload_{episode_id}_{upload_id}{ext}")
+
+    with open(full_audio_path, "wb") as f:
+        content = await audio_file.read()
+        f.write(content)
+
+    logger.info(f"Upload audio saved: {full_audio_path} ({len(content)} bytes)")
+
+    # Load storyboard shots
+    shots = _db().list_storyboards(episode_id)
+    valid_shots = [s for s in shots if (s.get("narration_text") or s.get("dialogue") or s.get("description"))]
+    if not valid_shots:
+        os.remove(full_audio_path)
+        raise HTTPException(400, "No storyboard shots with narration text found. Please create a storyboard first.")
+
+    shot_texts = []
+    for s in valid_shots:
+        txt = s.get("narration_text") or s.get("dialogue") or s.get("description") or ""
+        shot_texts.append(txt.strip())
+
+    # Run Whisper directly
+    whisper_engine_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "subtitle_extractor", "engines", "whisper_engine.py"
+    )
+    spec = importlib.util.spec_from_file_location("whisper_eng", whisper_engine_path)
+    whisper_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(whisper_mod)
+
+    logger.info("Running Whisper on uploaded audio...")
+    whisper_result = await whisper_mod.extract_whisper(full_audio_path, language=None, model_size="small")
+
+    if whisper_result.get("status") != "success":
+        raise HTTPException(500, f"Whisper failed: {whisper_result.get('message', 'unknown error')}")
+
+    whisper_subs = whisper_result.get("subtitles", [])
+    if not whisper_subs:
+        raise HTTPException(500, "Whisper returned no segments")
+
+    logger.info(f"Whisper returned {len(whisper_subs)} segments for {len(valid_shots)} shots")
+
+    segments = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in whisper_subs]
+
+    # FFmpeg split by aligned segments
+    ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
+    out_dir = tts_output_dir
+    srt_idx = 0
+    results = []
+
+    for shot, s_text in zip(valid_shots, shot_texts):
+        shot_id = shot["id"]
+        target_len = len(s_text.replace(" ", ""))
+
+        start_t = segments[srt_idx]["start"] if srt_idx < len(segments) else 0
+        end_t = start_t
+        acc_len = 0
+
+        while srt_idx < len(segments):
+            acc_len += len(segments[srt_idx]["text"].replace(" ", ""))
+            end_t = segments[srt_idx]["end"]
+            srt_idx += 1
+            if acc_len >= target_len * 0.85:
+                break
+
+        duration = max(0.5, end_t - start_t)
+        shot_out_path = os.path.join(out_dir, f"upload_shot_{shot_id}_{upload_id}.mp3")
+
+        cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", str(start_t), "-t", str(duration),
+               "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
+        logger.info(f"FFmpeg split shot {shot_id}: ss={start_t:.2f} t={duration:.2f}")
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if os.path.exists(shot_out_path):
+            filename = os.path.basename(shot_out_path)
+            audio_url = f"/api/v1/tts/audio/{filename}"
+            _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
+            results.append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
+        else:
+            results.append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
+
+    success_count = sum(1 for r in results if r["status"] == "ok")
+    logger.info(f"Upload audio split done: {success_count}/{len(valid_shots)} shots assigned")
+
+    return {
+        "success": True,
+        "total": len(valid_shots),
+        "success_count": success_count,
+        "results": results
+    }
 
 
 @router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")

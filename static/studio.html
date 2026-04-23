@@ -325,11 +325,21 @@
 
                         <!-- Step: Audio TTS -->
                         <div class="step-panel" id="stepAudio" style="display:none">
-                            <div class="step-toolbar">
+                                <div class="step-toolbar">
                                 <div class="toolbar-left">
                                     <span class="char-count" id="audioStatus">No audio</span>
                                 </div>
-                                <div class="toolbar-right">
+                                <div class="toolbar-right" style="display:flex;gap:6px;align-items:center;">
+                                    <!-- Hidden file input for manual upload -->
+                                    <input type="file" id="uploadAudioFile" accept="audio/*" style="display:none" onchange="handleAudioUpload(this)">
+                                    <button class="btn btn-sm" id="btnUploadAudio" onclick="document.getElementById('uploadAudioFile').click()" title="Upload audio và tự động tách thành các đoạn cho từng shot">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        Upload Audio
+                                    </button>
+                                    <button class="btn btn-sm" onclick="copyAllAudioText()" title="Copy toàn bộ narration text để dán vào tool TTS bên ngoài">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                        Copy All Text
+                                    </button>
                                     <button class="btn btn-primary btn-sm" id="btnGenAllAudio" onclick="generateAllShotAudio()">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                                         Generate All Audio
@@ -1121,6 +1131,6 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/content-studio-static/studio.js?v=20260422_02"></script>
+    <script src="/content-studio-static/studio.js?v=20260422_03"></script>
 </body>
 </html>

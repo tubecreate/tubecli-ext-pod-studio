@@ -240,6 +240,8 @@ async def batch_generate(
         env = os.environ.copy()
         env["NODE_PATH"] = node_path
 
+        reported_shot_ids = set()
+        
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -268,6 +270,7 @@ async def batch_generate(
                                     except Exception:
                                         pass
                             elif res["status"] in ("success", "error"):
+                                reported_shot_ids.add(res["shot_id"])
                                 global_completed_count += 1
                                 res["shot_number"] = next((s["storyboard_number"] for s in pending if s["id"] == res["shot_id"]), res["shot_id"])
                                 global_results.append(res)
@@ -292,6 +295,17 @@ async def batch_generate(
         except Exception as e:
             logger.error(f"Batch execution failed for {profile}: {e}")
         finally:
+            # Emit error for any shots that were never reported (process crashed mid-way)
+            for shot in p_shots:
+                if shot["id"] not in reported_shot_ids:
+                    logger.warning(f"Shot {shot['id']} was never reported by profile {profile} — marking as error for retry")
+                    global_completed_count += 1
+                    global_results.append({"status": "error", "shot_id": shot["id"], "message": f"Profile {profile} crashed before completing this shot"})
+                    if progress_callback:
+                        try:
+                            await progress_callback(global_completed_count, total, shot["id"], "error", None)
+                        except Exception:
+                            pass
             try:
                 os.remove(temp_file)
             except OSError:

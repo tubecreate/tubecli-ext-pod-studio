@@ -68,11 +68,13 @@ async def _dynamic_image_to_video(image_path, target_duration, output_path, scal
         "ffmpeg", "-y",
         "-loop", "1",
         "-i", image_path,
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
         "-t", str(target_duration),
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-vf", filter_complex,
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
         "-pix_fmt", "yuv420p",
-        "-an",
+        "-shortest",
         output_path
     ]
     proc = await asyncio.create_subprocess_exec(
@@ -91,17 +93,23 @@ async def _extend_video_to_duration(video_path, target_duration, output_path, sc
     orig_dur = await _get_duration(video_path)
     
     if orig_dur >= target_duration or target_duration - orig_dur < 0.5:
-        # Just cut and standardize the video
+        # Just cut and standardize the video and add silent audio if needed
         cmd = [
             "ffmpeg", "-y",
             "-i", video_path,
-            "-t", str(target_duration),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"
+        ]
+        if target_duration > 0:
+            cmd.extend(["-t", str(target_duration)])
+            
+        cmd.extend([
             "-vf", f"scale={scale_res}:force_original_aspect_ratio=increase,crop={scale_res},fps=30",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             "-pix_fmt", "yuv420p",
-            "-an",
+            "-shortest",
             output_path
-        ]
+        ])
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _, stderr = await proc.communicate()
         return proc.returncode == 0
@@ -116,11 +124,14 @@ async def _extend_video_to_duration(video_path, target_duration, output_path, sc
     anim_vid = os.path.join(temp_dir, f"{base_name}_anim.mp4")
     list_file = os.path.join(temp_dir, f"{base_name}_concat.txt")
     
-    # 1. Standardize original video
+    # 1. Standardize original video (with silent audio)
     cmd1 = [
-        "ffmpeg", "-y", "-i", video_path, "-t", str(orig_dur),
+        "ffmpeg", "-y", "-i", video_path,
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
         "-vf", f"scale={scale_res}:force_original_aspect_ratio=increase,crop={scale_res},fps=30",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-an", std_vid
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-pix_fmt", "yuv420p", "-shortest", std_vid
     ]
     p1 = await asyncio.create_subprocess_exec(*cmd1, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     await p1.communicate()
@@ -168,8 +179,10 @@ async def _merge_video_audio(video_path, audio_path, output_path):
         "ffmpeg", "-y",
         "-i", video_path,
         "-i", audio_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-c:v", "copy",
-        "-c:a", "aac",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
         "-shortest",
         output_path
     ]
@@ -222,9 +235,24 @@ async def build_ffmpeg_video(episode, shots, video_aspect_ratio="16:9", progress
     if progress_callback:
         await progress_callback("Processing shots...", 5)
 
+    def resolve_audio_path(audio_path):
+        if not audio_path: return ""
+        if audio_path.startswith("/api/"):
+            filename = audio_path.split("/")[-1]
+            try:
+                from tubecli.config import DATA_DIR as _DD
+                local_audio = os.path.join(str(_DD), "tts_vibevoice", "outputs", filename)
+                if os.path.exists(local_audio): return local_audio
+            except: pass
+            try:
+                ext_audio = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tts_vibevoice", "outputs", filename)
+                if os.path.exists(ext_audio): return ext_audio
+            except: pass
+        return audio_path if os.path.exists(audio_path) else ""
+
     # Check if any shots have per-shot audio
     has_per_shot_audio = any(
-        s.get("tts_audio_url") and os.path.exists(s["tts_audio_url"])
+        resolve_audio_path(s.get("tts_audio_url", "")) != ""
         for s in valid_shots
     )
 
@@ -234,21 +262,7 @@ async def build_ffmpeg_video(episode, shots, video_aspect_ratio="16:9", progress
     for idx, shot in enumerate(valid_shots):
         media_type = shot.get("_media_type")
         media_path = shot.get("_media_path")
-        audio_path = shot.get("tts_audio_url", "")
-
-        # Resolve audio path: could be API URL like /api/v1/tts/audio/xxx.wav
-        if audio_path and audio_path.startswith("/api/"):
-            # Try to resolve to local file
-            filename = audio_path.split("/")[-1]
-            try:
-                from tubecli.config import DATA_DIR as _DD
-                local_audio = os.path.join(str(_DD), "tts_vibevoice", "outputs", filename)
-            except:
-                local_audio = ""
-            if local_audio and os.path.exists(local_audio):
-                audio_path = local_audio
-            else:
-                audio_path = ""
+        audio_path = resolve_audio_path(shot.get("tts_audio_url", ""))
 
         pct = int(10 + (idx / total) * 70)
         if progress_callback:
