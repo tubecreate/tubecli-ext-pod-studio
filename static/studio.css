@@ -1355,7 +1355,6 @@ select.input {
     gap: 0;
     align-items: stretch;
     transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
-    overflow: hidden;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 .audio-shot-card:hover {
@@ -1406,10 +1405,11 @@ select.input {
 /* Narration text */
 .audio-shot-text {
     font-size: 12.5px; color: rgba(255,255,255,0.55); line-height: 1.6;
-    max-height: 48px; overflow: hidden;
+    max-height: 52px; overflow: hidden;
     transition: max-height 0.4s ease;
     cursor: pointer;
     position: relative;
+    margin-bottom: 2px;
 }
 .audio-shot-text::after {
     content: '';

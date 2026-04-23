@@ -54,9 +54,8 @@ async function sleep(ms) {
     log('Launching browser...');
     const context = await plugin.launchPersistentContext(storageDir, {
         headless,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
-        no_viewport: !headless,
-        viewport: headless ? { width: 1280, height: 800 } : null,
+        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--window-size=1280,900'],
+        viewport: { width: 1280, height: 800 },
     });
 
     if (fs.existsSync(cookiesPath)) {
@@ -414,18 +413,18 @@ async function sleep(ms) {
                 let isGenerating = false;
                 let genPercent = 0;
                 try {
-                    // Find the cancel button which is always present during generation
-                    const cancelBtn = page.locator('button:has-text("Cancel"), button:has-text("cancel"), div:has-text("Cancel")').last();
-                    if (await cancelBtn.count() > 0 && await cancelBtn.isVisible({ timeout: 500 })) {
+                    // Only detect the SPECIFIC "Cancel Video" button during generation
+                    // Use narrow selectors to avoid false positives from sidebar/menu "Cancel" buttons
+                    const cancelVideoBtn = page.locator('button:has-text("Cancel Video"), button:has-text("Cancel video")').first();
+                    if (await cancelVideoBtn.count() > 0 && await cancelVideoBtn.isVisible({ timeout: 500 })) {
                         isGenerating = true;
-                        // Extract text from the button itself (which usually contains "Generating 16% | Cancel Video")
-                        const text = await cancelBtn.textContent();
+                        const text = await cancelVideoBtn.textContent();
                         if (text) {
                             const match = text.match(/(\d+)%/);
                             if (match) genPercent = parseInt(match[1]);
                         }
                     } else {
-                        // Fallback: check text across the page if button not found but "Generating X%" is visible
+                        // Fallback: check for "Generating X%" text specifically
                         const genText = page.locator('text=/Generating\\s*\\d+%/i');
                         if (await genText.count() > 0 && await genText.first().isVisible({ timeout: 500 })) {
                             isGenerating = true;
@@ -496,6 +495,82 @@ async function sleep(ms) {
                             }
                         }
                     } catch (e) {}
+                }
+
+                // Strategy 2: DOM scan for video with blob: src — extract via page.evaluate
+                if (!videoSaved) {
+                    try {
+                        const vids = page.locator('video');
+                        const count = await vids.count();
+                        
+                        for (let i = 0; i < count; i++) {
+                            const targetVid = vids.nth(i);
+                            const rawSrc = await targetVid.getAttribute('src');
+                            const src = rawSrc || '';
+                            
+                            if (!src.startsWith('blob:')) continue;
+                            if (seenSrcs.has(src)) continue;
+                            
+                            log('Strategy 2: Found blob video in DOM, extracting...');
+                            
+                            try {
+                                const videoBase64 = await page.evaluate(async (videoSelector) => {
+                                    const videos = document.querySelectorAll('video');
+                                    for (const vid of videos) {
+                                        if (vid.src && vid.src.startsWith('blob:')) {
+                                            try {
+                                                const resp = await fetch(vid.src);
+                                                const blob = await resp.blob();
+                                                if (blob.size < 10000) continue;
+                                                const reader = new FileReader();
+                                                return await new Promise((resolve) => {
+                                                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                                                    reader.readAsDataURL(blob);
+                                                });
+                                            } catch(e) {}
+                                        }
+                                    }
+                                    return null;
+                                });
+                                
+                                if (videoBase64) {
+                                    fs.mkdirSync(path.dirname(shot.output), { recursive: true });
+                                    fs.writeFileSync(shot.output, Buffer.from(videoBase64, 'base64'));
+                                    if (fs.statSync(shot.output).size > 10000) {
+                                        videoSaved = true;
+                                        log('Strategy 2: Blob video saved successfully!');
+                                        break;
+                                    }
+                                }
+                            } catch(e) {
+                                log('Strategy 2 blob extraction failed: ' + e.message);
+                            }
+                        }
+                    } catch(e) {}
+                }
+
+                // Strategy 3: Find download button on the post page and trigger download
+                if (!videoSaved) {
+                    try {
+                        const dlBtn = page.locator('a[download], button[aria-label*="Download"], button[aria-label*="download"], a[href*=".mp4"]').first();
+                        if (await dlBtn.count() > 0 && await dlBtn.isVisible({ timeout: 500 })) {
+                            const href = await dlBtn.getAttribute('href');
+                            if (href && href.startsWith('http')) {
+                                log('Strategy 3: Downloading from download button href: ' + href.substring(0, 100));
+                                fs.mkdirSync(path.dirname(shot.output), { recursive: true });
+                                const vidResp = await page.request.get(href);
+                                if (vidResp.ok()) {
+                                    fs.writeFileSync(shot.output, await vidResp.body());
+                                    if (fs.statSync(shot.output).size > 10000) {
+                                        videoSaved = true;
+                                        log('Strategy 3: Download button video saved!');
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e) {
+                        log('Strategy 3 failed: ' + e.message);
+                    }
                 }
                 
                 if (videoSaved) {

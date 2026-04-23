@@ -2432,18 +2432,30 @@ async function startRealtimeAutoPilot() {
                                 } catch(e){}
                             }
                             
-                            const audioUrl = await _generateVideoTTS(voiceId, engine);
+                            const audioResult = await _generateVideoTTS(voiceId, engine);
                             
-                            if (audioUrl) {
-                                currentEpisode.audio_url = audioUrl;
+                            if (audioResult === 'per_shot_audio') {
+                                // Batch TTS generated per-shot audio (Gemini mode)
+                                // Each shot's tts_audio_url is already saved in DB
+                                // FFmpeg will pick them up automatically
+                                toast(`✅ Per-shot audio generated for ${currentEpisode.title}`, 'success');
+                                document.getElementById('audioStatus').textContent = `Audio generated! (${voiceLabel})`;
+                                document.getElementById('audioEmpty').style.display = 'none';
+                            } else if (audioResult === 'tts_skipped') {
+                                // TTS failed but we continue gracefully
+                                toast('⚠️ Audio TTS skipped, continuing...', 'warning');
+                                document.getElementById('audioStatus').textContent = 'TTS Skipped';
+                            } else if (audioResult) {
+                                // Single audio file URL (legacy/edge mode)
+                                currentEpisode.audio_url = audioResult;
                                 await apiFetch(`/episodes/${currentEpisode.id}`, {
                                     method: 'PUT',
-                                    body: JSON.stringify({ audio_url: audioUrl })
+                                    body: JSON.stringify({ audio_url: audioResult })
                                 }).catch(()=>{});
                                 document.getElementById('audioEmpty').style.display = 'none';
                                 document.getElementById('audioPlayerSection').style.display = 'flex';
-                                document.getElementById('audioStepPlayer').src = audioUrl;
-                                document.getElementById('audioStepDownload').href = audioUrl;
+                                document.getElementById('audioStepPlayer').src = audioResult;
+                                document.getElementById('audioStepDownload').href = audioResult;
                                 document.getElementById('audioStatus').textContent = `Audio generated! (${voiceLabel})`;
                             } else {
                                 toast('⚠️ Audio TTS failed for this episode.', "error");
@@ -4482,7 +4494,7 @@ async function _generateVideoTTS() {
             new Promise((resolve) => {
                 const pollId = setInterval(async () => {
                     try {
-                        const st = await apiFetch(`/batch-tts/status/${taskId}`);
+                        const st = await apiFetch(`/batch-tts/${taskId}`);
                         const done = st.done || 0;
                         const success = st.success || 0;
                         if (_emptyTitle) _emptyTitle.textContent = `🔊 TTS: ${done}/${total} (✅${success})`;

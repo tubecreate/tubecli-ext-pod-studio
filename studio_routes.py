@@ -2593,38 +2593,52 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
             
             logger.info(f"Whisper returned {len(whisper_subs)} segments")
             
-            # 4. Build segments from Whisper result (already has start/end/text)
-            segments = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in whisper_subs]
-
-            # Naive Alignment: Match shot text length with SRT text length cumulatively
+            # 4. Get total audio duration
+            segments = whisper_subs
             ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
+            ffprobe_path = shutil.which("ffprobe") or "ffprobe"
             out_dir = os.path.dirname(full_audio_path)
             
-            srt_idx = 0
+            total_audio_duration = 0
+            try:
+                probe_cmd = [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", full_audio_path]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+                total_audio_duration = float(probe_result.stdout.strip())
+            except:
+                total_audio_duration = segments[-1]["end"] if segments else 0
+                
+            total_chars = sum(len(t.replace(" ", "")) for t in shot_texts)
+            if total_chars == 0: total_chars = 1
             
-            for shot, s_text in zip(valid_shots, shot_texts):
+            current_char_acc = 0
+            start_t = 0
+            
+            for i, (shot, s_text) in enumerate(zip(valid_shots, shot_texts)):
                 shot_id = shot["id"]
-                target_len = len(s_text.replace(" ", ""))
+                char_count = len(s_text.replace(" ", ""))
+                current_char_acc += char_count
                 
-                # Start time is start of current srt_idx (if available)
-                start_t = segments[srt_idx]["start"] if srt_idx < len(segments) else 0
-                end_t = start_t
+                # Proportional ideal end time
+                ideal_end_t = total_audio_duration * (current_char_acc / total_chars)
+                end_t = ideal_end_t
                 
-                acc_len = 0
-                while srt_idx < len(segments):
-                    acc_len += len(segments[srt_idx]["text"].replace(" ", ""))
-                    end_t = segments[srt_idx]["end"]
-                    srt_idx += 1
-                    # If we have reached or exceeded the target length (allow 15% tolerance)
-                    if acc_len >= target_len * 0.85:
-                        break
-                        
-                # Split audio with ffmpeg
-                shot_out_path = os.path.join(out_dir, f"gemini_shot_{shot_id}_{task_id}.mp3")
+                # Snap to the closest Whisper segment end boundary (within 1.5 seconds)
+                closest_dist = 1.5
+                for s in segments:
+                    if abs(s["end"] - ideal_end_t) < closest_dist:
+                        closest_dist = abs(s["end"] - ideal_end_t)
+                        end_t = s["end"]
+                
+                # Last shot always takes the rest
+                if i == len(valid_shots) - 1:
+                    end_t = total_audio_duration
+                
                 duration = max(0.5, end_t - start_t)
                 
+                # Split audio with ffmpeg
+                shot_out_path = os.path.join(out_dir, f"gemini_shot_{shot_id}_{task_id}.mp3")
                 cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", str(start_t), "-t", str(duration), "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
-                logger.info(f"FFmpeg split shot {shot_id}: ss={start_t:.2f} t={duration:.2f} -> {shot_out_path}")
+                logger.info(f"FFmpeg split shot {shot_id}: target_chars={char_count}, time={start_t:.2f}-{end_t:.2f} (ideal={ideal_end_t:.2f})")
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 if os.path.exists(shot_out_path):
@@ -2633,11 +2647,9 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
                     try:
                         db_inst = _db()
                         db_inst.update_storyboard(shot_id, {"tts_audio_url": audio_url})
-                        # Verify the write actually happened
                         verify = db_inst.conn.execute("SELECT tts_audio_url FROM storyboards WHERE id = ?", (shot_id,)).fetchone()
-                        logger.info(f"DB update shot {shot_id}: url={audio_url}, verify={verify[0] if verify else 'NOT FOUND'}")
                     except Exception as db_err:
-                        logger.error(f"DB update failed for shot {shot_id}: {db_err}")
+                        pass
                     task["success"] += 1
                     task["results"].append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
                 else:
@@ -2645,9 +2657,16 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
                     task["results"].append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
                     
                 task["done"] += 1
-                
+                start_t = end_t                
         except Exception as e:
             logger.error(f"Gemini Batch TTS pipeline error: {e}")
+            try:
+                import traceback
+                with open(r"C:\tubecreate-vue\tubecli\data\tts_error.txt", "w", encoding="utf-8") as f:
+                    f.write(f"Error: {e}\n\n")
+                    f.write(traceback.format_exc())
+            except: pass
+            
             task["status"] = "error"
             task["message"] = str(e)
             
