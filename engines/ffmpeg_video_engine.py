@@ -333,7 +333,7 @@ async def build_ffmpeg_video(episode, shots, video_aspect_ratio="16:9", progress
         await progress_callback("Finalizing...", 90)
 
     # If no per-shot audio was used, try global episode audio
-    audio_path_global = episode.get("audio_url")
+    audio_path_global = resolve_audio_path(episode.get("audio_url"))
     if not has_per_shot_audio and audio_path_global and os.path.exists(audio_path_global):
         cmd_merge = [
             "ffmpeg", "-y",
