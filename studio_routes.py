@@ -466,7 +466,7 @@ async def generate_outline(drama_id: int, request: Request):
         min_eps = max(3, char_count // 5000)
         target_eps_str = f"Auto (The premise is {char_count} characters long. You MUST break it down into at least {min_eps} plots. DO NOT summarize it mathematically into 1 episode!)"
     else:
-        target_eps_str = str(episode_count)
+        target_eps_str = f"Maximum {episode_count} (This is an UPPER BOUND, not a fixed number. If the content/premise is short or doesn't have enough material, create FEWER episodes. Only use up to {episode_count} if the content truly warrants it.)"
 
     user_msg = f"Premise Length: {len(premise)} characters\nPremise: {premise}\nTarget Outputs: {target_eps_str}\nLanguage: {language}"
     
@@ -2093,9 +2093,24 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             except:
                 char_ids = []
         ref_images = []
+        # Narrator/Host role names that should NOT have reference images injected
+        # These are voice-only characters — injecting their face causes Grok blocks
+        _NARRATOR_PATTERNS = [
+            'narrator', 'host', 'voiceover', 'presenter',
+            'người dẫn', 'dẫn chuyện', 'mc ', 'người kể',
+            'health narrator', 'spiritual narrator',
+        ]
         for cid in char_ids:
             char = all_chars.get(cid)
             if not char:
+                continue
+            # Skip narrator/host characters — they don't need visual consistency
+            char_name = (char.get("name") or "").lower().strip()
+            char_role_desc = (char.get("description") or "").lower()
+            is_narrator = any(p in char_name for p in _NARRATOR_PATTERNS) or \
+                          any(p in char_role_desc for p in ['narrator', 'host', 'người dẫn', 'dẫn chuyện'])
+            if is_narrator:
+                logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: skipping narrator/host '{char.get('name')}' — no ref image needed")
                 continue
             img_url = char.get("image_url", "")
             if img_url and os.path.isfile(img_url):

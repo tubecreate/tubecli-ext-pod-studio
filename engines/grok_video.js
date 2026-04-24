@@ -378,17 +378,48 @@ async function sleep(ms) {
             while (Date.now() < deadline) {
                 await sleep(5000); // Check every 5s
 
-                if (!videoSaved && shotRetries < 2) {
+                if (!videoSaved && shotRetries < 3) {
                     try {
                         const errLoc = page.locator('text=/unable to finish replying|try again later|thử lại/i').first();
                         const errVisible = await errLoc.isVisible({ timeout: 500 }).catch(()=>false);
                         const retryBtn = page.locator('button:has-text("Retry"), button:has-text("Thử lại")').first();
                         const btnVisible = await retryBtn.isVisible({ timeout: 500 }).catch(()=>false);
 
-                        if (errVisible || btnVisible) {
-                            log(`Grok internal error detected. Retrying video... (${shotRetries+1}/2)`);
-                            await sleep(5000);
-                            if (btnVisible) {
+                        // Detect Grok content block: large eye-off icon overlay
+                        const blockDetected = await page.evaluate(() => {
+                            // Primary: exact Lucide eye-off class (most reliable)
+                            const eyeOff = document.querySelector('svg.lucide-eye-off.size-24, svg.lucide.lucide-eye-off[class*="size-2"]');
+                            if (eyeOff) return true;
+                            // Secondary: any large eye-off SVG inside a fullscreen overlay
+                            const overlays = document.querySelectorAll('div.absolute.w-full.h-full');
+                            for (const ov of overlays) {
+                                const svg = ov.querySelector('svg.lucide-eye-off, svg[class*="eye-off"]');
+                                if (svg) return true;
+                            }
+                            // Tertiary: check for the diagonal slash path in a large SVG
+                            const svgs = document.querySelectorAll('svg');
+                            for (const s of svgs) {
+                                if (s.clientWidth >= 60 && s.clientHeight >= 60) {
+                                    const paths = s.querySelectorAll('path');
+                                    for (const p of paths) {
+                                        const d = p.getAttribute('d') || '';
+                                        if (d.match(/m\s*2\s+2\s+20\s+20/i)) return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        }).catch(()=>false);
+
+                        if (errVisible || btnVisible || blockDetected) {
+                            log(`Grok internal error or block detected. Retrying video... (${shotRetries+1}/3)`);
+                            await sleep(2000);
+                            
+                            if (blockDetected) {
+                                log('Block detected! Adjusting prompt to bypass filter...');
+                                shot.prompt += " (safe for work, general audience)";
+                            }
+
+                            if (btnVisible && !blockDetected) {
                                 await retryBtn.click().catch(()=>{});
                             } else {
                                 await page.goto('https://grok.com/imagine', { waitUntil: 'domcontentloaded' });
@@ -574,6 +605,42 @@ async function sleep(ms) {
                 }
                 
                 if (videoSaved) {
+                    // Final verification: ensure the page doesn't show a block overlay
+                    // (Grok sometimes lets the video URL through but the content is blurred/blocked)
+                    const postSaveBlock = await page.evaluate(() => {
+                        const eyeOff = document.querySelector('svg.lucide-eye-off.size-24, svg.lucide.lucide-eye-off[class*="size-2"]');
+                        if (eyeOff) return true;
+                        const overlays = document.querySelectorAll('div.absolute.w-full.h-full');
+                        for (const ov of overlays) {
+                            if (ov.querySelector('svg.lucide-eye-off, svg[class*="eye-off"]')) return true;
+                        }
+                        return false;
+                    }).catch(()=>false);
+                    
+                    if (postSaveBlock && shotRetries < 3) {
+                        log('⚠️ Block overlay detected AFTER download! Discarding blurred video and retrying...');
+                        videoSaved = false;
+                        capturedVideoUrl = null;
+                        try { fs.unlinkSync(shot.output); } catch(e) {}
+                        
+                        shot.prompt = shot.prompt.replace(/\s*\(safe for work.*?\)/g, '');
+                        shot.prompt += ' (safe for work, educational, general audience, no violence)';
+                        
+                        shotRetries++;
+                        await page.goto('https://grok.com/imagine', { waitUntil: 'domcontentloaded' });
+                        await sleep(3000);
+                        const btnVideo = page.locator('button:text-is("Video"), div:text-is("Video"), span:text-is("Video"), text="Video"').last();
+                        if (await btnVideo.isVisible({ timeout: 1000 })) await btnVideo.evaluate(el => el.click());
+                        await sleep(500);
+                        const newInp = page.locator('textarea').first();
+                        if (await newInp.isVisible()) {
+                            await newInp.fill(shot.prompt);
+                            await newInp.press('Enter');
+                        }
+                        deadline = Date.now() + timeout;
+                        continue;
+                    }
+                    
                     log('Video generation finished and file saved successfully!');
                     break;
                 }
