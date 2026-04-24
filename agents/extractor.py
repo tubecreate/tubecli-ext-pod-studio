@@ -35,7 +35,8 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
 ```
 
 ## Extraction Rules
-1. Extract EVERY named character that appears, speaks, or is mentioned
+1. Extract EVERY named character that appears, speaks, or is mentioned.
+   - EXCEPTION: DO NOT extract "Narrator", "Host", "Voiceover", "Người dẫn chương trình", or "Dẫn chuyện". These are considered narrating voices, NOT physical characters needing consistent visual rendering.
 2. For each character, infer appearance from context clues (age, social status, setting era)
 3. Classify roles: protagonist (main), deuteragonist (second lead), supporting, minor, extra
 4. Extract EVERY distinct location/setting that appears

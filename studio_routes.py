@@ -101,6 +101,86 @@ def _db():
     from db.database import Database
     return Database.get_instance()
 
+def _find_shot_start_time(segments, shot_text, search_from_idx=0):
+    """
+    Finds the start time of shot_text in segments, starting search from search_from_idx.
+    Uses a long 10-word anchor for high precision and a 4-segment window to handle splits.
+    """
+    import re
+    from difflib import SequenceMatcher
+    
+    def clean(t): return re.sub(r'[^\w\s]', '', t).lower().strip()
+    
+    # Clean text to words
+    words = clean(shot_text).split()
+    if not words:
+        st = segments[search_from_idx]["start"] if search_from_idx < len(segments) else 0
+        return st, search_from_idx
+    
+    # Generate Primary Anchors
+    # 1. Standard anchor (first 10 words)
+    anchors = []
+    anchor_len = min(len(words), 10)
+    anchors.append(" ".join(words[:anchor_len]))
+    
+    # 2. Body anchor (skip potential titles)
+    # Storyboard text often has a title line that TTS skips (e.g. "Kết luận:\nBằng cách...")
+    lines = [l.strip() for l in shot_text.split('\n') if l.strip()]
+    if len(lines) > 1:
+        # If the first line is short (likely a title), use the second line as an alternative anchor
+        body_words = clean(lines[1]).split()
+        if len(body_words) >= 4:
+            anchors.append(" ".join(body_words[:min(len(body_words), 10)]))
+            
+    # 3. Shifted anchor (skip first 5 words in case they were mispronounced/skipped)
+    if len(words) > 12:
+        anchors.append(" ".join(words[5:15]))
+        
+    # Generate Fallback Anchors (Shorter phrases)
+    fallbacks = []
+    if anchor_len > 6: fallbacks.append(" ".join(words[:6]))
+    if anchor_len > 4: fallbacks.append(" ".join(words[:4]))
+    if anchor_len > 2: fallbacks.append(" ".join(words[:3]))
+    
+    best_idx = search_from_idx
+    best_score = 0
+    
+    # Search window: next 100 segments
+    search_limit = min(search_from_idx + 100, len(segments))
+    
+    for i in range(search_from_idx, search_limit):
+        window_text_curr = clean(" ".join([s.get("text", "") for s in segments[i : i+4]]))
+        window_text_next = clean(" ".join([s.get("text", "") for s in segments[i+1 : i+4]])) if i+1 < len(segments) else ""
+        
+        # A. Exact Match of any Primary Anchor (Highest Confidence)
+        for anchor in anchors:
+            if anchor in window_text_curr and anchor not in window_text_next:
+                return segments[i]["start"], i
+            
+        # B. Fallback Exact Matches
+        for fb in fallbacks:
+            if fb in window_text_curr and fb not in window_text_next:
+                if best_score < 0.7:
+                    best_score = 0.7
+                    best_idx = i
+        
+        # C. Fuzzy Match the very first anchor
+        score = SequenceMatcher(None, anchors[0], window_text_curr).ratio()
+        if score > best_score:
+            best_score = score
+            best_idx = i
+            
+        if score > 0.85:
+            return segments[i]["start"], i
+                
+    if best_score > 0.45:
+        return segments[best_idx]["start"], best_idx
+        
+    # Fallback
+    st = segments[search_from_idx]["start"] if search_from_idx < len(segments) else 0
+    next_idx = min(search_from_idx + 1, len(segments) - 1)
+    return st, next_idx
+
 
 def _clean_appearance_for_ref(appearance: str) -> str:
     """Strip emotional/expression descriptors from appearance for neutral reference photo.
@@ -404,27 +484,12 @@ async def generate_outline(drama_id: int, request: Request):
 
     full_text = "".join(full_response)
 
-    # Parse JSON
+    # Parse JSON using robust repair function
     try:
-        cleaned = full_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        import re
-        match = re.search(r'\{[\s\S]*\}', full_text)
-        if match:
-            try:
-                parsed = json.loads(match.group())
-            except Exception:
-                raise HTTPException(500, f"Failed to parse series outline JSON. AI Output:\n{full_text[:400]}")
-        else:
-            raise HTTPException(500, f"AI returned invalid format. AI Output:\n{full_text[:400]}")
+        parsed = _repair_json(full_text)
+    except Exception as e:
+        logger.error(f"Failed to parse series outline JSON: {e}")
+        raise HTTPException(500, f"Failed to parse series outline JSON. AI Output:\n{full_text[:500]}")
 
     # Save outline into drama metadata
     drama = _db().get_drama(drama_id)
@@ -2433,7 +2498,7 @@ async def _batch_tts_worker(task_id, episode_id, shots, voice_id, engine, base_u
                 continue
 
             narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
-            narration = re.sub(r'\[.*?\]', '', narration).strip()
+            narration = re.sub(r'\\[.*?\\]', '', narration).strip()
 
             if not narration or len(narration) < 3:
                 task["done"] += 1
@@ -2507,7 +2572,6 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
     valid_shots = []
     
     for shot in shots:
-
         narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
         narration = re.sub(r'\[.*?\]', '', narration).strip()
         
@@ -2587,14 +2651,13 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
             if whisper_result.get("status") != "success":
                 raise Exception(f"Whisper failed: {whisper_result.get('message', 'unknown error')}")
             
-            whisper_subs = whisper_result.get("subtitles", [])
-            if not whisper_subs:
+            segments = whisper_result.get("subtitles", [])
+            if not segments:
                 raise Exception("Whisper returned no segments")
             
-            logger.info(f"Whisper returned {len(whisper_subs)} segments")
+            logger.info(f"Whisper returned {len(segments)} segments")
             
             # 4. Get total audio duration
-            segments = whisper_subs
             ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
             ffprobe_path = shutil.which("ffprobe") or "ffprobe"
             out_dir = os.path.dirname(full_audio_path)
@@ -2607,49 +2670,35 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
             except:
                 total_audio_duration = segments[-1]["end"] if segments else 0
                 
-            total_chars = sum(len(t.replace(" ", "")) for t in shot_texts)
-            if total_chars == 0: total_chars = 1
-            
-            current_char_acc = 0
-            start_t = 0
-            
-            for i, (shot, s_text) in enumerate(zip(valid_shots, shot_texts)):
+            # 5. Split by finding shot start boundaries using keyword matching
+            shot_starts = []
+            curr_seg_idx = 0
+            for shot, s_text in zip(valid_shots, shot_texts):
+                st, curr_seg_idx = _find_shot_start_time(segments, s_text, curr_seg_idx)
+                shot_starts.append(st)
+                
+            for i, shot in enumerate(valid_shots):
                 shot_id = shot["id"]
-                char_count = len(s_text.replace(" ", ""))
-                current_char_acc += char_count
+                start_t = shot_starts[i]
                 
-                # Proportional ideal end time
-                ideal_end_t = total_audio_duration * (current_char_acc / total_chars)
-                end_t = ideal_end_t
-                
-                # Snap to the closest Whisper segment end boundary (within 1.5 seconds)
-                closest_dist = 1.5
-                for s in segments:
-                    if abs(s["end"] - ideal_end_t) < closest_dist:
-                        closest_dist = abs(s["end"] - ideal_end_t)
-                        end_t = s["end"]
-                
-                # Last shot always takes the rest
-                if i == len(valid_shots) - 1:
+                # End time is the start of the next shot, or total duration for the last one
+                if i + 1 < len(shot_starts):
+                    end_t = shot_starts[i+1]
+                else:
                     end_t = total_audio_duration
                 
-                duration = max(0.5, end_t - start_t)
+                duration = max(0.2, end_t - start_t)
                 
                 # Split audio with ffmpeg
                 shot_out_path = os.path.join(out_dir, f"gemini_shot_{shot_id}_{task_id}.mp3")
-                cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", str(start_t), "-t", str(duration), "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
-                logger.info(f"FFmpeg split shot {shot_id}: target_chars={char_count}, time={start_t:.2f}-{end_t:.2f} (ideal={ideal_end_t:.2f})")
+                cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", f"{start_t:.3f}", "-t", f"{duration:.3f}", "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
+                logger.info(f"FFmpeg split shot {shot_id}: time={start_t:.2f}-{end_t:.2f} (dur={duration:.2f}s)")
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 if os.path.exists(shot_out_path):
                     filename = os.path.basename(shot_out_path)
                     audio_url = f"/api/v1/tts/audio/{filename}"
-                    try:
-                        db_inst = _db()
-                        db_inst.update_storyboard(shot_id, {"tts_audio_url": audio_url})
-                        verify = db_inst.conn.execute("SELECT tts_audio_url FROM storyboards WHERE id = ?", (shot_id,)).fetchone()
-                    except Exception as db_err:
-                        pass
+                    _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
                     task["success"] += 1
                     task["results"].append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
                 else:
@@ -2657,20 +2706,10 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
                     task["results"].append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
                     
                 task["done"] += 1
-                start_t = end_t                
         except Exception as e:
             logger.error(f"Gemini Batch TTS pipeline error: {e}")
-            try:
-                import traceback
-                with open(r"C:\tubecreate-vue\tubecli\data\tts_error.txt", "w", encoding="utf-8") as f:
-                    f.write(f"Error: {e}\n\n")
-                    f.write(traceback.format_exc())
-            except: pass
-            
             task["status"] = "error"
             task["message"] = str(e)
-            
-            # Fail all remaining
             for shot in valid_shots:
                 if not any(r["shot_id"] == shot["id"] for r in task["results"]):
                     task["failed"] += 1
@@ -2696,7 +2735,7 @@ async def upload_audio_and_split(episode_id: int, request: Request):
     Upload a full audio file, run Whisper alignment, split by shot with FFmpeg,
     and assign each fragment to the corresponding storyboard shot.
     """
-    import shutil, subprocess, uuid, tempfile
+    import shutil, subprocess, uuid, tempfile, os
     from fastapi import UploadFile
     import importlib.util
 
@@ -2729,19 +2768,22 @@ async def upload_audio_and_split(episode_id: int, request: Request):
         content = await audio_file.read()
         f.write(content)
 
-    logger.info(f"Upload audio saved: {full_audio_path} ({len(content)} bytes)")
+    logger.info(f"Upload audio saved: {full_audio_path}")
 
     # Load storyboard shots
     shots = _db().list_storyboards(episode_id)
     valid_shots = [s for s in shots if (s.get("narration_text") or s.get("dialogue") or s.get("description"))]
     if not valid_shots:
         os.remove(full_audio_path)
-        raise HTTPException(400, "No storyboard shots with narration text found. Please create a storyboard first.")
+        raise HTTPException(400, "No storyboard shots with narration text found.")
 
     shot_texts = []
+    import re
     for s in valid_shots:
         txt = s.get("narration_text") or s.get("dialogue") or s.get("description") or ""
-        shot_texts.append(txt.strip())
+        # Clean [brackets] to match the worker logic
+        txt = re.sub(r'\[.*?\]', '', txt).strip()
+        shot_texts.append(txt)
 
     # Run Whisper directly
     whisper_engine_path = os.path.join(
@@ -2762,56 +2804,41 @@ async def upload_audio_and_split(episode_id: int, request: Request):
     if not whisper_subs:
         raise HTTPException(500, "Whisper returned no segments")
 
-    logger.info(f"Whisper returned {len(whisper_subs)} segments for {len(valid_shots)} shots")
-
     segments = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in whisper_subs]
 
     # FFmpeg split by aligned segments
     ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
     out_dir = tts_output_dir
-    srt_idx = 0
-    results = []
-
+    shot_starts = []
+    curr_seg_idx = 0
+    total_audio_duration = segments[-1]["end"] if segments else 0
+    
     for shot, s_text in zip(valid_shots, shot_texts):
+        st, curr_seg_idx = _find_shot_start_time(segments, s_text, curr_seg_idx)
+        shot_starts.append(st)
+
+    for i, shot in enumerate(valid_shots):
         shot_id = shot["id"]
-        target_len = len(s_text.replace(" ", ""))
+        start_t = shot_starts[i]
+        
+        if i + 1 < len(shot_starts):
+            end_t = shot_starts[i+1]
+        else:
+            end_t = total_audio_duration
 
-        start_t = segments[srt_idx]["start"] if srt_idx < len(segments) else 0
-        end_t = start_t
-        acc_len = 0
-
-        while srt_idx < len(segments):
-            acc_len += len(segments[srt_idx]["text"].replace(" ", ""))
-            end_t = segments[srt_idx]["end"]
-            srt_idx += 1
-            if acc_len >= target_len * 0.85:
-                break
-
-        duration = max(0.5, end_t - start_t)
+        duration = max(0.2, end_t - start_t)
         shot_out_path = os.path.join(out_dir, f"upload_shot_{shot_id}_{upload_id}.mp3")
 
-        cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", str(start_t), "-t", str(duration),
+        cmd = [ffmpeg_path, "-y", "-i", full_audio_path, "-ss", f"{start_t:.3f}", "-t", f"{duration:.3f}",
                "-acodec", "libmp3lame", "-ab", "192k", shot_out_path]
-        logger.info(f"FFmpeg split shot {shot_id}: ss={start_t:.2f} t={duration:.2f}")
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if os.path.exists(shot_out_path):
             filename = os.path.basename(shot_out_path)
             audio_url = f"/api/v1/tts/audio/{filename}"
             _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
-            results.append({"shot_id": shot_id, "status": "ok", "audio_url": audio_url})
-        else:
-            results.append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
 
-    success_count = sum(1 for r in results if r["status"] == "ok")
-    logger.info(f"Upload audio split done: {success_count}/{len(valid_shots)} shots assigned")
-
-    return {
-        "success": True,
-        "total": len(valid_shots),
-        "success_count": success_count,
-        "results": results
-    }
+    return {"success": True, "message": f"Successfully split and assigned {len(valid_shots)} shots"}
 
 
 @router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")

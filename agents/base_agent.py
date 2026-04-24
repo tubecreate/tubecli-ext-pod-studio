@@ -137,7 +137,7 @@ class ContentAgent:
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": True,
         }
 
