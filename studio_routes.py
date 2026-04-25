@@ -3281,30 +3281,53 @@ async def _process_single_job(job: dict):
     drama_id = drama["id"]
     db.update_pipeline_job(job_id, {"drama_id": drama_id})
 
-    # ── Step 3: Create Episode with CC content ──
-    episode = db.create_episode(drama_id, {
-        "title": source_title,
-        "content": cc_text,
-    })
+    # ── Step 3: Generate Outline using AI ──
+    s = _settings()
+    base_url, api_key, model, temp = s.get_ai_client_params()
+    
+    if not api_key:
+        raise Exception("No API key configured for AI")
+        
+    from agents.series_planner import SeriesPlannerAgent
+    agent = SeriesPlannerAgent()
+    agent_cfg = s.get_agent_config("series_planner")
+    agent_temp = agent_cfg.get("temperature", 0.7)
+    
+    db.update_pipeline_job(job_id, {"status": "planning"})
+    logger.info(f"Auto pipeline job {job_id}: generating outline...")
+    
+    try:
+        outline_json = await agent.plan_series(
+            premise=cc_text[:15000], # Pass the extracted CC (limit to avoid token overflow)
+            episode_count=job.get("max_episodes", 1),
+            language=job.get("language", "vi"),
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            temperature=agent_temp,
+            content_format=job.get("content_format", "Educational / Learning")
+        )
+        
+        meta = json.loads(drama.get("metadata", "{}") or "{}")
+        meta["series_outline"] = outline_json
+        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+    except Exception as e:
+        logger.error(f"Auto pipeline job {job_id}: outline generation failed: {e}")
+        # Fallback to 1 episode if AI fails
+        outline_json = {
+            "series_title": source_title,
+            "overall_synopsis": f"Auto-generated from: {source_url}",
+            "episodes": [{
+                "episode_number": 1,
+                "title": source_title,
+                "plot_outline": cc_text[:2000]
+            }]
+        }
+        meta = json.loads(drama.get("metadata", "{}") or "{}")
+        meta["series_outline"] = outline_json
+        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
 
-    db.update_pipeline_job(job_id, {"episode_ids": json.dumps([episode["id"]])})
-
-    # ── Step 4: Trigger AutoPilot (via internal API) ──
-    # Store outline as single-episode
-    outline = {
-        "series_title": source_title,
-        "overall_synopsis": f"Auto-generated from: {source_url}",
-        "episodes": [{
-            "episode_number": 1,
-            "title": source_title,
-            "plot_outline": cc_text[:2000]
-        }]
-    }
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
-    meta["series_outline"] = outline
-    db.update_drama(drama_id, {"metadata": json.dumps(meta)})
-
-    logger.info(f"Auto pipeline job {job_id}: drama {drama_id} created, episode {episode['id']}. "
+    logger.info(f"Auto pipeline job {job_id}: drama {drama_id} created, outline generated. "
                 f"AutoPilot will be triggered from frontend.")
 
     # ── Step 5: Generate SEO metadata ──
