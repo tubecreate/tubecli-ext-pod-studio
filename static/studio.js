@@ -5270,7 +5270,7 @@ function _renderApJobRow(job) {
             <div style="display:flex; justify-content:flex-end; gap:8px;">
                 ${job.drama_id ? `<button class="pq-edit-btn" onclick="togglePipelineView();selectDrama(${job.drama_id})" title="Mở Project">📂</button>` : ''}
                 ${canEdit ? `<button class="pq-edit-btn" onclick="editApJob(${job.id})" title="Chỉnh sửa">✏️</button>` : ''}
-                ${canEdit ? `<button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>` : ''}
+                <button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>
             </div>
         </td>
     </tr>`;
@@ -5421,9 +5421,10 @@ async function saveApJobEdit() {
 }
 
 async function deleteApJob(jobId) {
+    if (!confirm('Bạn có chắc chắn muốn xóa job này khỏi hàng đợi?\n(Project đã tạo sẽ không bị xóa)')) return;
     try {
         await apiFetch(`/auto-pipeline/jobs/${jobId}`, { method: 'DELETE' });
-        toast('Đã xóa job', 'info');
+        toast('Đã xóa job khỏi hàng đợi', 'info');
         await loadApJobs();
     } catch(e) {
         toast('Lỗi xóa job: ' + e.message, 'error');
