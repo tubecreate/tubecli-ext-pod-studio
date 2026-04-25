@@ -5260,10 +5260,31 @@ function _renderApJobRow(job) {
         if (targets && targets.length > 0) upload = targets.length + ' targets';
     } catch(e) {}
 
-    let visualStyleBadge = '';
-    if (job.visual_style && job.visual_style !== 'Default') {
-        const styleText = job.visual_style.replace('Visual Style: ', '').replace(' | Character Style: ', ' / ');
-        visualStyleBadge = `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="${job.visual_style}">🎨 ${styleText}</span>`;
+    // Parse visual & character style into separate badges
+    let vStyleBadge = '';
+    let cStyleBadge = '';
+    let vs = job.visual_style || '';
+    
+    // Fallback: read from preset localStorage if visual_style is Default/empty
+    if ((!vs || vs === 'Default') && job.preset_name) {
+        try {
+            const presets = JSON.parse(localStorage.getItem('cs_wiz_presets') || '{}');
+            const pd = presets[job.preset_name];
+            if (pd) {
+                const pvs = pd.wizStyle === '__custom__' ? (pd.wizStyleCustom || '') : (pd.wizStyle || '');
+                const pcs = pd.wizCharacterStyle === '__custom__' ? (pd.wizCharStyleCustom || '') : (pd.wizCharacterStyle || '');
+                if (pvs && pvs !== 'Default') vs = `Visual Style: ${pvs} | Character Style: ${pcs || 'Default'}`;
+            }
+        } catch(e) {}
+    }
+    
+    if (vs && vs !== 'Default') {
+        const vsMatch = vs.match(/Visual Style:\s*([^|]+)/);
+        const csMatch = vs.match(/Character Style:\s*(.+)/);
+        const vName = vsMatch ? vsMatch[1].trim() : vs;
+        const cName = csMatch ? csMatch[1].trim() : '';
+        if (vName && vName !== 'Default') vStyleBadge = `<span style="background:rgba(168,85,247,0.15); color:#c084fc; padding:2px 6px; border-radius:4px; border:1px solid rgba(168,85,247,0.3);" title="Visual Style: ${vName}">🎨 ${vName}</span>`;
+        if (cName && cName !== 'Default') cStyleBadge = `<span style="background:rgba(59,130,246,0.15); color:#93c5fd; padding:2px 6px; border-radius:4px; border:1px solid rgba(59,130,246,0.3);" title="Character Style: ${cName}">👤 ${cName}</span>`;
     }
 
     const canEdit = job.status === 'pending' || job.status === 'error';
@@ -5281,7 +5302,8 @@ function _renderApJobRow(job) {
                 ${job.language ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Ngôn ngữ">🌐 ${job.language.toUpperCase()}</span>` : ''}
                 ${job.max_episodes ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Số tập tối đa">🎬 ${job.max_episodes} ep</span>` : ''}
                 ${job.content_format ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Định dạng nội dung">📝 ${job.content_format.split('/')[0].trim()}</span>` : ''}
-                ${visualStyleBadge}
+                ${vStyleBadge}
+                ${cStyleBadge}
             </div>
         </td>
         <td class="pq-col-voice"><div class="pq-truncate" title="${voice}">${voice}</div></td>
