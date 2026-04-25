@@ -2131,11 +2131,45 @@ window.resumeAutoPilot = function() {
         });
         document.getElementById('wizOutlineReview').innerHTML = outlineHtml;
         
-        // Load browser profiles into chip selector
+        // Load browser profiles into chip selector, pre-select from drama metadata
         _loadBrowserProfilesIntoSelect('wizBrowserProfileExec').then(() => {
-            _initChipsFromSaved();
+            // Try to restore browser profiles from drama metadata first
+            let restored = false;
+            if (currentDrama) {
+                try {
+                    const meta = JSON.parse(currentDrama.metadata || '{}');
+                    const savedProfiles = meta.browser_profile_names_video || (meta.browser_profile_name ? [meta.browser_profile_name] : []);
+                    if (savedProfiles.length > 0) {
+                        _chipSelectedProfiles = savedProfiles.filter(s => s && _browserProfilesCache.some(p => p.name === s));
+                        _syncChipsToSelect();
+                        restored = true;
+                    }
+                } catch(e) {}
+            }
+            if (!restored) _initChipsFromSaved();
+            _renderBrowserChips();
         });
 
+        // Restore preset dropdown if drama was created from a queue job
+        if (currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const jobId = meta.auto_pipeline_job_id;
+                if (jobId) {
+                    // Fetch the original job to get preset_name
+                    apiFetch(`/auto-pipeline/jobs/${jobId}`).then(res => {
+                        if (res.success && res.job && res.job.preset_name) {
+                            const presetSel = document.getElementById('wizPresetSelect');
+                            if (presetSel) {
+                                // Make sure presets are loaded
+                                loadWizPresets();
+                                presetSel.value = res.job.preset_name;
+                            }
+                        }
+                    }).catch(() => {});
+                }
+            } catch(e) {}
+        }
         
         // Voice profile loading and display logic
         const pSteps = getCurrentPipeline();
@@ -2153,7 +2187,29 @@ window.resumeAutoPilot = function() {
                 const targetLan = (typeof currentDrama !== 'undefined' && currentDrama && currentDrama.language) 
                                     ? currentDrama.language 
                                     : (document.getElementById('wizLanguage') ? document.getElementById('wizLanguage').value : null);
-                _loadVoiceProfilesIntoSelect('wizVoiceProfileExec', targetLan);
+                // Load voices then auto-select from drama metadata (voice_preset)
+                _loadVoiceProfilesIntoSelect('wizVoiceProfileExec', targetLan).then(() => {
+                    // The _loadVoiceProfilesIntoSelect already tries currentDrama.metadata.voice_preset
+                    // But voice_preset format is "voiceId|engine", need to match just voiceId
+                    if (currentDrama) {
+                        try {
+                            const meta = JSON.parse(currentDrama.metadata || '{}');
+                            const savedVoice = meta.voice_preset || meta.tts_voice || '';
+                            if (savedVoice) {
+                                const voiceId = savedVoice.split('|')[0]; // strip engine suffix
+                                const sel = document.getElementById('wizVoiceProfileExec');
+                                if (sel) {
+                                    for (let i = 0; i < sel.options.length; i++) {
+                                        if (sel.options[i].value === voiceId || sel.options[i].value === savedVoice) {
+                                            sel.selectedIndex = i;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                });
             } else {
                 vWrap.style.display = 'none';
             }
@@ -5314,12 +5370,24 @@ function _renderApJobRow(job) {
         </td>
         <td class="pq-col-actions">
             <div style="display:flex; justify-content:flex-end; gap:8px;">
-                ${job.drama_id ? `<button class="pq-edit-btn" onclick="togglePipelineView();selectDrama(${job.drama_id})" title="Mở Project">📂</button>` : ''}
+                ${job.drama_id ? `<button class="pq-edit-btn" onclick="openQueueDrama(${job.drama_id})" title="Mở Project & Resume">📂</button>` : ''}
                 ${canEdit ? `<button class="pq-edit-btn" onclick="editApJob(${job.id})" title="Chỉnh sửa">✏️</button>` : ''}
                 <button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>
             </div>
         </td>
     </tr>`;
+}
+
+// ── Open Queue Project with Resume ──
+async function openQueueDrama(dramaId) {
+    togglePipelineView();
+    await selectDrama(dramaId);
+    // Small delay to ensure currentDrama is loaded, then trigger resume
+    setTimeout(() => {
+        if (currentDrama && currentDrama.id === dramaId) {
+            resumeAutoPilot();
+        }
+    }, 300);
 }
 
 // ── Inline Edit ──
