@@ -5268,7 +5268,7 @@ function _renderApJobRow(job) {
     // Fallback: read from preset localStorage if visual_style is Default/empty
     if ((!vs || vs === 'Default') && job.preset_name) {
         try {
-            const presets = JSON.parse(localStorage.getItem('cs_wiz_presets') || '{}');
+            const presets = JSON.parse(localStorage.getItem('studio_wiz_presets') || '{}');
             const pd = presets[job.preset_name];
             if (pd) {
                 const pvs = pd.wizStyle === '__custom__' ? (pd.wizStyleCustom || '') : (pd.wizStyle || '');
