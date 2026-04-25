@@ -3097,6 +3097,8 @@ async def create_auto_pipeline_jobs(request: Request):
         "language": data.get("language", "vi"),
         "voice_preset": data.get("voice_preset", ""),
         "browser_profiles": data.get("browser_profiles", []),
+        "aspect_ratio": data.get("aspect_ratio", "16:9"),
+        "narration_source": data.get("narration_source", "prose"),
         "seo_mode": data.get("seo_mode", "ai_generate"),
         "seo_title_template": data.get("seo_title_template", ""),
         "seo_description_template": data.get("seo_description_template", ""),
@@ -3258,6 +3260,8 @@ async def _process_single_job(job: dict):
         "auto_pipeline_job_id": job_id,
         "source_url": source_url,
         "pipeline": _get_pipeline_steps(job.get("pipeline_template", "drama_scene")),
+        "aspect_ratio": job.get("aspect_ratio", "16:9"),
+        "narration_source": job.get("narration_source", "prose"),
     }
 
     browser_profiles = json.loads(job.get("browser_profiles", "[]")) if isinstance(job.get("browser_profiles"), str) else job.get("browser_profiles", [])
@@ -3297,35 +3301,39 @@ async def _process_single_job(job: dict):
     logger.info(f"Auto pipeline job {job_id}: generating outline...")
     
     try:
-        outline_json = await agent.plan_series(
-            premise=cc_text[:15000], # Pass the extracted CC (limit to avoid token overflow)
-            episode_count=job.get("max_episodes", 1),
-            language=job.get("language", "vi"),
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            temperature=agent_temp,
-            content_format=job.get("content_format", "Educational / Learning")
-        )
+        episode_count = job.get("max_episodes", 1)
+        language = job.get("language", "vi")
+        premise_text = cc_text[:15000]
+        char_count = len(premise_text)
+        
+        if episode_count <= 0:
+            min_eps = max(3, char_count // 5000)
+            target_eps_str = f"Auto (The premise is {char_count} characters long. You MUST break it down into at least {min_eps} plots. DO NOT summarize it mathematically into 1 episode!)"
+        else:
+            target_eps_str = f"Maximum {episode_count} (This is an UPPER BOUND, not a fixed number. If the content/premise is short or doesn't have enough material, create FEWER episodes. Only use up to {episode_count} if the content truly warrants it.)"
+
+        user_msg = f"Premise Length: {char_count} characters\nPremise: {premise_text}\nTarget Outputs: {target_eps_str}\nLanguage: {language}"
+        content_format = job.get("content_format", "Educational / Learning")
+        agent_context = {"content_format": content_format}
+
+        full_response = []
+        async for chunk in agent.chat_stream(user_msg, language, base_url, api_key, model, agent_temp, agent_context):
+            full_response.append(chunk)
+            
+        full_text = "".join(full_response)
+        
+        try:
+            outline_json = _repair_json(full_text)
+        except Exception as e:
+            raise Exception(f"Failed to parse series outline JSON from AI output: {str(e)[:100]}. AI output was: {full_text[:200]}")
         
         meta = json.loads(drama.get("metadata", "{}") or "{}")
         meta["series_outline"] = outline_json
         db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+        
     except Exception as e:
         logger.error(f"Auto pipeline job {job_id}: outline generation failed: {e}")
-        # Fallback to 1 episode if AI fails
-        outline_json = {
-            "series_title": source_title,
-            "overall_synopsis": f"Auto-generated from: {source_url}",
-            "episodes": [{
-                "episode_number": 1,
-                "title": source_title,
-                "plot_outline": cc_text[:2000]
-            }]
-        }
-        meta = json.loads(drama.get("metadata", "{}") or "{}")
-        meta["series_outline"] = outline_json
-        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+        raise Exception(f"AI Outline Generation Failed: {e}")
 
     logger.info(f"Auto pipeline job {job_id}: drama {drama_id} created, outline generated. "
                 f"AutoPilot will be triggered from frontend.")

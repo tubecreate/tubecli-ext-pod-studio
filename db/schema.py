@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
     language TEXT DEFAULT 'vi',
     voice_preset TEXT DEFAULT '',
     browser_profiles TEXT DEFAULT '[]',
+    aspect_ratio TEXT DEFAULT '16:9',
+    narration_source TEXT DEFAULT 'prose',
 
     -- SEO config
     seo_mode TEXT DEFAULT 'ai_generate',

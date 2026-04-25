@@ -58,6 +58,16 @@ class Database:
             self.conn.execute("ALTER TABLE storyboards ADD COLUMN narration_text TEXT DEFAULT ''")
             self.conn.commit()
             logger.info("Migration: added narration_text to storyboards")
+        # Migrate auto_pipeline_jobs
+        ap_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(auto_pipeline_jobs)").fetchall()}
+        if "aspect_ratio" not in ap_cols:
+            self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN aspect_ratio TEXT DEFAULT '16:9'")
+            self.conn.commit()
+            logger.info("Migration: added aspect_ratio to auto_pipeline_jobs")
+        if "narration_source" not in ap_cols:
+            self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN narration_source TEXT DEFAULT 'prose'")
+            self.conn.commit()
+            logger.info("Migration: added narration_source to auto_pipeline_jobs")
 
     def _dict(self, row: sqlite3.Row) -> dict:
         if row is None:
@@ -461,10 +471,10 @@ class Database:
         cur = self.conn.execute(
             """INSERT INTO auto_pipeline_jobs (source_type, source_url, source_title, status,
                preset_name, pipeline_template, content_format, visual_style, max_episodes,
-               language, voice_preset, browser_profiles,
+               language, voice_preset, browser_profiles, aspect_ratio, narration_source,
                seo_mode, seo_title_template, seo_description_template, seo_tags,
                upload_targets, upload_privacy, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.get("source_type", "youtube_link"),
                 data.get("source_url", ""),
@@ -478,6 +488,8 @@ class Database:
                 data.get("language", "vi"),
                 data.get("voice_preset", ""),
                 json.dumps(data.get("browser_profiles", [])),
+                data.get("aspect_ratio", "16:9"),
+                data.get("narration_source", "prose"),
                 data.get("seo_mode", "ai_generate"),
                 data.get("seo_title_template", ""),
                 data.get("seo_description_template", ""),
@@ -513,6 +525,7 @@ class Database:
                      "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
                      "preset_name", "pipeline_template", "content_format", "visual_style", 
                      "max_episodes", "language", "voice_preset", "browser_profiles",
+                     "aspect_ratio", "narration_source",
                      "seo_mode", "seo_title_template", "seo_description_template", "seo_tags",
                      "upload_targets", "upload_privacy"]:
             if key in data:

@@ -5236,6 +5236,8 @@ async function submitBatchQueue() {
         content_format: document.getElementById('apContentFormat')?.value || presetData?.wizContentFormat || 'Educational / Learning',
         visual_style: finalVisualStyle,
         max_episodes: parseInt(document.getElementById('apMaxEpisodes')?.value || presetData?.wizEpisodes) || 1,
+        aspect_ratio: presetData?.wizAspectRatio || '16:9',
+        narration_source: presetData?.wizNarrationSource || 'prose',
         seo_mode: seoMode,
         seo_tags: seoTags,
         upload_targets: uploadTargets,
@@ -5343,6 +5345,36 @@ function _renderApJobRow(job) {
         if (cName && cName !== 'Default') cStyleBadge = `<span style="background:rgba(59,130,246,0.15); color:#93c5fd; padding:2px 6px; border-radius:4px; border:1px solid rgba(59,130,246,0.3);" title="Character Style: ${cName}">👤 ${cName}</span>`;
     }
 
+    // Aspect ratio badge
+    let arBadge = '';
+    let arVal = job.aspect_ratio || '';
+    if (!arVal && job.preset_name) {
+        try {
+            const presets = JSON.parse(localStorage.getItem('studio_wiz_presets') || '{}');
+            const pd = presets[job.preset_name];
+            if (pd && pd.wizAspectRatio) arVal = pd.wizAspectRatio;
+        } catch(e) {}
+    }
+    if (arVal && arVal !== '16:9') {
+        arBadge = `<span style="background:rgba(251,146,60,0.15); color:#fb923c; padding:2px 6px; border-radius:4px; border:1px solid rgba(251,146,60,0.3);" title="Tỉ lệ màn hình">📐 ${arVal}</span>`;
+    }
+    
+    // Narration source badge
+    let nsBadge = '';
+    let nsVal = job.narration_source || '';
+    if (!nsVal && job.preset_name) {
+        try {
+            const presets = JSON.parse(localStorage.getItem('studio_wiz_presets') || '{}');
+            const pd = presets[job.preset_name];
+            if (pd && pd.wizNarrationSource) nsVal = pd.wizNarrationSource;
+        } catch(e) {}
+    }
+    if (nsVal && nsVal !== 'prose') {
+        const nsLabels = { 'dialogue': 'Hội thoại', 'poem': 'Thơ', 'prose': 'Văn xuôi', 'verse': 'Verse' };
+        const nsLabel = nsLabels[nsVal] || nsVal;
+        nsBadge = `<span style="background:rgba(20,184,166,0.15); color:#5eead4; padding:2px 6px; border-radius:4px; border:1px solid rgba(20,184,166,0.3);" title="Narration Source">🗣️ ${nsLabel}</span>`;
+    }
+
     const canEdit = job.status === 'pending' || job.status === 'error';
 
     return `<tr class="pq-row">
@@ -5360,6 +5392,8 @@ function _renderApJobRow(job) {
                 ${job.content_format ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Định dạng nội dung">📝 ${job.content_format.split('/')[0].trim()}</span>` : ''}
                 ${vStyleBadge}
                 ${cStyleBadge}
+                ${arBadge}
+                ${nsBadge}
             </div>
         </td>
         <td class="pq-col-voice"><div class="pq-truncate" title="${voice}">${voice}</div></td>
