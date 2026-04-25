@@ -453,3 +453,157 @@ class Database:
             saved.append(self._dict(self.conn.execute("SELECT * FROM storyboards WHERE id = ?", (sb_id,)).fetchone()))
         self.conn.commit()
         return saved
+
+    # ── Auto Pipeline Jobs CRUD ──────────────────────────────
+
+    def create_pipeline_job(self, data: dict) -> dict:
+        now = _now()
+        cur = self.conn.execute(
+            """INSERT INTO auto_pipeline_jobs (source_type, source_url, source_title, status,
+               preset_name, pipeline_template, content_format, visual_style, max_episodes,
+               language, voice_preset, browser_profiles,
+               seo_mode, seo_title_template, seo_description_template, seo_tags,
+               upload_targets, upload_privacy, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data.get("source_type", "youtube_link"),
+                data.get("source_url", ""),
+                data.get("source_title", ""),
+                "pending",
+                data.get("preset_name", ""),
+                data.get("pipeline_template", "drama_scene"),
+                data.get("content_format", "Educational / Learning"),
+                data.get("visual_style", "Default"),
+                data.get("max_episodes", 1),
+                data.get("language", "vi"),
+                data.get("voice_preset", ""),
+                json.dumps(data.get("browser_profiles", [])),
+                data.get("seo_mode", "ai_generate"),
+                data.get("seo_title_template", ""),
+                data.get("seo_description_template", ""),
+                json.dumps(data.get("seo_tags", [])),
+                json.dumps(data.get("upload_targets", [])),
+                data.get("upload_privacy", "private"),
+                now, now,
+            ),
+        )
+        self.conn.commit()
+        return self._dict(self.conn.execute("SELECT * FROM auto_pipeline_jobs WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+    def list_pipeline_jobs(self, status: str = None, limit: int = 100) -> List[dict]:
+        if status:
+            rows = self.conn.execute(
+                "SELECT * FROM auto_pipeline_jobs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM auto_pipeline_jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return self._dicts(rows)
+
+    def get_pipeline_job(self, job_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM auto_pipeline_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._dict(row)
+
+    def update_pipeline_job(self, job_id: int, data: dict) -> Optional[dict]:
+        fields = []
+        values = []
+        for key in ["source_title", "status", "error_message", "drama_id",
+                     "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
+                     "preset_name", "pipeline_template", "content_format", "visual_style", 
+                     "max_episodes", "language", "voice_preset", "browser_profiles",
+                     "seo_mode", "seo_title_template", "seo_description_template", "seo_tags",
+                     "upload_targets", "upload_privacy"]:
+            if key in data:
+                fields.append(f"{key} = ?")
+                values.append(data[key] if not isinstance(data[key], (list, dict)) else json.dumps(data[key]))
+        if not fields:
+            return self.get_pipeline_job(job_id)
+        fields.append("updated_at = ?")
+        values.append(_now())
+        values.append(job_id)
+        self.conn.execute(f"UPDATE auto_pipeline_jobs SET {', '.join(fields)} WHERE id = ?", values)
+        self.conn.commit()
+        return self.get_pipeline_job(job_id)
+
+    def delete_pipeline_job(self, job_id: int) -> bool:
+        self.conn.execute("DELETE FROM auto_pipeline_jobs WHERE id = ?", (job_id,))
+        self.conn.commit()
+        return True
+
+    def get_next_pending_job(self) -> Optional[dict]:
+        """Get the oldest pending job for queue processing."""
+        row = self.conn.execute(
+            "SELECT * FROM auto_pipeline_jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+        return self._dict(row)
+
+    # ── Channel Watchers CRUD ────────────────────────────────
+
+    def create_channel_watcher(self, data: dict) -> dict:
+        now = _now()
+        cur = self.conn.execute(
+            """INSERT INTO channel_watchers (platform, channel_url, channel_id, channel_name,
+               preset_name, pipeline_template, content_format, visual_style, max_episodes,
+               language, voice_preset, browser_profiles, seo_mode,
+               upload_targets, upload_privacy, check_interval_minutes,
+               is_active, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data.get("platform", "youtube"),
+                data.get("channel_url", ""),
+                data.get("channel_id", ""),
+                data.get("channel_name", ""),
+                data.get("preset_name", ""),
+                data.get("pipeline_template", "drama_scene"),
+                data.get("content_format", "Educational / Learning"),
+                data.get("visual_style", "Default"),
+                data.get("max_episodes", 1),
+                data.get("language", "vi"),
+                data.get("voice_preset", ""),
+                json.dumps(data.get("browser_profiles", [])),
+                data.get("seo_mode", "ai_generate"),
+                json.dumps(data.get("upload_targets", [])),
+                data.get("upload_privacy", "private"),
+                data.get("check_interval_minutes", 30),
+                1, now, now,
+            ),
+        )
+        self.conn.commit()
+        return self._dict(self.conn.execute("SELECT * FROM channel_watchers WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+    def list_channel_watchers(self) -> List[dict]:
+        rows = self.conn.execute("SELECT * FROM channel_watchers ORDER BY created_at DESC").fetchall()
+        return self._dicts(rows)
+
+    def get_channel_watcher(self, watcher_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM channel_watchers WHERE id = ?", (watcher_id,)).fetchone()
+        return self._dict(row)
+
+    def update_channel_watcher(self, watcher_id: int, data: dict) -> Optional[dict]:
+        fields = []
+        values = []
+        for key in ["channel_name", "channel_id", "last_checked_at", "last_video_id",
+                     "known_video_ids", "check_interval_minutes", "is_active",
+                     "preset_name", "pipeline_template", "content_format", "visual_style",
+                     "max_episodes", "language", "voice_preset", "browser_profiles",
+                     "seo_mode", "upload_targets", "upload_privacy"]:
+            if key in data:
+                fields.append(f"{key} = ?")
+                val = data[key]
+                values.append(json.dumps(val) if isinstance(val, (list, dict)) else val)
+        if not fields:
+            return self.get_channel_watcher(watcher_id)
+        fields.append("updated_at = ?")
+        values.append(_now())
+        values.append(watcher_id)
+        self.conn.execute(f"UPDATE channel_watchers SET {', '.join(fields)} WHERE id = ?", values)
+        self.conn.commit()
+        return self.get_channel_watcher(watcher_id)
+
+    def delete_channel_watcher(self, watcher_id: int) -> bool:
+        self.conn.execute("DELETE FROM channel_watchers WHERE id = ?", (watcher_id,))
+        self.conn.commit()
+        return True
+

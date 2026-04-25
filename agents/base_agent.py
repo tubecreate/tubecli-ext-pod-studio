@@ -10,13 +10,13 @@ logger = logging.getLogger("ContentStudio.Agent")
 
 # Language-specific system prompt appendages
 LANGUAGE_PROMPTS = {
-    "vi": "Viết toàn bộ nội dung bằng tiếng Việt. Sử dụng văn phong tự nhiên, phù hợp drama/novel Việt Nam.",
-    "en": "Write all content in English. Use natural screenwriting conventions.",
-    "zh": "使用中文撰写所有内容。遵循中文短剧编剧规范。",
-    "ko": "한국어로 모든 콘텐츠를 작성하세요. 한국 드라마 대본 형식을 따르세요.",
-    "ja": "すべてのコンテンツを日本語で作成してください。日本のドラマ脚本の形式に従ってください。",
-    "th": "เขียนเนื้อหาทั้งหมดเป็นภาษาไทย ใช้รูปแบบบทละครไทย",
-    "id": "Tulis semua konten dalam Bahasa Indonesia. Gunakan format penulisan skenario drama.",
+    "vi": "CRITICAL: VIẾT TOÀN BỘ NỘI DUNG BẰNG TIẾNG VIỆT (VIETNAMESE). Dịch tất cả nội dung gốc sang tiếng Việt. Giữ nguyên đúng định dạng yêu cầu.",
+    "en": "CRITICAL: Write all content in English. Translate original content to English if needed. Keep the exact format structure.",
+    "zh": "CRITICAL: 必须使用中文撰写所有内容。将原始内容翻译为中文。保持严格的格式。",
+    "ko": "CRITICAL: 모든 콘텐츠를 한국어로 작성하세요. 원본 콘텐츠를 한국어로 번역하세요. 형식을 엄격하게 유지하세요.",
+    "ja": "CRITICAL: すべてのコンテンツを日本語で作成してください。元のコンテンツを日本語に翻訳してください。フォーマットを厳密に維持してください。",
+    "th": "CRITICAL: เขียนเนื้อหาทั้งหมดเป็นภาษาไทย แปลเนื้อหาต้นฉบับเป็นภาษาไทยหากจำเป็น รักษารูปแบบที่กำหนดอย่างเคร่งครัด",
+    "id": "CRITICAL: Tulis semua konten dalam Bahasa Indonesia. Terjemahkan konten asli ke Bahasa Indonesia jika perlu. Pertahankan struktur format.",
 }
 
 
@@ -153,7 +153,18 @@ class ContentAgent:
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
-                        error_msg = f"AI API error {response.status_code}: {body.decode()[:500]}"
+                        body_text = body.decode(errors="replace")[:500]
+                        # Detect specific API errors
+                        if response.status_code == 429:
+                            error_msg = f"[AI QUOTA] Model '{model}' has exceeded rate limit or quota. Please wait or switch to another model/API key.\n\nDetails: {body_text}"
+                        elif response.status_code in (401, 403):
+                            error_msg = f"[AI AUTH] Authentication failed for model '{model}'. Please check your API key in Settings.\n\nDetails: {body_text}"
+                        elif response.status_code == 404:
+                            error_msg = f"[AI MODEL] Model '{model}' not found at {base_url}. Please check model name in Settings.\n\nDetails: {body_text}"
+                        elif response.status_code >= 500:
+                            error_msg = f"[AI SERVER] AI server error (HTTP {response.status_code}) for model '{model}'. The AI provider may be down.\n\nDetails: {body_text}"
+                        else:
+                            error_msg = f"[AI ERROR] HTTP {response.status_code} from model '{model}': {body_text}"
                         logger.error(error_msg)
                         yield f"❌ {error_msg}"
                         return
@@ -173,10 +184,12 @@ class ContentAgent:
                         except json.JSONDecodeError:
                             continue
         except httpx.ConnectError as e:
-            yield f"❌ Cannot connect to AI API: {e}"
+            yield f"❌ [CONNECTION] Cannot connect to AI API at {base_url}. Model: '{model}'. Is the server running?\n\nError: {e}"
+        except httpx.TimeoutException as e:
+            yield f"❌ [TIMEOUT] AI request timed out for model '{model}'. The model may be overloaded or the content is too long.\n\nError: {e}"
         except Exception as e:
             logger.error(f"Agent streaming error: {e}")
-            yield f"❌ Error: {str(e)[:300]}"
+            yield f"❌ [ERROR] Model '{model}': {str(e)[:300]}"
 
     async def chat_complete(self, user_message: str, language: str,
                             base_url: str, api_key: str, model: str,

@@ -48,6 +48,7 @@ function getCurrentPipeline() {
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadDramas();
+    loadAiModelInfo();
 });
 
 // ── API Helpers ────────────────────────────────────────────
@@ -66,6 +67,57 @@ async function apiFetch(path, opts = {}) {
         throw new Error(`[${resp.status}] ${detail}`);
     }
     return resp.json();
+}
+
+// ── AI Model Info ──────────────────────────────────────────
+async function loadAiModelInfo() {
+    const label = document.getElementById('aiModelLabel');
+    const dot = document.getElementById('aiModelDot');
+    const badge = document.getElementById('aiModelBadge');
+    if (!label || !dot) return;
+
+    try {
+        const info = await apiFetch('/settings/ai-info');
+
+        if (!info.has_key || !info.model || info.model === '(not configured)') {
+            // RED: No API key configured
+            dot.style.background = '#ef4444';
+            label.textContent = 'AI chưa cấu hình';
+            label.style.color = '#ef4444';
+            badge.title = 'Chưa có API Key — vào Settings để cấu hình';
+            return;
+        }
+
+        // Show model name immediately with yellow (checking...)
+        label.textContent = info.model;
+        dot.style.background = '#eab308'; // yellow = checking
+        badge.title = `Đang kiểm tra kết nối... | ${info.source} | ${info.base_url_host}`;
+
+        // Run health check in background
+        try {
+            const test = await apiFetch('/settings/ai-test', { method: 'POST' });
+            if (test.status === 'success') {
+                // GREEN: AI is working
+                dot.style.background = '#22c55e';
+                badge.title = `✅ Hoạt động tốt | ${info.model} | ${info.source} | ${info.base_url_host}`;
+            } else {
+                // YELLOW: Key exists but test returned error (quota, wrong model, etc.)
+                dot.style.background = '#eab308';
+                label.style.color = '#eab308';
+                badge.title = `⚠️ ${test.message || 'AI test failed'} | ${info.model}`;
+            }
+        } catch (testErr) {
+            // YELLOW: couldn't reach test endpoint
+            dot.style.background = '#eab308';
+            badge.title = `⚠️ Không thể kiểm tra AI: ${testErr.message}`;
+        }
+    } catch (e) {
+        // RED: API endpoint unreachable
+        dot.style.background = '#ef4444';
+        label.textContent = 'Lỗi tải AI';
+        label.style.color = '#ef4444';
+        badge.title = `❌ ${e.message}`;
+    }
 }
 
 // ── Drama CRUD ─────────────────────────────────────────────
@@ -562,6 +614,9 @@ async function deleteDrama(dramaId, event) {
 
 async function selectDrama(dramaId) {
     try {
+        // Close Pipeline Queue view if open
+        _closePipelineView();
+
         currentDrama = await apiFetch(`/dramas/${dramaId}`);
         renderSidebar();
         // Auto-select first episode or create one
@@ -601,6 +656,9 @@ async function addEpisode(dramaId) {
 
 async function selectEpisode(episodeId) {
     try {
+        // Close Pipeline Queue view if open
+        _closePipelineView();
+
         currentEpisode = await apiFetch(`/episodes/${episodeId}`);
         showEditor();
         renderSidebar();
@@ -892,7 +950,12 @@ async function doRewrite() {
         }
 
         updateScriptCount();
-        toast('Rewrite complete!', 'success');
+        // Check if AI returned an error instead of content
+        if (fullText.startsWith('\u274c')) {
+            toast('AI Error: ' + fullText.substring(0, 200), 'error');
+        } else {
+            toast('Rewrite complete!', 'success');
+        }
     } catch (e) {
         toast(`Rewrite failed: ${e.message}`, 'error');
         document.getElementById('scriptLoading').style.display = 'none';
@@ -1758,6 +1821,13 @@ async function sendChat() {
         }
 
         assistantEl.classList.remove('streaming');
+        // Highlight AI errors visually
+        if (fullText.startsWith('\u274c')) {
+            assistantEl.style.color = '#ef4444';
+            assistantEl.style.background = 'rgba(239,68,68,0.08)';
+            assistantEl.style.borderLeft = '3px solid #ef4444';
+            assistantEl.style.paddingLeft = '10px';
+        }
     } catch (e) {
         assistantEl.textContent = `❌ Error: ${e.message}`;
     } finally {
@@ -2595,6 +2665,13 @@ async function _runAgentStreamAction(agentType, message, targetTextareaId, count
                     }
                 } catch (e) {}
             }
+        }
+        // Detect AI API errors in streamed response
+        if (fullText.startsWith('\u274c')) {
+            const errMsg = fullText.substring(0, 300);
+            document.getElementById(countId).textContent = 'AI Error!';
+            toast('AI Error: ' + errMsg, 'error');
+            throw new Error('AI_ERROR: ' + errMsg);
         }
         document.getElementById(countId).textContent = `${fullText.length} chars`;
     } catch (e) {
@@ -4823,3 +4900,795 @@ function _fmtTime(s) {
     return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+// ── Auto Pipeline Module ─────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+let _apJobPollInterval = null;
+let _apChipSelectedProfiles = [];
+
+function togglePipelineView() {
+    const mainContent = document.getElementById('mainPanel');
+    const pipelineView = document.getElementById('pipelineView');
+    
+    if (pipelineView.style.display === 'none') {
+        mainContent.style.display = 'none';
+        pipelineView.style.display = 'flex';
+        _initAutoPipelineModal();
+    } else {
+        _closePipelineView();
+    }
+}
+
+/** Close Pipeline Queue view and restore main content panel. */
+function _closePipelineView() {
+    const mainContent = document.getElementById('mainPanel');
+    const pipelineView = document.getElementById('pipelineView');
+    if (pipelineView && pipelineView.style.display !== 'none') {
+        pipelineView.style.display = 'none';
+        mainContent.style.display = 'flex';
+        if (_apJobPollInterval) { clearInterval(_apJobPollInterval); _apJobPollInterval = null; }
+    }
+}
+
+async function _initAutoPipelineModal() {
+    // Load presets from wizard system
+    _loadApPresets();
+
+    // Load browser profiles into cache
+    await _loadBrowserProfilesIntoSelect('apBrowserProfiles');
+
+    // Initialize chip UI from cache
+    const savedStr = localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '';
+    if (savedStr && _apChipSelectedProfiles.length === 0) {
+        _apChipSelectedProfiles = savedStr.split(',').filter(s => s && _browserProfilesCache.some(p => p.name === s));
+    }
+    _renderApBrowserChips();
+
+    // Load voice profiles
+    await _loadVoiceProfilesIntoSelect('apVoice');
+
+    // Load jobs
+    await loadApJobs();
+
+    // Load watchers
+    await loadApWatchers();
+
+    // URL count watcher
+    const urlInput = document.getElementById('apUrlList');
+    urlInput.removeEventListener('input', _apCountUrls);
+    urlInput.addEventListener('input', _apCountUrls);
+
+    // Check pipeline & watcher status
+    _refreshApStatus();
+}
+
+// ── Preset System ──
+function _loadApPresets() {
+    const sel = document.getElementById('apPresetSelect');
+    if (!sel) return;
+    const presets = _getPresets(); // reuse wizard presets
+    sel.innerHTML = '<option value="">-- Chọn preset --</option>';
+    for (const name of Object.keys(presets).sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+    }
+}
+
+function applyApPreset() {
+    const sel = document.getElementById('apPresetSelect');
+    if (!sel || !sel.value) {
+        document.getElementById('apPresetInfo').textContent = '';
+        return;
+    }
+    const presets = _getPresets();
+    const data = presets[sel.value];
+    if (!data) return;
+
+    // Map wizard fields → auto pipeline hidden fields
+    const pipelineMap = {
+        wizPipelineTemplate: 'apPipeline',
+        wizLanguage: 'apLanguage',
+        wizContentFormat: 'apContentFormat',
+        wizEpisodes: 'apMaxEpisodes',
+    };
+    for (const [wizId, apId] of Object.entries(pipelineMap)) {
+        const val = data[wizId];
+        if (val !== undefined) {
+            const el = document.getElementById(apId);
+            if (el) el.value = val;
+        }
+    }
+
+    // Build info display
+    const infoParts = [];
+    const pipelineLabels = {
+        drama_scene: '🎞 Cinematic', drama_full: '📺 Slideshow',
+        audio_story: '🎧 Audio', content_only: '📝 Content'
+    };
+    const langLabels = { vi: '🇻🇳', en: '🇬🇧', zh: '🇨🇳', ja: '🇯🇵', ko: '🇰🇷' };
+
+    const pl = data.wizPipelineTemplate || '';
+    if (pipelineLabels[pl]) infoParts.push(pipelineLabels[pl]);
+    const lg = data.wizLanguage || '';
+    if (langLabels[lg]) infoParts.push(langLabels[lg]);
+    const ep = data.wizEpisodes || '1';
+    infoParts.push(`${ep} ep`);
+    const cf = data.wizContentFormat || '';
+    if (cf) infoParts.push(cf.split('/')[0].trim());
+
+    document.getElementById('apPresetInfo').textContent = infoParts.join(' • ');
+
+    toast(`⚡ Preset "${sel.value}" đã áp dụng`, 'success');
+}
+
+function _apCountUrls() {
+    const text = document.getElementById('apUrlList').value;
+    const urls = text.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+    document.getElementById('apUrlCount').textContent = `${urls.length} links`;
+}
+
+// ── Tab Switching ──
+function switchApTab(tab) {
+    document.querySelectorAll('.apTabContent').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.apTab').forEach(el => el.classList.remove('active'));
+    const tabEl = document.getElementById('apTab' + tab.charAt(0).toUpperCase() + tab.slice(1));
+    if (tabEl) tabEl.style.display = '';
+    document.querySelector(`.apTab[data-tab="${tab}"]`)?.classList.add('active');
+
+    // Show/hide submit button based on tab
+    const submitBtn = document.getElementById('apSubmitBtn');
+    if (submitBtn) submitBtn.style.display = (tab === 'batch') ? '' : 'none';
+
+    if (tab === 'jobs') loadApJobs();
+    if (tab === 'watchers') loadApWatchers();
+}
+
+// ── Upload Target Toggle ──
+function toggleApUploadTarget(platform) {
+    if (platform === 'fb') {
+        const checked = document.getElementById('apUploadFb').checked;
+        const sel = document.getElementById('apFbPage');
+        sel.style.display = checked ? '' : 'none';
+        sel.disabled = !checked;
+        if (checked && sel.options.length <= 1) _loadFbPages();
+    } else if (platform === 'yt') {
+        const checked = document.getElementById('apUploadYt').checked;
+        const sel = document.getElementById('apYtChannel');
+        sel.style.display = checked ? '' : 'none';
+        sel.disabled = !checked;
+        if (checked && sel.options.length <= 1) _loadYtChannels();
+    }
+}
+
+async function _loadFbPages() {
+    const sel = document.getElementById('apFbPage');
+    try {
+        const res = await fetch('/api/v1/video_manager/accounts?provider=facebook');
+        const data = await res.json();
+        if (data.accounts && data.accounts.length > 0) {
+            for (const acc of data.accounts) {
+                try {
+                    const chRes = await fetch(`/api/v1/video_manager/channels?provider=facebook&cred_id=${acc.cred_id || acc.id || ''}`);
+                    const chData = await chRes.json();
+                    (chData.channels || []).forEach(ch => {
+                        const opt = document.createElement('option');
+                        opt.value = JSON.stringify({ provider: 'facebook', cred_id: acc.cred_id || acc.id, channel_id: ch.id });
+                        opt.textContent = `${ch.name || ch.id}`;
+                        sel.appendChild(opt);
+                    });
+                } catch(e) {}
+            }
+        }
+        if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy page nào</option>';
+    } catch(e) {
+        sel.innerHTML += `<option value="" disabled>⚠️ ${e.message}</option>`;
+    }
+}
+
+async function _loadYtChannels() {
+    const sel = document.getElementById('apYtChannel');
+    try {
+        const res = await fetch('/api/v1/video_manager/accounts?provider=youtube');
+        const data = await res.json();
+        if (data.accounts && data.accounts.length > 0) {
+            for (const acc of data.accounts) {
+                try {
+                    const chRes = await fetch(`/api/v1/video_manager/channels?provider=youtube&email=${acc.email || ''}&cred_id=${acc.cred_id || acc.id || ''}`);
+                    const chData = await chRes.json();
+                    (chData.channels || []).forEach(ch => {
+                        const opt = document.createElement('option');
+                        opt.value = JSON.stringify({ provider: 'youtube', email: acc.email, cred_id: acc.cred_id || acc.id, channel_id: ch.id });
+                        opt.textContent = `${ch.name || ch.id} (${acc.email || ''})`;
+                        sel.appendChild(opt);
+                    });
+                } catch(e) {}
+            }
+        }
+        if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy channel nào</option>';
+    } catch(e) {
+        sel.innerHTML += `<option value="" disabled>⚠️ ${e.message}</option>`;
+    }
+}
+
+// ── Submit Batch Queue ──
+async function submitBatchQueue() {
+    const urlText = document.getElementById('apUrlList').value;
+    const urls = urlText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+    if (urls.length === 0) {
+        toast('Vui lòng nhập ít nhất 1 link YouTube', 'error');
+        return;
+    }
+
+    // Gather config
+    const selectedBrowsers = [..._apChipSelectedProfiles];
+
+    const voiceSel = document.getElementById('apVoice');
+    let voicePreset = voiceSel ? voiceSel.value : '';
+    if (voiceSel && voiceSel.selectedIndex >= 0 && voicePreset) {
+        const engine = voiceSel.options[voiceSel.selectedIndex].getAttribute('data-engine') || 'edge';
+        if (!voicePreset.includes('|')) voicePreset = `${voicePreset}|${engine}`;
+    }
+
+    const seoMode = document.querySelector('input[name="apSeoMode"]:checked')?.value || 'ai_generate';
+    const seoTagsStr = document.getElementById('apSeoTags').value;
+    const seoTags = seoTagsStr ? seoTagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
+
+    // Upload targets
+    const uploadTargets = [];
+    if (document.getElementById('apUploadFb').checked) {
+        const fbVal = document.getElementById('apFbPage').value;
+        if (fbVal) {
+            try { uploadTargets.push(JSON.parse(fbVal)); } catch(e) {}
+        }
+    }
+    if (document.getElementById('apUploadYt').checked) {
+        const ytVal = document.getElementById('apYtChannel').value;
+        if (ytVal) {
+            try { uploadTargets.push(JSON.parse(ytVal)); } catch(e) {}
+        }
+    }
+
+    // Get full preset data for project creation
+    const presetName = document.getElementById('apPresetSelect')?.value || '';
+    let presetData = null;
+    if (presetName) {
+        const allPresets = _getPresets();
+        presetData = allPresets[presetName] || null;
+    }
+
+    const payload = {
+        urls: urls,
+        pipeline_template: document.getElementById('apPipeline').value,
+        language: document.getElementById('apLanguage').value,
+        voice_preset: voicePreset,
+        browser_profiles: selectedBrowsers,
+        content_format: document.getElementById('apContentFormat').value,
+        max_episodes: parseInt(document.getElementById('apMaxEpisodes').value) || 1,
+        seo_mode: seoMode,
+        seo_tags: seoTags,
+        upload_targets: uploadTargets,
+        upload_privacy: document.getElementById('apUploadPrivacy').value,
+        preset_name: presetName,
+        preset_data: presetData,
+    };
+
+    try {
+        document.getElementById('apSubmitBtn').disabled = true;
+        document.getElementById('apSubmitBtn').textContent = '⏳ Đang tạo...';
+
+        const res = await apiFetch('/auto-pipeline/jobs', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+
+        toast(`✅ Đã tạo ${res.count} jobs thành công!`, 'success');
+        document.getElementById('apUrlList').value = '';
+        _apCountUrls();
+
+        // Auto-start the pipeline
+        await apiFetch('/auto-pipeline/start', { method: 'POST' });
+
+        // Switch to jobs tab
+        switchApTab('jobs');
+        await loadApJobs();
+        _startApJobPolling();
+
+    } catch(e) {
+        toast('❌ Lỗi tạo jobs: ' + e.message, 'error');
+    } finally {
+        document.getElementById('apSubmitBtn').disabled = false;
+        document.getElementById('apSubmitBtn').innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> ⚡ Bắt Đầu Tự Động';
+    }
+}
+
+// ── Job List ──
+async function loadApJobs() {
+    try {
+        const res = await apiFetch('/auto-pipeline/jobs');
+        const jobs = res.jobs || [];
+        const container = document.getElementById('apJobList');
+        if (jobs.length === 0) {
+            container.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:var(--text-3);">Chưa có job nào trong hàng đợi.</td></tr>';
+            return;
+        }
+        
+        // Update global variable for edit reference
+        window._apJobsCache = jobs;
+        
+        container.innerHTML = jobs.map(j => _renderApJobRow(j)).join('');
+    } catch(e) {
+        console.warn('Load AP jobs failed:', e);
+    }
+}
+
+function _renderApJobRow(job) {
+    const statusIcons = {
+        pending: '⏳ Pending', extracting: '📥 Extracting', processing: '⚙️ Processing',
+        uploading: '📤 Uploading', done: '✅ Done', error: '❌ Error'
+    };
+    
+    const title = job.source_title || job.source_url.split('v=')[1] || job.source_url;
+    const voiceParts = (job.voice_preset || '').split('|');
+    const voice = voiceParts.length > 0 && voiceParts[0] ? voiceParts[0] : 'Mặc định';
+    
+    let browser = 'Mặc định';
+    try {
+        const profiles = typeof job.browser_profiles === 'string' ? JSON.parse(job.browser_profiles) : job.browser_profiles;
+        if (profiles && profiles.length > 0) browser = profiles[0] + (profiles.length > 1 ? ` (+${profiles.length-1})` : '');
+    } catch(e) {}
+    
+    let upload = 'Private';
+    try {
+        const targets = typeof job.upload_targets === 'string' ? JSON.parse(job.upload_targets) : job.upload_targets;
+        if (targets && targets.length > 0) upload = targets.length + ' targets';
+    } catch(e) {}
+
+    const canEdit = job.status === 'pending' || job.status === 'error';
+
+    return `<tr class="pq-row">
+        <td class="pq-col-id">#${job.id}</td>
+        <td class="pq-col-source">
+            <div class="pq-truncate pq-title" title="${title}">${title}</div>
+            <div class="pq-truncate pq-url" title="${job.source_url}"><a href="${job.source_url}" target="_blank" style="color:inherit; text-decoration:none;">${job.source_url}</a></div>
+            ${job.error_message ? `<div style="color:var(--error); font-size:10px; margin-top:4px;" title="${job.error_message.replace(/"/g,'&quot;')}">⚠️ Lỗi: ${job.error_message.substring(0,50)}...</div>` : ''}
+        </td>
+        <td class="pq-col-preset"><div class="pq-truncate" title="${job.preset_name || 'Manual'}">${job.preset_name || 'Manual'}</div></td>
+        <td class="pq-col-voice"><div class="pq-truncate" title="${voice}">${voice}</div></td>
+        <td class="pq-col-browser"><div class="pq-truncate" title="${browser}">${browser}</div></td>
+        <td class="pq-col-upload"><div class="pq-truncate">${upload}</div></td>
+        <td class="pq-col-status">
+            <span class="pq-badge ${job.status}">${statusIcons[job.status] || job.status}</span>
+        </td>
+        <td class="pq-col-actions">
+            <div style="display:flex; justify-content:flex-end; gap:8px;">
+                ${job.drama_id ? `<button class="pq-edit-btn" onclick="togglePipelineView();selectDrama(${job.drama_id})" title="Mở Project">📂</button>` : ''}
+                ${canEdit ? `<button class="pq-edit-btn" onclick="editApJob(${job.id})" title="Chỉnh sửa">✏️</button>` : ''}
+                ${canEdit ? `<button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>` : ''}
+            </div>
+        </td>
+    </tr>`;
+}
+
+// ── Inline Edit ──
+let _editJobBrowserChips = [];
+
+async function editApJob(jobId) {
+    const job = window._apJobsCache?.find(j => j.id === jobId);
+    if (!job) return;
+    
+    document.getElementById('editJobId').value = job.id;
+    document.getElementById('editJobIdText').textContent = job.id;
+    
+    // Preset
+    const presetSel = document.getElementById('editJobPreset');
+    presetSel.innerHTML = '<option value="">-- Chọn preset --</option>';
+    const presets = _getPresets();
+    for (const name of Object.keys(presets).sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        presetSel.appendChild(opt);
+    }
+    presetSel.value = job.preset_name || '';
+    
+    // Voice
+    const voiceSel = document.getElementById('editJobVoice');
+    await _loadVoiceProfilesIntoSelect('editJobVoice');
+    const voiceParts = (job.voice_preset || '').split('|');
+    voiceSel.value = voiceParts[0] || '';
+    
+    // Browser profiles
+    let profiles = [];
+    try { profiles = typeof job.browser_profiles === 'string' ? JSON.parse(job.browser_profiles) : job.browser_profiles; } catch(e) {}
+    _editJobBrowserChips = Array.isArray(profiles) ? profiles : [];
+    
+    // Upload Targets
+    let targets = [];
+    try { targets = typeof job.upload_targets === 'string' ? JSON.parse(job.upload_targets) : job.upload_targets; } catch(e) {}
+    document.getElementById('editJobUpload').value = JSON.stringify(targets || [], null, 2);
+    
+    _renderEditJobBrowserChips();
+    document.getElementById('apJobEditModal').style.display = 'flex';
+}
+
+function _renderEditJobBrowserChips() {
+    const container = document.getElementById('editJobBrowserChipSelect');
+    const emptySpan = document.getElementById('editJobBrowserChipEmpty');
+    container.querySelectorAll('.chip-item').forEach(el => el.remove());
+    
+    if (_editJobBrowserChips.length > 0) {
+        emptySpan.style.display = 'none';
+        _editJobBrowserChips.forEach((name, idx) => {
+            const chip = document.createElement('div');
+            chip.className = 'chip-item';
+            chip.innerHTML = `<span>${name}</span><button onclick="event.stopPropagation(); _editJobBrowserChips.splice(${idx},1); _renderEditJobBrowserChips();">✕</button>`;
+            container.insertBefore(chip, container.querySelector('div[style]'));
+        });
+    } else {
+        emptySpan.style.display = '';
+    }
+}
+
+function toggleEditJobBrowserChipMenu() {
+    const menu = document.getElementById('editJobBrowserChipMenu');
+    if (menu.style.display === 'block') {
+        menu.style.display = 'none';
+        return;
+    }
+    menu.innerHTML = '';
+    _browserProfilesCache.forEach(p => {
+        if (!_editJobBrowserChips.includes(p.name)) {
+            const div = document.createElement('div');
+            div.className = 'chip-dropdown-item';
+            div.textContent = p.name;
+            div.onclick = (e) => {
+                e.stopPropagation();
+                _editJobBrowserChips.push(p.name);
+                menu.style.display = 'none';
+                _renderEditJobBrowserChips();
+            };
+            menu.appendChild(div);
+        }
+    });
+    if (menu.innerHTML === '') menu.innerHTML = '<div style="padding:8px 12px; font-size:11px; color:var(--text-3);">Không còn profile nào</div>';
+    menu.style.display = 'block';
+    
+    document.addEventListener('click', function closeMenu(e) {
+        if (!e.target.closest('#editJobBrowserChipMenu') && !e.target.closest('#editJobBrowserAddBtn')) {
+            menu.style.display = 'none';
+            document.removeEventListener('click', closeMenu);
+        }
+    });
+}
+
+async function saveApJobEdit() {
+    const jobId = document.getElementById('editJobId').value;
+    const preset_name = document.getElementById('editJobPreset').value;
+    
+    const voiceSel = document.getElementById('editJobVoice');
+    let voicePreset = voiceSel.value;
+    if (voiceSel.selectedIndex >= 0 && voicePreset) {
+        const engine = voiceSel.options[voiceSel.selectedIndex].getAttribute('data-engine') || 'edge';
+        if (!voicePreset.includes('|')) voicePreset = `${voicePreset}|${engine}`;
+    }
+    
+    let upload_targets = [];
+    try {
+        const val = document.getElementById('editJobUpload').value.trim();
+        if (val) upload_targets = JSON.parse(val);
+    } catch(e) {
+        toast('Định dạng JSON Upload Targets không hợp lệ', 'error');
+        return;
+    }
+    
+    const payload = {
+        preset_name,
+        voice_preset: voicePreset,
+        browser_profiles: _editJobBrowserChips,
+        upload_targets
+    };
+    
+    // Automatically extract hidden fields from preset if a preset was chosen
+    if (preset_name) {
+        const presets = _getPresets();
+        const data = presets[preset_name];
+        if (data) {
+            if (data.wizPipelineTemplate) payload.pipeline_template = data.wizPipelineTemplate;
+            if (data.wizLanguage) payload.language = data.wizLanguage;
+            if (data.wizContentFormat) payload.content_format = data.wizContentFormat;
+            if (data.wizEpisodes) payload.max_episodes = data.wizEpisodes;
+        }
+    }
+    
+    try {
+        await apiFetch(`/auto-pipeline/jobs/${jobId}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+        });
+        toast('Đã lưu thay đổi', 'success');
+        document.getElementById('apJobEditModal').style.display = 'none';
+        await loadApJobs();
+    } catch(e) {
+        toast('Lỗi khi lưu: ' + e.message, 'error');
+    }
+}
+
+async function deleteApJob(jobId) {
+    try {
+        await apiFetch(`/auto-pipeline/jobs/${jobId}`, { method: 'DELETE' });
+        toast('Đã xóa job', 'info');
+        await loadApJobs();
+    } catch(e) {
+        toast('Lỗi xóa job: ' + e.message, 'error');
+    }
+}
+
+// ── Pipeline Start/Stop ──
+async function toggleAutoPipelineRun() {
+    try {
+        const statusRes = await apiFetch('/auto-pipeline/status');
+        if (statusRes.running) {
+            await apiFetch('/auto-pipeline/stop', { method: 'POST' });
+            toast('⏸ Pipeline đã dừng', 'info');
+        } else {
+            await apiFetch('/auto-pipeline/start', { method: 'POST' });
+            toast('▶ Pipeline đã bắt đầu', 'success');
+            _startApJobPolling();
+        }
+        setTimeout(_refreshApStatus, 500);
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+    }
+}
+
+function _startApJobPolling() {
+    if (_apJobPollInterval) clearInterval(_apJobPollInterval);
+    _apJobPollInterval = setInterval(async () => {
+        await loadApJobs();
+        await _refreshApStatus();
+    }, 5000);
+}
+
+async function _refreshApStatus() {
+    try {
+        // Refresh sidebar project list if any job is processing to show newly created projects
+        const pRes = await apiFetch('/auto-pipeline/status');
+        if (pRes.running) {
+            loadDramas();
+        }
+        
+        // Pipeline status
+        const pText = document.getElementById('apJobStatusText');
+        const pBtn = document.getElementById('apPipelineToggleBtn');
+        if (pRes.running) {
+            pText.textContent = `⚙️ Đang chạy (job #${pRes.current_job_id || '?'}) | ${pRes.pending_count} pending`;
+            pBtn.textContent = '⏸ Stop';
+            pBtn.style.color = '#ef4444';
+        } else {
+            pText.textContent = `⏸ Idle | ${pRes.pending_count} pending`;
+            pBtn.textContent = '▶ Start Queue';
+            pBtn.style.color = '';
+            if (_apJobPollInterval && pRes.pending_count === 0) {
+                clearInterval(_apJobPollInterval);
+                _apJobPollInterval = null;
+            }
+        }
+
+        // Watcher status
+        const wRes = await apiFetch('/channel-watchers/status');
+        const wText = document.getElementById('apWatcherStatusText');
+        const wBtn = document.getElementById('apWatcherToggleBtn');
+        if (wRes.running) {
+            wText.textContent = '🟢 Đang theo dõi';
+            wBtn.textContent = '⏸ Tạm dừng';
+            wBtn.style.color = '#ef4444';
+        } else {
+            wText.textContent = '⏸ Chưa chạy';
+            wBtn.textContent = '▶ Bật theo dõi';
+            wBtn.style.color = '';
+        }
+    } catch(e) {}
+}
+
+// ── Channel Watchers ──
+async function loadApWatchers() {
+    try {
+        const res = await apiFetch('/channel-watchers');
+        const watchers = res.watchers || [];
+        const container = document.getElementById('apWatcherList');
+        if (watchers.length === 0) {
+            container.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-3); font-size:13px;">Chưa có kênh nào. Thêm kênh YouTube để bắt đầu theo dõi.</div>';
+            return;
+        }
+        container.innerHTML = watchers.map(w => _renderWatcherCard(w)).join('');
+    } catch(e) {
+        console.warn('Load watchers failed:', e);
+    }
+}
+
+function _renderWatcherCard(w) {
+    const active = w.is_active;
+    const lastChecked = w.last_checked_at ? new Date(w.last_checked_at).toLocaleString() : 'Chưa check';
+    const interval = w.check_interval_minutes || 30;
+    const name = w.channel_name || w.channel_url;
+    const platform = w.platform === 'youtube' ? '🔴' : w.platform === 'facebook' ? '🔵' : '⬛';
+
+    return `<div style="display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--bg-1); border:1px solid var(--border); border-radius:8px;">
+        <span style="font-size:18px;">${platform}</span>
+        <div style="flex:1; min-width:0;">
+            <div style="font-size:12px; font-weight:500; color:var(--text-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${name}</div>
+            <div style="font-size:10px; color:var(--text-3);">Mỗi ${interval} phút | Last: ${lastChecked}</div>
+        </div>
+        <span style="font-size:10px; padding:2px 8px; border-radius:4px; background:${active ? '#10b98122' : '#6b728022'}; color:${active ? '#10b981' : '#6b7280'}; font-weight:600;">
+            ${active ? 'Active' : 'Paused'}
+        </span>
+        <button class="btn btn-sm" onclick="toggleWatcherActive(${w.id}, ${active ? 0 : 1})" style="padding:2px 6px; font-size:10px;">
+            ${active ? '⏸' : '▶'}
+        </button>
+        <button class="btn btn-sm" onclick="deleteWatcher(${w.id})" style="padding:2px 6px; font-size:10px; color:#ef4444;">✕</button>
+    </div>`;
+}
+
+async function addChannelWatcher() {
+    const url = document.getElementById('apNewChannelUrl').value.trim();
+    if (!url) {
+        toast('Vui lòng nhập URL kênh', 'error');
+        return;
+    }
+
+    // Gather current batch config as defaults for watcher
+    const selectedBrowsers = [..._apChipSelectedProfiles];
+    const voiceSel = document.getElementById('apVoice');
+    let voicePreset = voiceSel ? voiceSel.value : '';
+    if (voiceSel && voiceSel.selectedIndex >= 0 && voicePreset) {
+        const engine = voiceSel.options[voiceSel.selectedIndex].getAttribute('data-engine') || 'edge';
+        if (!voicePreset.includes('|')) voicePreset = `${voicePreset}|${engine}`;
+    }
+
+    const uploadTargets = [];
+    if (document.getElementById('apUploadFb').checked) {
+        const fbVal = document.getElementById('apFbPage').value;
+        if (fbVal) try { uploadTargets.push(JSON.parse(fbVal)); } catch(e) {}
+    }
+    if (document.getElementById('apUploadYt').checked) {
+        const ytVal = document.getElementById('apYtChannel').value;
+        if (ytVal) try { uploadTargets.push(JSON.parse(ytVal)); } catch(e) {}
+    }
+
+    try {
+        await apiFetch('/channel-watchers', {
+            method: 'POST',
+            body: JSON.stringify({
+                channel_url: url,
+                platform: url.includes('facebook') ? 'facebook' : url.includes('tiktok') ? 'tiktok' : 'youtube',
+                pipeline_template: document.getElementById('apPipeline').value,
+                language: document.getElementById('apLanguage').value,
+                voice_preset: voicePreset,
+                browser_profiles: selectedBrowsers,
+                content_format: document.getElementById('apContentFormat').value,
+                max_episodes: parseInt(document.getElementById('apMaxEpisodes').value) || 1,
+                seo_mode: document.querySelector('input[name="apSeoMode"]:checked')?.value || 'ai_generate',
+                upload_targets: uploadTargets,
+                upload_privacy: document.getElementById('apUploadPrivacy').value,
+                check_interval_minutes: 30,
+            }),
+        });
+        toast('✅ Đã thêm kênh theo dõi', 'success');
+        document.getElementById('apNewChannelUrl').value = '';
+        await loadApWatchers();
+    } catch(e) {
+        toast('❌ Lỗi: ' + e.message, 'error');
+    }
+}
+
+async function toggleWatcherActive(watcherId, newState) {
+    try {
+        await apiFetch(`/channel-watchers/${watcherId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ is_active: newState }),
+        });
+        await loadApWatchers();
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+    }
+}
+
+async function deleteWatcher(watcherId) {
+    if (!confirm('Xóa kênh theo dõi này?')) return;
+    try {
+        await apiFetch(`/channel-watchers/${watcherId}`, { method: 'DELETE' });
+        toast('Đã xóa', 'info');
+        await loadApWatchers();
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+    }
+}
+
+async function toggleChannelWatcher() {
+    try {
+        const res = await apiFetch('/channel-watchers/status');
+        if (res.running) {
+            await apiFetch('/channel-watchers/stop', { method: 'POST' });
+            toast('⏸ Channel watcher đã dừng', 'info');
+        } else {
+            await apiFetch('/channel-watchers/start', { method: 'POST' });
+            toast('🟢 Channel watcher đã bật', 'success');
+        }
+        setTimeout(_refreshApStatus, 500);
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+    }
+}
+
+// ── Auto Pipeline Chip Browser Selector ──
+
+function _renderApBrowserChips() {
+    const container = document.getElementById('apBrowserChipSelect');
+    const emptyLabel = document.getElementById('apBrowserChipEmpty');
+    const menu = document.getElementById('apBrowserChipMenu');
+    if (!container || !menu) return;
+
+    // Remove old chips
+    container.querySelectorAll('.chip-item').forEach(el => el.remove());
+
+    // Show/hide empty label
+    if (emptyLabel) emptyLabel.style.display = _apChipSelectedProfiles.length === 0 ? '' : 'none';
+
+    // Insert chips before the add-btn wrapper
+    const addBtnWrap = container.querySelector('[style*="position:relative"]');
+    _apChipSelectedProfiles.forEach(name => {
+        const chip = document.createElement('span');
+        chip.className = 'chip-item';
+        chip.innerHTML = `<span class="chip-status"></span>${_escChip(name)}<span class="chip-remove" title="Remove">✕</span>`;
+        chip.querySelector('.chip-remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            _apChipSelectedProfiles = _apChipSelectedProfiles.filter(n => n !== name);
+            _renderApBrowserChips();
+        });
+        container.insertBefore(chip, addBtnWrap);
+    });
+
+    // Render dropdown menu options
+    menu.innerHTML = '';
+    (_browserProfilesCache || []).forEach(p => {
+        const isSelected = _apChipSelectedProfiles.includes(p.name);
+        const opt = document.createElement('div');
+        opt.className = 'chip-dropdown-option' + (isSelected ? ' selected' : '');
+        opt.innerHTML = `
+            <span class="opt-icon">🌐</span>
+            <span class="opt-name">${_escChip(p.name)}${p.has_cookies ? ' 🍪' : ''}${p.google_account ? ' 👤' : ''}</span>
+            <span class="opt-check">✓</span>
+        `;
+        opt.addEventListener('click', () => {
+            if (isSelected) {
+                _apChipSelectedProfiles = _apChipSelectedProfiles.filter(n => n !== p.name);
+            } else {
+                _apChipSelectedProfiles.push(p.name);
+            }
+            _renderApBrowserChips();
+        });
+        menu.appendChild(opt);
+    });
+}
+
+function toggleApBrowserChipMenu() {
+    const menu = document.getElementById('apBrowserChipMenu');
+    if (!menu) return;
+    menu.classList.toggle('open');
+
+    if (menu.classList.contains('open')) {
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!menu.contains(e.target) && e.target.id !== 'apBrowserAddBtn') {
+                    menu.classList.remove('open');
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 10);
+    }
+}

@@ -161,4 +161,79 @@ CREATE TABLE IF NOT EXISTS export_history (
     metadata TEXT DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+
+-- Auto Pipeline Jobs (batch queue for automated content creation)
+CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL DEFAULT 'youtube_link',
+    source_url TEXT NOT NULL,
+    source_title TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    error_message TEXT DEFAULT '',
+
+    -- Config snapshot
+    preset_name TEXT DEFAULT '',
+    pipeline_template TEXT DEFAULT 'drama_scene',
+    content_format TEXT DEFAULT 'Educational / Learning',
+    visual_style TEXT DEFAULT 'Default',
+    max_episodes INTEGER DEFAULT 1,
+    language TEXT DEFAULT 'vi',
+    voice_preset TEXT DEFAULT '',
+    browser_profiles TEXT DEFAULT '[]',
+
+    -- SEO config
+    seo_mode TEXT DEFAULT 'ai_generate',
+    seo_title_template TEXT DEFAULT '',
+    seo_description_template TEXT DEFAULT '',
+    seo_tags TEXT DEFAULT '[]',
+
+    -- Upload config
+    upload_targets TEXT DEFAULT '[]',
+    upload_privacy TEXT DEFAULT 'private',
+
+    -- Result references
+    drama_id INTEGER,
+    episode_ids TEXT DEFAULT '[]',
+    uploaded_video_ids TEXT DEFAULT '[]',
+    output_video_path TEXT DEFAULT '',
+
+    -- Extracted content
+    extracted_text TEXT DEFAULT '',
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (drama_id) REFERENCES dramas(id)
+);
+
+-- Channel Watchers (monitor channels for new videos)
+CREATE TABLE IF NOT EXISTS channel_watchers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL DEFAULT 'youtube',
+    channel_url TEXT NOT NULL,
+    channel_id TEXT DEFAULT '',
+    channel_name TEXT DEFAULT '',
+
+    -- Config
+    preset_name TEXT DEFAULT '',
+    pipeline_template TEXT DEFAULT 'drama_scene',
+    content_format TEXT DEFAULT 'Educational / Learning',
+    visual_style TEXT DEFAULT 'Default',
+    max_episodes INTEGER DEFAULT 1,
+    language TEXT DEFAULT 'vi',
+    voice_preset TEXT DEFAULT '',
+    browser_profiles TEXT DEFAULT '[]',
+    seo_mode TEXT DEFAULT 'ai_generate',
+    upload_targets TEXT DEFAULT '[]',
+    upload_privacy TEXT DEFAULT 'private',
+
+    -- Tracking
+    last_checked_at TEXT,
+    last_video_id TEXT DEFAULT '',
+    known_video_ids TEXT DEFAULT '[]',
+    check_interval_minutes INTEGER DEFAULT 30,
+    is_active INTEGER DEFAULT 1,
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """

@@ -1510,3 +1510,106 @@ select.input {
 }
 
 
+
+/* -- Pipeline Queue Table -- */
+.pq-table-container {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.pq-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 13px;
+}
+.pq-table th {
+    background: var(--bg-2);
+    color: var(--text-2);
+    font-weight: 600;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+.pq-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.pq-row:last-child td {
+    border-bottom: none;
+}
+.pq-row {
+    transition: background 0.15s;
+}
+.pq-row:hover {
+    background: var(--bg-hover);
+}
+.pq-col-id { width: 40px; color: var(--text-3); font-family: var(--font-mono); }
+.pq-col-source { max-width: 250px; }
+.pq-col-preset { max-width: 120px; }
+.pq-col-voice { max-width: 120px; }
+.pq-col-browser { max-width: 120px; }
+.pq-col-upload { max-width: 100px; }
+.pq-col-status { width: 100px; }
+.pq-col-actions { width: 80px; text-align: right; }
+
+.pq-truncate {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.pq-title {
+    font-weight: 600;
+    color: var(--text-0);
+    margin-bottom: 2px;
+}
+.pq-url {
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.pq-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+.pq-badge.pending { background: #6b728022; color: #9ca3af; }
+.pq-badge.extracting { background: #3b82f622; color: #60a5fa; }
+.pq-badge.processing { background: #f59e0b22; color: #fbbf24; }
+.pq-badge.done { background: #10b98122; color: #34d399; }
+.pq-badge.error { background: #ef444422; color: #f87171; }
+
+.pq-edit-btn {
+    opacity: 0.5;
+    transition: opacity 0.15s;
+    cursor: pointer;
+    background: none;
+    border: none;
+    color: var(--text-1);
+}
+.pq-row:hover .pq-edit-btn { opacity: 1; }
+.pq-edit-btn:hover { color: var(--accent); }
+
+.pq-delete-btn {
+    opacity: 0.5;
+    transition: opacity 0.15s;
+    cursor: pointer;
+    background: none;
+    border: none;
+    color: var(--text-1);
+}
+.pq-row:hover .pq-delete-btn { opacity: 1; }
+.pq-delete-btn:hover { color: var(--error); }
+

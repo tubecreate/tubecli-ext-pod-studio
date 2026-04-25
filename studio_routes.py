@@ -391,6 +391,22 @@ async def test_ai_connection():
         return {"status": "error", "message": str(e)[:300]}
 
 
+@router.get("/api/v1/studio/settings/ai-info")
+async def get_ai_info():
+    """Return current AI model info for UI display."""
+    s = _settings()
+    base_url, api_key, model, temp = s.get_ai_client_params()
+    ai_cfg = s.get_ai_config()
+    source = ai_cfg.get("source", "global")
+    has_key = bool(api_key)
+    return {
+        "model": model or "(not configured)",
+        "source": source,
+        "has_key": has_key,
+        "base_url_host": base_url.split("//")[-1].split("/")[0] if base_url else "",
+    }
+
+
 # ── Drama CRUD ──────────────────────────────────────────────
 
 @router.get("/api/v1/studio/dramas")
@@ -1596,7 +1612,7 @@ async def generate_storyboard(episode_id: int, request: Request):
                 except (ValueError, json.JSONDecodeError):
                     pass
                 
-                # Fallback: try to find a raw JSON array
+                # Fallback 1: try to find a raw JSON array
                 if not parsed:
                     import re as _re_arr
                     array_match = _re_arr.search(r'\[[\s\S]*\]', full_text)
@@ -1607,6 +1623,47 @@ async def generate_storyboard(episode_id: int, request: Request):
                                 parsed = {"storyboards": parsed_array}
                         except Exception:
                             pass
+
+                # Fallback 2: extract JSON from markdown code fence
+                if not parsed:
+                    import re as _re_fence
+                    fence_match = _re_fence.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', full_text)
+                    if fence_match:
+                        try:
+                            parsed = json.loads(fence_match.group(1))
+                        except Exception:
+                            try:
+                                parsed = _repair_json(fence_match.group(1))
+                            except Exception:
+                                pass
+
+                # Fallback 3: extract individual JSON objects via bracket matching
+                if not parsed:
+                    obj_candidates = []
+                    depth = 0
+                    start = -1
+                    for ci, ch in enumerate(full_text):
+                        if ch == '{':
+                            if depth == 0:
+                                start = ci
+                            depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0 and start >= 0:
+                                candidate = full_text[start:ci+1]
+                                try:
+                                    obj = json.loads(candidate)
+                                    if isinstance(obj, dict):
+                                        if any(k in obj for k in ['title', 'scene_heading', 'shot_type', 'image_prompt', 'narration_text']):
+                                            obj_candidates.append(obj)
+                                        elif any(isinstance(v, list) for v in obj.values()):
+                                            parsed = obj
+                                            break
+                                except Exception:
+                                    pass
+                                start = -1
+                    if not parsed and obj_candidates:
+                        parsed = {"storyboards": obj_candidates}
 
                 shots = []
                 if parsed:
@@ -1619,6 +1676,39 @@ async def generate_storyboard(episode_id: int, request: Request):
                             if isinstance(v, list):
                                 shots = v
                                 break
+                    # Edge case: AI returns bare array
+                    if not shots and isinstance(parsed, list):
+                        shots = parsed
+
+                # If still no shots, log and retry once with stricter prompt
+                if not shots:
+                    logger.warning(f"Storyboard chunk {idx+1}: parse failed. First 500 chars: {full_text[:500]}")
+                    retry_prompt = (
+                        f"Your previous response could not be parsed as JSON. "
+                        f"Please output ONLY a valid JSON object with a 'storyboards' array. "
+                        f"No markdown, no explanation, ONLY JSON.\n\n"
+                        f"Script:\n\n{chunk_text}"
+                    )
+                    retry_response = []
+                    async for rchunk in agent.chat_stream(
+                        retry_prompt, language, base_url, api_key, model, agent_temp, context
+                    ):
+                        retry_response.append(rchunk)
+                    retry_text = "".join(retry_response)
+                    try:
+                        retry_parsed = _repair_json(retry_text)
+                        if retry_parsed:
+                            for pk in ["storyboards", "storyboard", "shots", "shot", "scenes", "data"]:
+                                if pk in retry_parsed and isinstance(retry_parsed[pk], list):
+                                    shots = retry_parsed[pk]
+                                    break
+                            if not shots:
+                                for k, v in retry_parsed.items():
+                                    if isinstance(v, list):
+                                        shots = v
+                                        break
+                    except Exception:
+                        logger.error(f"Storyboard chunk {idx+1}: retry also failed. First 500 chars: {retry_text[:500]}")
 
                 if shots:
                     # Validate: AI should produce one shot per scene
@@ -2972,3 +3062,521 @@ async def serve_export_video(filename: str):
     if os.path.exists(path):
         return FileResponse(path, media_type="video/mp4")
     raise HTTPException(404, "Exported video not found")
+
+
+# ═══════════════════════════════════════════════════════════════
+# ── Auto Pipeline API ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+
+_auto_pipeline_running = False
+_auto_pipeline_current_job_id = None
+
+
+@router.get("/api/v1/studio/auto-pipeline/jobs")
+async def list_auto_pipeline_jobs(status: str = None):
+    """List auto pipeline jobs."""
+    jobs = _db().list_pipeline_jobs(status=status)
+    return {"success": True, "jobs": jobs, "count": len(jobs)}
+
+
+@router.post("/api/v1/studio/auto-pipeline/jobs")
+async def create_auto_pipeline_jobs(request: Request):
+    """Create batch pipeline jobs from a list of URLs + shared config."""
+    data = await request.json()
+    urls = data.get("urls", [])
+    if not urls:
+        raise HTTPException(400, "No URLs provided")
+
+    config = {
+        "source_type": data.get("source_type", "youtube_link"),
+        "preset_name": data.get("preset_name", ""),
+        "pipeline_template": data.get("pipeline_template", "drama_scene"),
+        "content_format": data.get("content_format", "Educational / Learning"),
+        "visual_style": data.get("visual_style", "Default"),
+        "max_episodes": data.get("max_episodes", 1),
+        "language": data.get("language", "vi"),
+        "voice_preset": data.get("voice_preset", ""),
+        "browser_profiles": data.get("browser_profiles", []),
+        "seo_mode": data.get("seo_mode", "ai_generate"),
+        "seo_title_template": data.get("seo_title_template", ""),
+        "seo_description_template": data.get("seo_description_template", ""),
+        "seo_tags": data.get("seo_tags", []),
+        "upload_targets": data.get("upload_targets", []),
+        "upload_privacy": data.get("upload_privacy", "private"),
+    }
+
+    db = _db()
+    created = []
+    for url in urls:
+        url = url.strip()
+        if not url:
+            continue
+        job_data = {**config, "source_url": url}
+        job = db.create_pipeline_job(job_data)
+        created.append(job)
+
+    return {"success": True, "jobs": created, "count": len(created)}
+
+
+@router.get("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+async def get_auto_pipeline_job(job_id: int):
+    """Get a single pipeline job."""
+    job = _db().get_pipeline_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return {"success": True, "job": job}
+
+
+@router.put("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+async def update_auto_pipeline_job(job_id: int, request: Request):
+    """Update a pipeline job config (only if pending or error)."""
+    data = await request.json()
+    db = _db()
+    job = db.get_pipeline_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("status") not in ["pending", "error"]:
+        raise HTTPException(400, "Cannot edit a job that is already processing or done")
+    
+    updated = db.update_pipeline_job(job_id, data)
+    return {"success": True, "job": updated}
+
+
+@router.delete("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+async def delete_auto_pipeline_job(job_id: int):
+    """Delete/cancel a pipeline job."""
+    _db().delete_pipeline_job(job_id)
+    return {"success": True}
+
+
+@router.get("/api/v1/studio/auto-pipeline/status")
+async def get_auto_pipeline_status():
+    """Get overall pipeline status."""
+    db = _db()
+    pending = len(db.list_pipeline_jobs(status="pending"))
+    processing = len(db.list_pipeline_jobs(status="processing"))
+    return {
+        "success": True,
+        "running": _auto_pipeline_running,
+        "current_job_id": _auto_pipeline_current_job_id,
+        "pending_count": pending,
+        "processing_count": processing,
+    }
+
+
+@router.post("/api/v1/studio/auto-pipeline/start")
+async def start_auto_pipeline(background_tasks: BackgroundTasks):
+    """Start processing the job queue in background."""
+    global _auto_pipeline_running
+    if _auto_pipeline_running:
+        return {"success": True, "message": "Pipeline already running"}
+
+    background_tasks.add_task(_run_auto_pipeline_queue)
+    return {"success": True, "message": "Pipeline queue started"}
+
+
+@router.post("/api/v1/studio/auto-pipeline/stop")
+async def stop_auto_pipeline():
+    """Request pipeline to stop after current job finishes."""
+    global _auto_pipeline_running
+    _auto_pipeline_running = False
+    return {"success": True, "message": "Stop requested"}
+
+
+async def _run_auto_pipeline_queue():
+    """Background task: process pending jobs one by one."""
+    global _auto_pipeline_running, _auto_pipeline_current_job_id
+    _auto_pipeline_running = True
+    db = _db()
+
+    try:
+        while _auto_pipeline_running:
+            job = db.get_next_pending_job()
+            if not job:
+                logger.info("Auto pipeline: no more pending jobs")
+                break
+
+            _auto_pipeline_current_job_id = job["id"]
+            db.update_pipeline_job(job["id"], {"status": "processing"})
+
+            try:
+                await _process_single_job(job)
+                db.update_pipeline_job(job["id"], {"status": "done"})
+            except Exception as e:
+                import traceback
+                logger.error(f"Auto pipeline job {job['id']} failed: {e}\n{traceback.format_exc()}")
+                db.update_pipeline_job(job["id"], {
+                    "status": "error",
+                    "error_message": str(e)[:500]
+                })
+
+            await asyncio.sleep(3)
+    finally:
+        _auto_pipeline_running = False
+        _auto_pipeline_current_job_id = None
+
+
+async def _process_single_job(job: dict):
+    """Process one auto pipeline job end-to-end."""
+    import httpx
+    db = _db()
+    job_id = job["id"]
+    source_url = job["source_url"]
+
+    logger.info(f"Auto pipeline: processing job {job_id} — {source_url}")
+
+    # ── Step 1: Extract CC from YouTube ──
+    db.update_pipeline_job(job_id, {"status": "extracting"})
+
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:5295", timeout=120) as client:
+        cc_resp = await client.post("/api/v1/subtitle/extract/youtube", json={
+            "url": source_url,
+            "languages": None
+        })
+    if cc_resp.status_code != 200:
+        raise Exception(f"CC extraction failed: {cc_resp.text[:200]}")
+
+    cc_data = cc_resp.json()
+    if cc_data.get("status") == "error":
+        raise Exception(f"CC extraction error: {cc_data.get('message', 'unknown')}")
+
+    subtitles = cc_data.get("subtitles", [])
+    if not subtitles:
+        raise Exception("No subtitles found in video")
+
+    cc_text = "\n".join(s.get("text", "") for s in subtitles)
+    source_title = cc_data.get("title", "") or f"Video {job_id}"
+
+    db.update_pipeline_job(job_id, {
+        "extracted_text": cc_text[:50000],
+        "source_title": source_title,
+    })
+
+    # ── Step 2: Create Drama Project ──
+    drama_meta = {
+        "content_format": job.get("content_format", "Educational / Learning"),
+        "auto_pipeline_job_id": job_id,
+        "source_url": source_url,
+        "pipeline": _get_pipeline_steps(job.get("pipeline_template", "drama_scene")),
+    }
+
+    browser_profiles = json.loads(job.get("browser_profiles", "[]")) if isinstance(job.get("browser_profiles"), str) else job.get("browser_profiles", [])
+    if browser_profiles:
+        drama_meta["browser_profile_name"] = browser_profiles[0]
+        drama_meta["browser_profile_names_video"] = browser_profiles
+
+    if job.get("voice_preset"):
+        drama_meta["voice_preset"] = job["voice_preset"]
+        parts = job["voice_preset"].split("|")
+        if len(parts) > 1:
+            drama_meta["tts_engine"] = parts[1]
+
+    drama = db.create_drama({
+        "title": source_title,
+        "style": job.get("visual_style", "Default"),
+        "language": job.get("language", "vi"),
+        "total_episodes": job.get("max_episodes", 1),
+        "metadata": drama_meta,
+    })
+    drama_id = drama["id"]
+    db.update_pipeline_job(job_id, {"drama_id": drama_id})
+
+    # ── Step 3: Create Episode with CC content ──
+    episode = db.create_episode(drama_id, {
+        "title": source_title,
+        "content": cc_text,
+    })
+
+    db.update_pipeline_job(job_id, {"episode_ids": json.dumps([episode["id"]])})
+
+    # ── Step 4: Trigger AutoPilot (via internal API) ──
+    # Store outline as single-episode
+    outline = {
+        "series_title": source_title,
+        "overall_synopsis": f"Auto-generated from: {source_url}",
+        "episodes": [{
+            "episode_number": 1,
+            "title": source_title,
+            "plot_outline": cc_text[:2000]
+        }]
+    }
+    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    meta["series_outline"] = outline
+    db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+
+    logger.info(f"Auto pipeline job {job_id}: drama {drama_id} created, episode {episode['id']}. "
+                f"AutoPilot will be triggered from frontend.")
+
+    # ── Step 5: Generate SEO metadata ──
+    if job.get("seo_mode") == "ai_generate":
+        try:
+            seo_result = await _generate_seo_metadata(cc_text[:3000], source_title, job.get("language", "vi"))
+            meta = json.loads(db.get_drama(drama_id).get("metadata", "{}") or "{}")
+            meta["seo"] = seo_result
+            db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+            logger.info(f"Auto pipeline job {job_id}: SEO metadata generated")
+        except Exception as e:
+            logger.warning(f"SEO generation failed for job {job_id}: {e}")
+
+    # ── Step 6: Queue upload (will happen after video is built) ──
+    # Upload config is stored in drama metadata; the autopilot frontend
+    # will read it and trigger upload after FFmpeg export completes
+    upload_targets = json.loads(job.get("upload_targets", "[]")) if isinstance(job.get("upload_targets"), str) else job.get("upload_targets", [])
+    if upload_targets:
+        meta = json.loads(db.get_drama(drama_id).get("metadata", "{}") or "{}")
+        meta["upload_targets"] = upload_targets
+        meta["upload_privacy"] = job.get("upload_privacy", "private")
+        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+
+    logger.info(f"Auto pipeline job {job_id}: ready for autopilot execution")
+
+
+def _get_pipeline_steps(template_key: str) -> list:
+    """Map template key to pipeline steps."""
+    templates = {
+        "drama_scene": ["raw", "rewrite", "extract", "storyboard", "videos", "audio", "video"],
+        "drama_full": ["raw", "rewrite", "extract", "storyboard", "images", "audio", "video"],
+        "audio_story": ["raw", "rewrite", "audio", "video"],
+        "content_only": ["raw", "rewrite"],
+    }
+    return templates.get(template_key, templates["drama_scene"])
+
+
+async def _generate_seo_metadata(content: str, title: str, language: str) -> dict:
+    """Generate SEO metadata using the SEO agent."""
+    s = _settings()
+    base_url, api_key, model, temp = s.get_ai_client_params()
+    if not api_key:
+        return {"title": title, "description": "", "tags": []}
+
+    from agents.seo_agent import SEOAgent
+    agent = SEOAgent()
+    user_msg = f"Source Title: {title}\nLanguage: {language}\nPlatform: facebook\nContent Summary:\n{content[:3000]}"
+
+    full_response = []
+    async for chunk in agent.chat_stream(user_msg, language, base_url, api_key, model, 0.7):
+        full_response.append(chunk)
+
+    full_text = "".join(full_response)
+    try:
+        return _repair_json(full_text)
+    except Exception:
+        return {"title": title, "description": content[:300], "tags": []}
+
+
+# ═══════════════════════════════════════════════════════════════
+# ── Channel Watcher API ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+
+_channel_watcher_running = False
+
+
+@router.get("/api/v1/studio/channel-watchers")
+async def list_channel_watchers():
+    """List all channel watchers."""
+    watchers = _db().list_channel_watchers()
+    return {"success": True, "watchers": watchers, "count": len(watchers)}
+
+
+@router.post("/api/v1/studio/channel-watchers")
+async def create_channel_watcher(request: Request):
+    """Create a new channel watcher."""
+    data = await request.json()
+    if not data.get("channel_url"):
+        raise HTTPException(400, "channel_url is required")
+
+    # Try to resolve channel name via yt-dlp
+    channel_url = data["channel_url"]
+    channel_name = data.get("channel_name", "")
+    channel_id = data.get("channel_id", "")
+
+    if not channel_name and "youtube.com" in channel_url:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "yt-dlp", "--print", "channel", "--playlist-items", "1", "--skip-download", channel_url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            channel_name = stdout.decode().strip() or channel_url
+        except Exception:
+            channel_name = channel_url
+
+    data["channel_name"] = channel_name
+    data["channel_id"] = channel_id
+
+    watcher = _db().create_channel_watcher(data)
+    return {"success": True, "watcher": watcher}
+
+
+@router.put("/api/v1/studio/channel-watchers/{watcher_id}")
+async def update_channel_watcher(watcher_id: int, request: Request):
+    """Update a channel watcher."""
+    data = await request.json()
+    watcher = _db().update_channel_watcher(watcher_id, data)
+    if not watcher:
+        raise HTTPException(404, "Watcher not found")
+    return {"success": True, "watcher": watcher}
+
+
+@router.delete("/api/v1/studio/channel-watchers/{watcher_id}")
+async def delete_channel_watcher(watcher_id: int):
+    """Delete a channel watcher."""
+    _db().delete_channel_watcher(watcher_id)
+    return {"success": True}
+
+
+@router.post("/api/v1/studio/channel-watchers/start")
+async def start_channel_watcher_loop(background_tasks: BackgroundTasks):
+    """Start the channel watcher background loop."""
+    global _channel_watcher_running
+    if _channel_watcher_running:
+        return {"success": True, "message": "Watcher already running"}
+    background_tasks.add_task(_run_channel_watcher_loop)
+    return {"success": True, "message": "Channel watcher started"}
+
+
+@router.post("/api/v1/studio/channel-watchers/stop")
+async def stop_channel_watcher_loop():
+    """Stop the channel watcher background loop."""
+    global _channel_watcher_running
+    _channel_watcher_running = False
+    return {"success": True, "message": "Stop requested"}
+
+
+@router.get("/api/v1/studio/channel-watchers/status")
+async def channel_watcher_status():
+    """Get channel watcher loop status."""
+    return {"success": True, "running": _channel_watcher_running}
+
+
+async def _run_channel_watcher_loop():
+    """Background loop: check all active watchers for new videos."""
+    global _channel_watcher_running
+    _channel_watcher_running = True
+    db = _db()
+
+    try:
+        while _channel_watcher_running:
+            watchers = db.list_channel_watchers()
+            active_watchers = [w for w in watchers if w.get("is_active")]
+
+            for watcher in active_watchers:
+                if not _channel_watcher_running:
+                    break
+
+                last_checked = watcher.get("last_checked_at")
+                interval = watcher.get("check_interval_minutes", 30)
+
+                # Check if it's time to poll
+                if last_checked:
+                    from datetime import datetime, timezone, timedelta
+                    last_dt = datetime.fromisoformat(last_checked)
+                    if datetime.now(timezone.utc) - last_dt < timedelta(minutes=interval):
+                        continue
+
+                try:
+                    await _check_channel_for_new_videos(watcher)
+                except Exception as e:
+                    logger.error(f"Channel watcher {watcher['id']} error: {e}")
+
+            # Sleep 60 seconds between full sweeps
+            for _ in range(60):
+                if not _channel_watcher_running:
+                    break
+                await asyncio.sleep(1)
+    finally:
+        _channel_watcher_running = False
+
+
+async def _check_channel_for_new_videos(watcher: dict):
+    """Check a single channel for new videos via YouTube RSS."""
+    import xml.etree.ElementTree as ET
+    import httpx
+    from datetime import datetime, timezone
+
+    db = _db()
+    watcher_id = watcher["id"]
+    channel_url = watcher["channel_url"]
+
+    # Resolve channel ID for RSS if needed
+    channel_id = watcher.get("channel_id", "")
+    if not channel_id and "youtube.com" in channel_url:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "yt-dlp", "--print", "channel_id", "--playlist-items", "1", "--skip-download", channel_url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            channel_id = stdout.decode().strip()
+            if channel_id:
+                db.update_channel_watcher(watcher_id, {"channel_id": channel_id})
+        except Exception:
+            pass
+
+    if not channel_id:
+        logger.warning(f"Channel watcher {watcher_id}: could not resolve channel_id")
+        db.update_channel_watcher(watcher_id, {"last_checked_at": datetime.now(timezone.utc).isoformat()})
+        return
+
+    # Fetch YouTube RSS feed
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(rss_url)
+
+    if resp.status_code != 200:
+        logger.warning(f"Channel watcher {watcher_id}: RSS fetch failed ({resp.status_code})")
+        db.update_channel_watcher(watcher_id, {"last_checked_at": datetime.now(timezone.utc).isoformat()})
+        return
+
+    # Parse RSS XML
+    root = ET.fromstring(resp.text)
+    ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+
+    known_ids = json.loads(watcher.get("known_video_ids", "[]")) if isinstance(watcher.get("known_video_ids"), str) else watcher.get("known_video_ids", [])
+    new_videos = []
+
+    for entry in root.findall("atom:entry", ns):
+        video_id_el = entry.find("yt:videoId", ns)
+        if video_id_el is None:
+            continue
+        video_id = video_id_el.text
+        if video_id not in known_ids:
+            title_el = entry.find("atom:title", ns)
+            title = title_el.text if title_el is not None else ""
+            new_videos.append({"video_id": video_id, "title": title})
+            known_ids.append(video_id)
+
+    # Update known videos
+    db.update_channel_watcher(watcher_id, {
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        "known_video_ids": json.dumps(known_ids[-200:]),  # keep last 200
+        "last_video_id": known_ids[-1] if known_ids else "",
+    })
+
+    if not new_videos:
+        logger.info(f"Channel watcher {watcher_id}: no new videos")
+        return
+
+    logger.info(f"Channel watcher {watcher_id}: found {len(new_videos)} new video(s)")
+
+    # Create pipeline jobs for new videos
+    for vid in new_videos:
+        video_url = f"https://www.youtube.com/watch?v={vid['video_id']}"
+        job_data = {
+            "source_type": "channel_watch",
+            "source_url": video_url,
+            "source_title": vid["title"],
+            "preset_name": watcher.get("preset_name", ""),
+            "pipeline_template": watcher.get("pipeline_template", "drama_scene"),
+            "content_format": watcher.get("content_format", "Educational / Learning"),
+            "visual_style": watcher.get("visual_style", "Default"),
+            "max_episodes": watcher.get("max_episodes", 1),
+            "language": watcher.get("language", "vi"),
+            "voice_preset": watcher.get("voice_preset", ""),
+            "browser_profiles": json.loads(watcher.get("browser_profiles", "[]")) if isinstance(watcher.get("browser_profiles"), str) else watcher.get("browser_profiles", []),
+            "seo_mode": watcher.get("seo_mode", "ai_generate"),
+            "upload_targets": json.loads(watcher.get("upload_targets", "[]")) if isinstance(watcher.get("upload_targets"), str) else watcher.get("upload_targets", []),
+            "upload_privacy": watcher.get("upload_privacy", "private"),
+        }
+        db.create_pipeline_job(job_data)
+        logger.info(f"Channel watcher {watcher_id}: queued job for {video_url}")

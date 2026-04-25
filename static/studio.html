@@ -17,10 +17,18 @@
                 <span class="topbar-badge" id="projectCount">0 projects</span>
             </div>
             <div class="topbar-right">
+                <div id="aiModelBadge" style="display:inline-flex; align-items:center; gap:6px; padding:4px 10px; background:var(--bg-1); border:1px solid var(--border); border-radius:6px; font-size:11px; color:var(--text-3); cursor:default; margin-right:4px;" title="AI Model Status">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#666;flex-shrink:0;transition:background 0.3s;" id="aiModelDot"></span>
+                    <span id="aiModelLabel" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">Loading...</span>
+                </div>
                 <a href="/content-studio/settings" class="btn btn-ghost" id="btnSettings">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     Settings
                 </a>
+                <button class="btn btn-outline" onclick="togglePipelineView()" id="btnAutoPipeline" style="border-color: var(--accent); color: var(--accent);">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    Pipeline Queue
+                </button>
                 <button class="btn btn-primary" onclick="showCreateDrama()">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     New Project
@@ -485,6 +493,175 @@
                 </div>
             </main>
 
+              <!-- ===== Auto Pipeline View (NEW) ===== -->
+            <main class="main-panel" id="pipelineView" style="display:none; padding: 24px; overflow-y: auto; flex-direction: column;">
+                <div class="pipeline-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 24px;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div class="modal-icon" style="background:linear-gradient(135deg, var(--accent), #f59e0b);">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        </div>
+                        <div>
+                            <h2 style="font-size: 24px; font-weight: 700; margin:0;">Auto Content Pipeline Queue</h2>
+                            <p style="font-size: 14px; color:var(--text-3); margin:4px 0 0 0;">Tự động tách CC ➔ tạo nội dung ➔ SEO ➔ đăng lên nền tảng</p>
+                        </div>
+                    </div>
+                    <button class="btn btn-outline" onclick="togglePipelineView()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                        Back to Editor
+                    </button>
+                </div>
+                
+                <div style="display:flex; gap:20px; flex:1; min-height:0; flex-direction:column;">
+                    <!-- Top Form: Input Links & Config -->
+                    <div class="card" style="padding:20px; background:var(--bg-1); border:1px solid var(--border); border-radius:12px; flex-shrink:0;">
+                        <div style="display:flex; gap:20px;">
+                            <div style="flex:1;">
+                                <label class="form-label">📋 Danh sách link YouTube (mỗi link 1 hàng)</label>
+                                <textarea id="apUrlList" class="input" rows="4" placeholder="https://youtube.com/watch?v=abc123" style="font-family:monospace; font-size:12px; resize:vertical;"></textarea>
+                                <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+                                    <span style="font-size:11px; color:var(--text-3);" id="apUrlCount">0 links</span>
+                                </div>
+                            </div>
+                            
+                            <div style="flex:2; display:flex; flex-direction:column; gap:12px;">
+                                <!-- Config Row 1 -->
+                                <div style="display:flex; gap:12px;">
+                                    <div style="flex:1;">
+                                        <label class="form-label" style="font-size:11px;">⚡ Preset Cấu Hình</label>
+                                        <select id="apPresetSelect" class="input" style="height:32px; font-size:12px;" onchange="applyApPreset()">
+                                            <option value="">-- Chọn preset --</option>
+                                        </select>
+                                    </div>
+                                    <div style="flex:1;">
+                                        <label class="form-label" style="font-size:11px;">🎙 Voice</label>
+                                        <select id="apVoice" class="input" style="height:32px; font-size:12px;">
+                                            <option value="">-- Mặc định --</option>
+                                        </select>
+                                    </div>
+                                    <div style="flex:1;">
+                                        <label class="form-label" style="font-size:11px;">🖥 Browser Profile</label>
+                                        <div class="chip-select" id="apBrowserChipSelect" style="min-height:32px; padding:4px 8px;">
+                                            <span class="chip-select-empty" id="apBrowserChipEmpty">Click +</span>
+                                            <div style="position:relative; display:inline-flex;">
+                                                <span class="chip-dropdown-trigger" id="apBrowserAddBtn" onclick="toggleApBrowserChipMenu()">+ Add</span>
+                                                <div class="chip-dropdown-menu" id="apBrowserChipMenu"></div>
+                                            </div>
+                                        </div>
+                                        <select id="apBrowserProfiles" multiple style="display:none"></select>
+                                    </div>
+                                </div>
+                                
+                                <!-- Config Row 2 -->
+                                <div style="display:flex; gap:12px; align-items:flex-end;">
+                                    <div style="flex:2; display:flex; gap:12px; padding:8px 12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border);">
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadFb" onchange="toggleApUploadTarget('fb')"> FB Page</label>
+                                            <select id="apFbPage" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadYt" onchange="toggleApUploadTarget('yt')"> YT Channel</label>
+                                            <select id="apYtChannel" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                        </div>
+                                    </div>
+                                    <div style="flex:1; text-align:right;">
+                                        <button class="btn btn-primary" id="apSubmitBtn" onclick="submitBatchQueue()" style="width:100%; justify-content:center; height:36px;">
+                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                            ⚡ Thêm vào hàng đợi
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <!-- Hidden config fields -->
+                                <input type="hidden" id="apPipeline" value="drama_scene">
+                                <input type="hidden" id="apLanguage" value="vi">
+                                <input type="hidden" id="apContentFormat" value="Educational / Learning">
+                                <input type="hidden" id="apMaxEpisodes" value="1">
+                                <input type="hidden" id="apUploadPrivacy" value="private">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom List: Jobs Table -->
+                    <div class="pq-table-container" style="flex:1; display:flex; flex-direction:column;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); background:var(--bg-1);">
+                            <div style="display:flex; align-items:center; gap:12px;">
+                                <h3 style="font-size:14px; font-weight:600; color:var(--text-0); margin:0;">Tiến độ Hàng đợi</h3>
+                                <span style="font-size:12px; color:var(--text-3);" id="apJobStatusText">Pipeline: Idle</span>
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button class="btn btn-sm btn-outline" onclick="loadApJobs()" title="Refresh">🔄 Refresh</button>
+                                <button class="btn btn-sm btn-outline" id="apPipelineToggleBtn" onclick="toggleAutoPipelineRun()">▶ Start Queue</button>
+                            </div>
+                        </div>
+                        <div style="flex:1; overflow-y:auto; background:var(--bg-0);">
+                            <table class="pq-table">
+                                <thead>
+                                    <tr>
+                                        <th class="pq-col-id">ID</th>
+                                        <th class="pq-col-source">Nguồn (URL / Tiêu đề)</th>
+                                        <th class="pq-col-preset">Preset</th>
+                                        <th class="pq-col-voice">Voice</th>
+                                        <th class="pq-col-browser">Browser</th>
+                                        <th class="pq-col-upload">Upload Target</th>
+                                        <th class="pq-col-status">Status</th>
+                                        <th class="pq-col-actions"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="apJobList">
+                                    <tr><td colspan="8" style="text-align:center; padding:40px; color:var(--text-3);">Đang tải dữ liệu...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Job Edit Modal -->
+            <div class="overlay" id="apJobEditModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+                <div class="modal card" style="max-width: 500px; width: 90%;">
+                    <div class="modal-header">
+                        <h2 class="modal-title">Chỉnh sửa Job #<span id="editJobIdText"></span></h2>
+                    </div>
+                    <div class="modal-form" style="padding: 20px;">
+                        <input type="hidden" id="editJobId">
+                        
+                        <div class="form-group">
+                            <label class="form-label">Preset</label>
+                            <select id="editJobPreset" class="input">
+                                <option value="">-- Chọn preset --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">🎙 Voice</label>
+                            <select id="editJobVoice" class="input">
+                                <option value="">-- Mặc định --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">🖥 Browser Profile</label>
+                            <div class="chip-select" id="editJobBrowserChipSelect" style="min-height:32px; padding:4px 8px;">
+                                <span class="chip-select-empty" id="editJobBrowserChipEmpty">Click +</span>
+                                <div style="position:relative; display:inline-flex;">
+                                    <span class="chip-dropdown-trigger" id="editJobBrowserAddBtn" onclick="toggleEditJobBrowserChipMenu()">+ Add</span>
+                                    <div class="chip-dropdown-menu" id="editJobBrowserChipMenu"></div>
+                                </div>
+                            </div>
+                            <select id="editJobBrowserProfiles" multiple style="display:none"></select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Upload Target (JSON)</label>
+                            <textarea id="editJobUpload" class="input" rows="3" style="font-family:monospace; font-size:11px;"></textarea>
+                            <span style="font-size:10px; color:var(--text-3);">Advanced: Chỉ dành cho định dạng JSON thô.</span>
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="padding: 16px 20px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border);">
+                        <button class="btn btn-outline" onclick="document.getElementById('apJobEditModal').style.display='none'">Hủy</button>
+                        <button class="btn btn-primary" onclick="saveApJobEdit()">💾 Lưu Thay Đổi</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- ===== AI Chat Panel ===== -->
             <aside class="chat-panel" id="chatPanel">
                 <div class="chat-header">
@@ -500,6 +677,7 @@
                         <option value="prompt_generator">🖼️ Prompt Gen</option>
                     </select>
                 </div>
+
                 <div class="chat-messages" id="chatMessages">
                     <div class="chat-welcome">
                         <div class="chat-welcome-icon">🤖</div>
@@ -1131,6 +1309,6 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/content-studio-static/studio.js?v=20260422_03"></script>
+    <script src="/content-studio-static/studio.js?v=20260424_01"></script>
 </body>
 </html>
