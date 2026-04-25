@@ -5259,7 +5259,15 @@ function _renderApJobRow(job) {
             <div class="pq-truncate pq-url" title="${job.source_url}"><a href="${job.source_url}" target="_blank" style="color:inherit; text-decoration:none;">${job.source_url}</a></div>
             ${job.error_message ? `<div style="color:var(--error); font-size:10px; margin-top:4px;" title="${job.error_message.replace(/"/g,'&quot;')}">⚠️ Lỗi: ${job.error_message.substring(0,50)}...</div>` : ''}
         </td>
-        <td class="pq-col-preset"><div class="pq-truncate" title="${job.preset_name || 'Manual'}">${job.preset_name || 'Manual'}</div></td>
+        <td class="pq-col-preset">
+            <div class="pq-truncate" style="font-weight:600; margin-bottom:4px; color:var(--text-0);" title="${job.preset_name || 'Manual'}">${job.preset_name || 'Manual'}</div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px; font-size:10px; color:var(--text-2);">
+                ${job.language ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Ngôn ngữ">🌐 ${job.language.toUpperCase()}</span>` : ''}
+                ${job.max_episodes ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Số tập tối đa">🎬 ${job.max_episodes} ep</span>` : ''}
+                ${job.content_format ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Định dạng nội dung">📝 ${job.content_format.split('/')[0].trim()}</span>` : ''}
+                ${job.visual_style ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Phong cách ảnh/video">🎨 ${job.visual_style}</span>` : ''}
+            </div>
+        </td>
         <td class="pq-col-voice"><div class="pq-truncate" title="${voice}">${voice}</div></td>
         <td class="pq-col-browser"><div class="pq-truncate" title="${browser}">${browser}</div></td>
         <td class="pq-col-upload"><div class="pq-truncate">${upload}</div></td>
