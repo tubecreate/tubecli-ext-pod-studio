@@ -5020,8 +5020,10 @@ function applyApPreset() {
     const cf = data.wizContentFormat || '';
     if (cf) infoParts.push(cf.split('/')[0].trim());
 
-    document.getElementById('apPresetInfo').textContent = infoParts.join(' • ');
-
+    const infoEl = document.getElementById('apPresetInfo');
+    if (infoEl) {
+        infoEl.textContent = infoParts.join(' • ');
+    }
     toast(`⚡ Preset "${sel.value}" đã áp dụng`, 'success');
 }
 
@@ -5134,19 +5136,19 @@ async function submitBatchQueue() {
     }
 
     const seoMode = document.querySelector('input[name="apSeoMode"]:checked')?.value || 'ai_generate';
-    const seoTagsStr = document.getElementById('apSeoTags').value;
+    const seoTagsStr = document.getElementById('apSeoTags')?.value || '';
     const seoTags = seoTagsStr ? seoTagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
 
     // Upload targets
     const uploadTargets = [];
-    if (document.getElementById('apUploadFb').checked) {
-        const fbVal = document.getElementById('apFbPage').value;
+    if (document.getElementById('apUploadFb')?.checked) {
+        const fbVal = document.getElementById('apFbPage')?.value;
         if (fbVal) {
             try { uploadTargets.push(JSON.parse(fbVal)); } catch(e) {}
         }
     }
-    if (document.getElementById('apUploadYt').checked) {
-        const ytVal = document.getElementById('apYtChannel').value;
+    if (document.getElementById('apUploadYt')?.checked) {
+        const ytVal = document.getElementById('apYtChannel')?.value;
         if (ytVal) {
             try { uploadTargets.push(JSON.parse(ytVal)); } catch(e) {}
         }
@@ -5162,19 +5164,20 @@ async function submitBatchQueue() {
 
     const payload = {
         urls: urls,
-        pipeline_template: document.getElementById('apPipeline').value,
-        language: document.getElementById('apLanguage').value,
+        pipeline_template: document.getElementById('apPipeline')?.value || presetData?.wizPipelineTemplate || 'drama_scene',
+        language: document.getElementById('apLanguage')?.value || presetData?.wizLanguage || 'vi',
         voice_preset: voicePreset,
         browser_profiles: selectedBrowsers,
-        content_format: document.getElementById('apContentFormat').value,
-        max_episodes: parseInt(document.getElementById('apMaxEpisodes').value) || 1,
+        content_format: document.getElementById('apContentFormat')?.value || presetData?.wizContentFormat || 'Educational / Learning',
+        max_episodes: parseInt(document.getElementById('apMaxEpisodes')?.value || presetData?.wizEpisodes) || 1,
         seo_mode: seoMode,
         seo_tags: seoTags,
         upload_targets: uploadTargets,
-        upload_privacy: document.getElementById('apUploadPrivacy').value,
+        upload_privacy: document.getElementById('apUploadPrivacy')?.value || 'private',
         preset_name: presetName,
         preset_data: presetData,
     };
+
 
     try {
         document.getElementById('apSubmitBtn').disabled = true;
