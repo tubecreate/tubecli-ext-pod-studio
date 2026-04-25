@@ -5162,6 +5162,15 @@ async function submitBatchQueue() {
         presetData = allPresets[presetName] || null;
     }
 
+    let finalVisualStyle = 'Default';
+    if (presetData) {
+        const vStyle = presetData.wizStyle === '__custom__' ? (presetData.wizStyleCustom || 'Default') : (presetData.wizStyle || 'Default');
+        const cStyle = presetData.wizCharacterStyle === '__custom__' ? (presetData.wizCharStyleCustom || 'Default') : (presetData.wizCharacterStyle || 'Default');
+        if (vStyle !== 'Default' || cStyle !== 'Default') {
+            finalVisualStyle = `Visual Style: ${vStyle} | Character Style: ${cStyle}`;
+        }
+    }
+
     const payload = {
         urls: urls,
         pipeline_template: document.getElementById('apPipeline')?.value || presetData?.wizPipelineTemplate || 'drama_scene',
@@ -5169,6 +5178,7 @@ async function submitBatchQueue() {
         voice_preset: voicePreset,
         browser_profiles: selectedBrowsers,
         content_format: document.getElementById('apContentFormat')?.value || presetData?.wizContentFormat || 'Educational / Learning',
+        visual_style: finalVisualStyle,
         max_episodes: parseInt(document.getElementById('apMaxEpisodes')?.value || presetData?.wizEpisodes) || 1,
         seo_mode: seoMode,
         seo_tags: seoTags,
@@ -5250,6 +5260,12 @@ function _renderApJobRow(job) {
         if (targets && targets.length > 0) upload = targets.length + ' targets';
     } catch(e) {}
 
+    let visualStyleBadge = '';
+    if (job.visual_style && job.visual_style !== 'Default') {
+        const styleText = job.visual_style.replace('Visual Style: ', '').replace(' | Character Style: ', ' / ');
+        visualStyleBadge = `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="${job.visual_style}">🎨 ${styleText}</span>`;
+    }
+
     const canEdit = job.status === 'pending' || job.status === 'error';
 
     return `<tr class="pq-row">
@@ -5265,7 +5281,7 @@ function _renderApJobRow(job) {
                 ${job.language ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Ngôn ngữ">🌐 ${job.language.toUpperCase()}</span>` : ''}
                 ${job.max_episodes ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Số tập tối đa">🎬 ${job.max_episodes} ep</span>` : ''}
                 ${job.content_format ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Định dạng nội dung">📝 ${job.content_format.split('/')[0].trim()}</span>` : ''}
-                ${job.visual_style ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Phong cách ảnh/video">🎨 ${job.visual_style}</span>` : ''}
+                ${visualStyleBadge}
             </div>
         </td>
         <td class="pq-col-voice"><div class="pq-truncate" title="${voice}">${voice}</div></td>
