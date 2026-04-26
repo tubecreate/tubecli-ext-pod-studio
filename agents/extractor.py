@@ -40,20 +40,21 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
 ## Extraction Rules
 1. Extract EVERY named character that appears, speaks, or is mentioned.
    - EXCEPTION: DO NOT extract "Narrator", "Host", "Voiceover", "Người dẫn chương trình", or "Dẫn chuyện". These are considered narrating voices, NOT physical characters needing consistent visual rendering.
-2. For each character, infer appearance from context clues (age, social status, setting era).
-3. Classify roles: protagonist (main), deuteragonist (second lead), supporting, minor, extra.
-4. Extract EVERY distinct location/setting that appears.
-5. Scenes with different times at the same location = separate entries.
-6. Scene prompts should be in ENGLISH, describe the background only (no characters).
-7. If existing characters/scenes are provided in context, DO NOT re-extract them — only extract NEW ones.
-8. **GALLERY MATCHING ALGORITHM**:
-   - For each new character extracted, strictly evaluate the 'available_gallery_characters' provided in the context.
+2. INFOGRAPHIC / NARRATIVE FALLBACK: If the script is purely narrative/infographic and has NO explicitly named characters (besides the narrator), you MUST invent 1-3 generic roles (e.g., "A Businessman", "A Couple", "A Student") that would best visually represent the concepts in the script. 
+3. For each character (or generic role), infer appearance from context clues.
+4. Classify roles: protagonist (main), deuteragonist (second lead), supporting, minor, extra.
+5. Extract EVERY distinct location/setting that appears.
+6. Scenes with different times at the same location = separate entries.
+7. Scene prompts should be in ENGLISH, describe the background only (no characters).
+8. If existing characters/scenes are provided in context, DO NOT re-extract them — only extract NEW ones.
+9. **GALLERY MATCHING ALGORITHM**:
+   - For each character or generic role extracted, strictly evaluate the 'available_gallery_characters' provided in the context.
    - Compare based on: name similarity, tags, role_type, age_range, and overall vibe.
    - Assign a mental suitability score (0-100). Do NOT randomly assign characters.
    - If a gallery character is a strong match (score >= 60), output their ID in `gallery_item_id` and the score in `suitability_score`.
    - If multiple characters match, choose the one with the highest suitability score.
    - If NO gallery character is a good fit, leave `gallery_item_id` as `null` and `suitability_score` as `null`.
-9. Output ONLY the JSON object, no other text before or after it.
+10. Output ONLY the JSON object, no other text before or after it.
 """
 
 
