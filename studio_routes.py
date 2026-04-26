@@ -419,7 +419,31 @@ async def create_drama(request: Request):
     data = await request.json()
     if not data.get("title"):
         raise HTTPException(400, "Title is required")
-    return _db().create_drama(data)
+        
+    drama = _db().create_drama(data)
+    
+    # Auto-clone gallery characters if category assigned
+    meta = data.get("metadata", {})
+    if isinstance(meta, dict) and "gallery_category_id" in meta:
+        try:
+            cat_id = meta["gallery_category_id"]
+            db_instance = _db()
+            items = db_instance.list_gallery_items(cat_id)
+            for gi in items:
+                char_data = {
+                    "name": gi.get("name", ""),
+                    "role": gi.get("role_type", ""),
+                    "description": gi.get("personality", "") or gi.get("appearance", ""),
+                    "appearance": gi.get("appearance", ""),
+                    "voice_style": gi.get("voice_style", ""),
+                    "image_url": gi.get("image_url", ""),
+                    "reference_images": json.dumps([gi.get("image_url")] if gi.get("image_url") else []),
+                }
+                db_instance.create_character(drama["id"], char_data)
+        except Exception as e:
+            logger.warning(f"Failed to clone gallery characters: {e}")
+            
+    return drama
 
 
 @router.get("/api/v1/studio/dramas/{drama_id}")
@@ -585,6 +609,26 @@ async def _autopilot_runner(drama_id: int):
                 "visual_style": drama.get("style", "realistic") if drama else "realistic",
                 "content_format": content_format
             }
+            # Inject gallery items into context when gallery category is assigned
+            gallery_cat_id = meta.get("gallery_category_id")
+            if gallery_cat_id:
+                try:
+                    gallery_items = _db().list_gallery_items(gallery_cat_id)
+                    if gallery_items:
+                        context["gallery_assets"] = [
+                            {
+                                "name": gi.get("name", ""),
+                                "type": gi.get("char_type", "individual"),
+                                "role": gi.get("role_type", ""),
+                                "appearance": gi.get("appearance", ""),
+                                "tags": gi.get("tags", ""),
+                                "has_reference_image": bool(gi.get("image_url", "")),
+                            }
+                            for gi in gallery_items
+                        ]
+                        logger.info(f"Autopilot context: injected {len(gallery_items)} gallery assets")
+                except Exception as e:
+                    logger.warning(f"Failed to load gallery items for autopilot context: {e}")
             if idx > 0:
                 # Fetch prev ep
                 eps = _db().list_episodes(drama_id)
@@ -1513,6 +1557,7 @@ async def generate_storyboard(episode_id: int, request: Request):
         "ethnicity": drama_metadata.get("ethnicity", "Default"),
         "prompt_focus": drama_metadata.get("prompt_focus", "Default"),
         "no_text_in_prompt": drama_metadata.get("no_text_in_prompt", False),
+        "text_in_video": drama_metadata.get("text_in_video", "notext" if drama_metadata.get("no_text_in_prompt", False) else "none"),
         "narration_source": drama_metadata.get("narration_source", "prose"),
         "characters": [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c["appearance"], "personality": c["personality"]} for c in characters],
         "scenes": [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes],
@@ -1521,6 +1566,27 @@ async def generate_storyboard(episode_id: int, request: Request):
     raw_content = ep.get("content") or ""
     if drama_metadata.get("narration_source") == "prose" and raw_content.strip():
         context["raw_prose_content"] = raw_content[:12000]
+
+    # Inject gallery items into context for Commercial/Advertisement format
+    gallery_cat_id = drama_metadata.get("gallery_category_id")
+    if gallery_cat_id:
+        try:
+            gallery_items = _db().list_gallery_items(gallery_cat_id)
+            if gallery_items:
+                context["gallery_assets"] = [
+                    {
+                        "name": gi.get("name", ""),
+                        "type": gi.get("char_type", "individual"),
+                        "role": gi.get("role_type", ""),
+                        "appearance": gi.get("appearance", ""),
+                        "tags": gi.get("tags", ""),
+                        "has_reference_image": bool(gi.get("image_url", "")),
+                    }
+                    for gi in gallery_items
+                ]
+                logger.info(f"Storyboard context: injected {len(gallery_items)} gallery assets from category {gallery_cat_id}")
+        except Exception as e:
+            logger.warning(f"Failed to load gallery items for storyboard context: {e}")
 
     # Build name-to-id map for character resolution
     char_name_map = {c["name"].lower().strip(): c["id"] for c in characters}
@@ -2173,7 +2239,31 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     db = _db()
     drama_id = ep.get("drama_id")
     all_chars = {c["id"]: c for c in db.list_characters(drama_id)} if drama_id else {}
-    
+
+    # Helper: resolve image_url (web URL or file path) to absolute file path
+    _gallery_dir_cache = _get_gallery_dir()
+    _ref_dir_cache = _get_ref_dir()
+    def _resolve_image_path(url):
+        """Convert web URL or file path to absolute path. Returns path if file exists, else None."""
+        if not url:
+            return None
+        # Gallery web URL: /api/v1/studio/gallery/image/filename
+        if url.startswith("/api/v1/studio/gallery/image/"):
+            fname = url.replace("/api/v1/studio/gallery/image/", "", 1)
+            fpath = os.path.join(_gallery_dir_cache, fname)
+            if os.path.isfile(fpath):
+                return fpath
+            return None
+        # Already an absolute file path
+        if os.path.isfile(url):
+            return url
+        # Try reference dir as fallback
+        fname = url.replace("\\", "/").split("/")[-1]
+        fpath = os.path.join(_ref_dir_cache, fname)
+        if os.path.isfile(fpath):
+            return fpath
+        return None
+
     for shot in shots:
         char_ids = shot.get("character_ids", [])
         # Handle character_ids stored as JSON string
@@ -2202,15 +2292,16 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             if is_narrator:
                 logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: skipping narrator/host '{char.get('name')}' — no ref image needed")
                 continue
-            img_url = char.get("image_url", "")
-            if img_url and os.path.isfile(img_url):
-                ref_images.append(img_url)
+            resolved = _resolve_image_path(char.get("image_url", ""))
+            if resolved:
+                ref_images.append(resolved)
             else:
                 try:
                     refs = json.loads(char.get("reference_images") or "[]")
                     for r in refs:
-                        if r and os.path.isfile(r):
-                            ref_images.append(r)
+                        rp = _resolve_image_path(r)
+                        if rp:
+                            ref_images.append(rp)
                             break
                 except:
                     pass
@@ -2219,6 +2310,44 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
         elif char_ids:
             logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
+    # --- Inject gallery reference images as fallback for shots without character refs ---
+    try:
+        drama_meta = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
+        gallery_cat_id = drama_meta.get("gallery_category_id")
+        if gallery_cat_id:
+            gallery_items = db.list_gallery_items(gallery_cat_id)
+            gallery_ref_images = []
+            for gi in gallery_items:
+                resolved = _resolve_image_path(gi.get("image_url", ""))
+                if resolved:
+                    gallery_ref_images.append(resolved)
+                else:
+                    try:
+                        gi_refs = json.loads(gi.get("reference_images") or "[]")
+                        for r in gi_refs:
+                            rp = _resolve_image_path(r)
+                            if rp:
+                                gallery_ref_images.append(rp)
+                                break
+                    except:
+                        pass
+            if gallery_ref_images:
+                for shot in shots:
+                    existing_refs = shot.get("ref_images", [])
+                    if not existing_refs:
+                        # No character refs found — use gallery images instead
+                        shot["ref_images"] = gallery_ref_images[:3]
+                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(shot['ref_images'])} gallery ref images (no char refs)")
+                    else:
+                        # Merge: add gallery images not already included
+                        combined = list(existing_refs)
+                        for gi_img in gallery_ref_images:
+                            if gi_img not in combined and len(combined) < 3:
+                                combined.append(gi_img)
+                        shot["ref_images"] = combined
+                logger.info(f"Gallery ref injection: {len(gallery_ref_images)} gallery images available from category {gallery_cat_id}")
+    except Exception as e:
+        logger.warning(f"Failed to inject gallery ref images: {e}")
 
     # Inject aspect ratio from drama metadata
     try:
@@ -2228,6 +2357,24 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
         video_aspect_ratio = "16:9"
     for shot in shots:
         shot["aspect_ratio"] = video_aspect_ratio
+
+    # Inject text_in_video constraint suffix into prompts for Grok
+    text_in_video = drama_meta.get("text_in_video", "")
+    # Backward compat: old boolean field
+    if not text_in_video and drama_meta.get("no_text_in_prompt"):
+        text_in_video = "notext"
+    if text_in_video == "notext":
+        notext_suffix = ". IMPORTANT: no text, no letters, no words, no numbers, no typography in the video."
+        for shot in shots:
+            p = shot.get("image_prompt", "")
+            if p and notext_suffix not in p:
+                shot["image_prompt"] = p.rstrip(". ") + notext_suffix
+    elif text_in_video == "english_only":
+        eng_suffix = ". English text only, no CJK characters, no non-Latin script."
+        for shot in shots:
+            p = shot.get("image_prompt", "")
+            if p and eng_suffix not in p:
+                shot["image_prompt"] = p.rstrip(". ") + eng_suffix
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
@@ -3611,3 +3758,475 @@ async def _check_channel_for_new_videos(watcher: dict):
         }
         db.create_pipeline_job(job_data)
         logger.info(f"Channel watcher {watcher_id}: queued job for {video_url}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Character Gallery API
+# ═══════════════════════════════════════════════════════════════
+
+def _get_gallery_dir():
+    """Get directory for storing gallery character images."""
+    try:
+        from tubecli.config import DATA_DIR
+        d = os.path.join(str(DATA_DIR), "content_studio", "gallery")
+    except Exception:
+        d = os.path.join(_ext_dir, "outputs", "gallery")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# ── Category CRUD ──
+
+@router.get("/api/v1/studio/gallery/categories")
+async def list_gallery_categories():
+    cats = _db().list_gallery_categories()
+    return {"success": True, "categories": cats}
+
+
+@router.post("/api/v1/studio/gallery/categories")
+async def create_gallery_category(request: Request):
+    data = await request.json()
+    cat = _db().create_gallery_category(data)
+    return {"success": True, "category": cat}
+
+
+@router.put("/api/v1/studio/gallery/categories/{cat_id}")
+async def update_gallery_category(cat_id: int, request: Request):
+    data = await request.json()
+    cat = _db().update_gallery_category(cat_id, data)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    return {"success": True, "category": cat}
+
+
+@router.delete("/api/v1/studio/gallery/categories/{cat_id}")
+async def delete_gallery_category(cat_id: int):
+    _db().delete_gallery_category(cat_id)
+    return {"success": True}
+
+
+# ── Item CRUD ──
+
+@router.get("/api/v1/studio/gallery/items")
+async def list_gallery_items(category_id: int = None):
+    items = _db().list_gallery_items(category_id)
+    return {"success": True, "items": items}
+
+
+@router.post("/api/v1/studio/gallery/items")
+async def create_gallery_item(request: Request):
+    data = await request.json()
+    item = _db().create_gallery_item(data)
+    return {"success": True, "item": item}
+
+
+@router.get("/api/v1/studio/gallery/items/{item_id}")
+async def get_gallery_item(item_id: int):
+    item = _db().get_gallery_item(item_id)
+    if not item:
+        raise HTTPException(404, "Item not found")
+    return {"success": True, "item": item}
+
+
+@router.put("/api/v1/studio/gallery/items/{item_id}")
+async def update_gallery_item(item_id: int, request: Request):
+    data = await request.json()
+    item = _db().update_gallery_item(item_id, data)
+    if not item:
+        raise HTTPException(404, "Item not found")
+    return {"success": True, "item": item}
+
+
+@router.delete("/api/v1/studio/gallery/items/{item_id}")
+async def delete_gallery_item(item_id: int):
+    _db().delete_gallery_item(item_id)
+    return {"success": True}
+
+
+# ── Upload Image ──
+
+@router.post("/api/v1/studio/gallery/upload-image")
+async def upload_gallery_image_generic(request: Request):
+    """Upload a reference image for a gallery character (before saving item)."""
+    import shutil
+    from datetime import datetime
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+
+    gallery_dir = _get_gallery_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"gallery_new_{ts}{ext}"
+    filepath = os.path.join(gallery_dir, filename)
+
+    with open(filepath, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    web_url = f"/api/v1/studio/gallery/image/{filename}"
+    return {"success": True, "url": web_url, "filepath": filepath}
+
+
+@router.post("/api/v1/studio/gallery/items/{item_id}/upload-image")
+async def upload_gallery_image(item_id: int, request: Request):
+    """Upload a reference image for a gallery character."""
+    import shutil
+    from datetime import datetime
+
+    item = _db().get_gallery_item(item_id)
+    if not item:
+        raise HTTPException(404, "Item not found")
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+
+    gallery_dir = _get_gallery_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"gallery_{item_id}_{ts}{ext}"
+    filepath = os.path.join(gallery_dir, filename)
+
+    with open(filepath, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    # Update item's image_url and reference_images
+    try:
+        refs = json.loads(item.get("reference_images") or "[]")
+    except Exception:
+        refs = []
+    refs.append(filepath)
+
+    web_url = f"/api/v1/studio/gallery/image/{filename}"
+    _db().update_gallery_item(item_id, {
+        "image_url": web_url,
+        "reference_images": refs,
+    })
+
+    return {"success": True, "image_url": web_url, "url": web_url}
+
+
+# ── Gemini Image Analysis ──
+
+# ── Save Gemini API Key ──
+
+@router.post("/api/v1/studio/gallery/save-api-key")
+async def save_gemini_api_key(request: Request):
+    """Save a Gemini API key to cloud_api_keys.json for persistent use."""
+    data = await request.json()
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "API key is required")
+
+    try:
+        from tubecli.config import DATA_DIR
+        keys_path = os.path.join(str(DATA_DIR), "cloud_api_keys.json")
+
+        # Load existing keys or create new
+        keys = {}
+        if os.path.isfile(keys_path):
+            with open(keys_path, "r", encoding="utf-8") as f:
+                keys = json.load(f)
+
+        # Update gemini key
+        keys["gemini"] = api_key
+
+        # Save back
+        with open(keys_path, "w", encoding="utf-8") as f:
+            json.dump(keys, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"Gemini API key saved to {keys_path}")
+        return {"success": True, "message": "Gemini API key saved successfully"}
+    except Exception as e:
+        logger.error(f"Failed to save Gemini API key: {e}")
+        raise HTTPException(500, f"Failed to save API key: {str(e)}")
+
+
+@router.post("/api/v1/studio/gallery/analyze-image")
+async def analyze_gallery_image(request: Request):
+    """
+    Analyze a character image using Gemini Vision API.
+    Accepts either an uploaded file or an existing image path.
+    Returns structured character data: gender, age_range, appearance, tags.
+    """
+    import httpx
+    import base64
+
+    content_type = request.headers.get("content-type", "")
+
+    # Get image data
+    if "multipart" in content_type:
+        form = await request.form()
+        file = form.get("file")
+        api_key = form.get("api_key", "")
+        if not file:
+            raise HTTPException(400, "No file uploaded")
+        image_bytes = await file.read()
+        mime_type = file.content_type or "image/png"
+
+        # Also save the file if item_id provided
+        item_id = form.get("item_id")
+        if item_id:
+            gallery_dir = _get_gallery_dir()
+            from datetime import datetime
+            ext = os.path.splitext(file.filename)[1] or ".png"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"gallery_analyze_{ts}{ext}"
+            filepath = os.path.join(gallery_dir, filename)
+            with open(filepath, "wb") as f:
+                f.write(image_bytes)
+    else:
+        data = await request.json()
+        api_key = data.get("api_key", "")
+        image_path = data.get("image_path", "")
+
+        # Resolve web URL to filesystem path if needed
+        if image_path and image_path.startswith("/api/v1/studio/gallery/image/"):
+            fname = image_path.replace("/api/v1/studio/gallery/image/", "", 1)
+            image_path = os.path.join(_get_gallery_dir(), fname)
+
+        if not image_path or not os.path.isfile(image_path):
+            raise HTTPException(400, f"Image path not found: {image_path}")
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        ext = os.path.splitext(image_path)[1].lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".webp": "image/webp", ".gif": "image/gif"}
+        mime_type = mime_map.get(ext, "image/png")
+        filepath = image_path
+
+    if not api_key:
+        # Try to get from workspace config
+        try:
+            from tubecli.config import DATA_DIR
+            keys_path = os.path.join(str(DATA_DIR), "cloud_api_keys.json")
+            if os.path.isfile(keys_path):
+                with open(keys_path, "r") as f:
+                    keys = json.load(f)
+                api_key = keys.get("gemini", "")
+        except Exception:
+            pass
+
+    if not api_key:
+        raise HTTPException(400, "Gemini API key required. Configure in Settings → Cloud API Keys.")
+
+    # Build Gemini request
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    prompt = """Look at this image carefully. First determine WHAT the image shows: is it a character, a group of people, an animal/creature, or a non-living OBJECT/PRODUCT (such as a book, box set, toy, vehicle, food, furniture, etc)?
+
+IMPORTANT RULES:
+- If the image shows a PRODUCT, BOOK, PACKAGE, or any non-living OBJECT: set char_type to "object". Describe the OBJECT ITSELF (what it is, its shape, colors, text/labels on it, brand, packaging). Do NOT describe characters/people printed on it.
+- If the image shows a CREATURE or ANIMAL: set char_type to "creature". Describe the animal/creature itself.
+- If the image shows exactly 1 person/character: set char_type to "individual". Describe their physical appearance.
+- If the image shows exactly 2 characters: set char_type to "duo".
+- If the image shows 3-5 characters together: set char_type to "friend_group".
+- If the image shows 6+ people: set char_type to "crowd".
+
+RESPOND ONLY with valid JSON, no markdown or explanation.
+
+{
+  "char_type": one of "individual", "duo", "friend_group", "crowd", "creature", "object",
+  "name_suggestion": "A descriptive name for this entry (e.g. 'Sherlock Holmes Book Set', 'Black Cat', 'Beach Crowd', 'Blue Hair Girl')",
+  "gender": "male" / "female" / "mixed" / "other" / "" (leave empty for objects/creatures if not applicable),
+  "age_range": "child" / "teen" / "young_adult" / "adult" / "middle_aged" / "elderly" / "mixed" / "" (leave empty for objects),
+  "appearance": "For CHARACTERS: hair, eyes, skin, build, clothing, accessories. For OBJECTS/PRODUCTS: describe the item — shape, size, colors, text/title/brand visible, packaging, condition, material. For CREATURES: species, color, size, features. Write as a plain English paragraph.",
+  "role_type": "A concise label: e.g. 'detective', 'book set', 'pet dog', 'student group', 'toy figure'",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "art_style": "realistic / anime / chibi / cartoon / 3d_render / photograph / illustration / etc."
+}"""
+
+    gemini_payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": mime_type, "data": image_b64}}
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 1024,
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+                json=gemini_payload,
+            )
+
+        if resp.status_code != 200:
+            error_detail = resp.text[:300]
+            logger.error(f"Gemini API error: {resp.status_code} — {error_detail}")
+            raise HTTPException(resp.status_code, f"Gemini API error: {error_detail}")
+
+        result = resp.json()
+        # Gemini 2.5 Flash returns thinking in separate parts with thought=true
+        # Find the actual text part (not the thinking part)
+        parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        text = ""
+        for part in parts:
+            # Skip thinking parts (Gemini 2.5 reasoning)
+            if part.get("thought"):
+                continue
+            if part.get("text"):
+                text = part["text"]
+                break
+        # Fallback: if no non-thought text found, use first text part
+        if not text:
+            for part in parts:
+                if part.get("text"):
+                    text = part["text"]
+                    break
+
+        # Parse JSON from response — robust handling of markdown fences
+        import re
+        logger.info(f"[Gallery Analyze] Gemini parts count: {len(parts)}, thought parts: {sum(1 for p in parts if p.get('thought'))}")
+        logger.info(f"[Gallery Analyze] Raw text (first 300): {text[:300]}")
+        # 1. Strip <think>...</think> blocks (inline reasoning fallback)
+        clean_text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+        # 2. Strip markdown code fences
+        clean_text = re.sub(r'^```(?:json)?\s*', '', clean_text, flags=re.MULTILINE)
+        clean_text = re.sub(r'^```\s*$', '', clean_text, flags=re.MULTILINE)
+        clean_text = clean_text.strip()
+        logger.info(f"[Gallery Analyze] Clean text (first 300): {clean_text[:300]}")
+        # 3. Try parsing the cleaned text directly (often it's just JSON)
+        analysis = None
+        try:
+            analysis = json.loads(clean_text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # 4. Fallback: find last complete JSON object (most likely the actual response)
+        if not analysis:
+            # Find all top-level JSON objects
+            brace_depth = 0
+            obj_start = -1
+            candidates = []
+            for i, ch in enumerate(clean_text):
+                if ch == '{':
+                    if brace_depth == 0:
+                        obj_start = i
+                    brace_depth += 1
+                elif ch == '}':
+                    brace_depth -= 1
+                    if brace_depth == 0 and obj_start >= 0:
+                        candidates.append(clean_text[obj_start:i+1])
+                        obj_start = -1
+            # Try candidates from last to first (last is most likely the actual answer)
+            for candidate in reversed(candidates):
+                try:
+                    analysis = json.loads(candidate)
+                    if isinstance(analysis, dict) and ("char_type" in analysis or "appearance" in analysis):
+                        break
+                    analysis = None
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        if not analysis:
+            analysis = {"appearance": text, "tags": [], "gender": "", "age_range": ""}
+
+        return {
+            "success": True,
+            "analysis": analysis,
+            "image_path": filepath if 'filepath' in dir() else "",
+        }
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Gemini API timeout")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Gemini response: {e}")
+        return {"success": True, "analysis": {"appearance": text, "tags": [], "gender": "", "age_range": ""}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Gemini analysis error: {e}")
+        raise HTTPException(500, f"Analysis failed: {str(e)[:200]}")
+
+
+# ── Clone Gallery to Drama ──
+
+@router.post("/api/v1/studio/gallery/apply-to-drama")
+async def apply_gallery_to_drama(request: Request):
+    """
+    Clone gallery characters into a drama project.
+    Copies name, appearance, image_url, reference_images from gallery items
+    into the drama's characters table.
+    """
+    data = await request.json()
+    drama_id = data.get("drama_id")
+    category_id = data.get("category_id")
+    item_ids = data.get("item_ids", [])
+
+    if not drama_id:
+        raise HTTPException(400, "drama_id required")
+
+    db = _db()
+    drama = db.get_drama(drama_id)
+    if not drama:
+        raise HTTPException(404, "Drama not found")
+
+    # Get gallery items to clone
+    if item_ids:
+        items = [db.get_gallery_item(iid) for iid in item_ids]
+        items = [i for i in items if i is not None]
+    elif category_id:
+        items = db.list_gallery_items(category_id)
+    else:
+        raise HTTPException(400, "category_id or item_ids required")
+
+    cloned = []
+    for gi in items:
+        # Check if character with same name already exists in drama
+        existing = db.list_characters(drama_id)
+        already_exists = any(c.get("name", "").lower() == gi.get("name", "").lower() for c in existing)
+        if already_exists:
+            continue
+
+        char_data = {
+            "name": gi.get("name", ""),
+            "role": gi.get("role_type", ""),
+            "description": gi.get("personality", ""),
+            "appearance": gi.get("appearance", ""),
+            "voice_style": gi.get("voice_style", ""),
+            "image_url": gi.get("image_url", ""),
+            "reference_images": gi.get("reference_images", "[]"),
+        }
+        char = db.create_character(drama_id, char_data)
+        cloned.append(char)
+
+    # Store gallery_category_id in drama metadata for pipeline reference
+    if category_id:
+        try:
+            meta = json.loads(drama.get("metadata") or "{}")
+            meta["gallery_category_id"] = category_id
+            db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+        except Exception:
+            pass
+
+    return {"success": True, "cloned_count": len(cloned), "characters": cloned}
+
+
+# ── Search Gallery ──
+
+@router.get("/api/v1/studio/gallery/search")
+async def search_gallery(q: str = "", gender: str = "", age_range: str = "", visual_style: str = ""):
+    items = _db().search_gallery_items(query=q, gender=gender, age_range=age_range, visual_style=visual_style)
+    return {"success": True, "items": items, "count": len(items)}
+
+
+# ── Serve Gallery Images ──
+
+@router.get("/api/v1/studio/gallery/image/{filename:path}")
+async def serve_gallery_image(filename: str):
+    """Serve gallery images."""
+    gallery_dir = _get_gallery_dir()
+    filepath = os.path.join(gallery_dir, filename)
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, "Image not found")
+    return FileResponse(filepath)
+

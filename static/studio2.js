@@ -47,8 +47,10 @@ function getCurrentPipeline() {
 
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    loadDramas();
-    loadAiModelInfo();
+    syncPresetsWithServer().then(() => {
+        loadDramas();
+        loadAiModelInfo();
+    });
 });
 
 // ── API Helpers ────────────────────────────────────────────
@@ -157,6 +159,9 @@ window.showCreateDrama = function() {
     // Load presets dropdown and restore last-used config
     loadWizPresets();
     restoreLastWizConfig();
+    
+    // Load Character Gallery categories into the dropdown
+    loadWizGalleryCategories();
 
     document.getElementById('wizTitle').focus();
 }
@@ -217,8 +222,9 @@ const WIZ_FIELD_IDS = [
     'wizCharacterStyle', 'wizCharStyleCustom', 'wizCameraAngle',
     'wizEthnicity', 'wizPromptFocus', 'wizAspectRatio',
     'wizNarrationSource', 'wizLanguage', 'wizPipelineTemplate',
+    'wizGalleryCategory', 'wizNoTextPrompt'
 ];
-const WIZ_CHECKBOX_IDS = ['wizNoTextPrompt'];
+const WIZ_CHECKBOX_IDS = [];
 
 function _getWizValues() {
     const data = {};
@@ -238,10 +244,15 @@ function _setWizValues(data) {
     for (const id of WIZ_FIELD_IDS) {
         const el = document.getElementById(id);
         if (el && data[id] !== undefined) {
-            el.value = data[id];
+            let val = data[id];
+            // Backward compat: old presets stored wizNoTextPrompt as boolean
+            if (id === 'wizNoTextPrompt' && typeof val === 'boolean') {
+                val = val ? 'notext' : 'none';
+            }
+            el.value = val;
             // Show custom input if needed
-            if (id === 'wizStyle' && data[id] === '__custom__') toggleCustomStyleInput('wizStyle', 'wizStyleCustom');
-            if (id === 'wizCharacterStyle' && data[id] === '__custom__') toggleCustomStyleInput('wizCharacterStyle', 'wizCharStyleCustom');
+            if (id === 'wizStyle' && val === '__custom__') toggleCustomStyleInput('wizStyle', 'wizStyleCustom');
+            if (id === 'wizCharacterStyle' && val === '__custom__') toggleCustomStyleInput('wizCharacterStyle', 'wizCharStyleCustom');
         }
     }
     for (const id of WIZ_CHECKBOX_IDS) {
@@ -250,13 +261,55 @@ function _setWizValues(data) {
     }
 }
 
+async function syncPresetsWithServer() {
+    try {
+        const res = await apiFetch('/presets', { method: 'GET' });
+        if (res && res.success && res.presets) {
+            let localPresets = _getPresets();
+            let changed = false;
+            let hasLocalOnly = false;
+            
+            // Merge server presets into local
+            for (const [name, data] of Object.entries(res.presets)) {
+                if (!localPresets[name]) {
+                    localPresets[name] = data;
+                    changed = true;
+                }
+            }
+            // Check for local-only presets to upload
+            for (const name of Object.keys(localPresets)) {
+                if (!res.presets[name]) {
+                    hasLocalOnly = true;
+                }
+            }
+            if (changed) {
+                localStorage.setItem(WIZ_PRESETS_KEY, JSON.stringify(localPresets));
+            }
+            if (hasLocalOnly) {
+                apiFetch('/presets', {
+                    method: 'POST',
+                    body: JSON.stringify({ presets: localPresets })
+                }).catch(()=>{});
+            }
+        }
+    } catch (e) {
+        console.error("Failed to sync presets", e);
+    }
+}
+
 function _getPresets() {
     try { return JSON.parse(localStorage.getItem(WIZ_PRESETS_KEY) || '{}'); }
     catch { return {}; }
 }
 
-function _savePresets(presets) {
+function _savePresets(presets, singleName = null, singleData = null) {
     localStorage.setItem(WIZ_PRESETS_KEY, JSON.stringify(presets));
+    // Also save to server silently
+    const payload = singleName ? { name: singleName, data: singleData } : { presets: presets };
+    apiFetch('/presets', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    }).catch(()=>{});
 }
 
 function loadWizPresets() {
@@ -277,8 +330,9 @@ function saveWizPreset() {
     const name = prompt('Đặt tên cho preset này:');
     if (!name || !name.trim()) return;
     const presets = _getPresets();
-    presets[name.trim()] = _getWizValues();
-    _savePresets(presets);
+    const data = _getWizValues();
+    presets[name.trim()] = data;
+    _savePresets(presets, name.trim(), data);
     loadWizPresets();
     document.getElementById('wizPresetSelect').value = name.trim();
     toast(`💾 Preset "${name.trim()}" đã lưu!`, 'success');
@@ -300,8 +354,10 @@ function deleteWizPreset() {
     if (!sel || !sel.value) { toast('Chọn preset cần xóa', 'info'); return; }
     if (!confirm(`Xóa preset "${sel.value}"?`)) return;
     const presets = _getPresets();
-    delete presets[sel.value];
-    _savePresets(presets);
+    const nameToDelete = sel.value;
+    delete presets[nameToDelete];
+    localStorage.setItem(WIZ_PRESETS_KEY, JSON.stringify(presets));
+    apiFetch(`/presets/${encodeURIComponent(nameToDelete)}`, { method: 'DELETE' }).catch(()=>{});
     loadWizPresets();
     toast('🗑 Preset đã xóa', 'success');
 }
@@ -347,7 +403,12 @@ async function _createDramaFromWiz() {
     metadata.aspect_ratio = document.getElementById('wizAspectRatio').value;
     metadata.content_format = document.getElementById('wizContentFormat').value;
     metadata.narration_source = document.getElementById('wizNarrationSource').value;
-    metadata.no_text_in_prompt = !!document.getElementById('wizNoTextPrompt')?.checked;
+    metadata.text_in_video = document.getElementById('wizNoTextPrompt')?.value || 'notext';
+    
+    const galleryCatId = document.getElementById('wizGalleryCategory').value;
+    if (galleryCatId) {
+        metadata.gallery_category_id = parseInt(galleryCatId);
+    }
     
     // Save TTS voice config
     const voiceSelect = document.getElementById('wizVoiceProfileExec');
@@ -752,11 +813,25 @@ function renderSidebar() {
 function showWelcome() {
     document.getElementById('welcomeState').style.display = '';
     document.getElementById('editorState').style.display = 'none';
+    
+    // Ensure mainPanel is visible and other tabs are hidden
+    document.getElementById('mainPanel').style.display = 'flex';
+    const pipelineView = document.getElementById('pipelineView');
+    const galleryView = document.getElementById('galleryView');
+    if (pipelineView) pipelineView.style.display = 'none';
+    if (galleryView) galleryView.style.display = 'none';
 }
 
 function showEditor() {
     document.getElementById('welcomeState').style.display = 'none';
     document.getElementById('editorState').style.display = '';
+    
+    // Ensure mainPanel is visible and other tabs are hidden
+    document.getElementById('mainPanel').style.display = 'flex';
+    const pipelineView = document.getElementById('pipelineView');
+    const galleryView = document.getElementById('galleryView');
+    if (pipelineView) pipelineView.style.display = 'none';
+    if (galleryView) galleryView.style.display = 'none';
 
     // Populate header
     document.getElementById('editorTitle').textContent = currentDrama?.title || 'Untitled';
@@ -1227,6 +1302,9 @@ function renderExtractResults(data) {
 // ── Character/Scene Reference Helpers ──────────────────────
 function _getCharRefUrl(c) {
     if (c.image_url) {
+        // Gallery images already have a web URL like /api/v1/studio/gallery/image/...
+        if (c.image_url.startsWith('/api/')) return c.image_url;
+        // Absolute file paths — extract filename and serve via /references/
         const fname = c.image_url.replace(/\\/g, '/').split('/').pop();
         return `/api/v1/studio/references/${encodeURIComponent(fname)}`;
     }
@@ -4967,9 +5045,11 @@ let _apChipSelectedProfiles = [];
 function togglePipelineView() {
     const mainContent = document.getElementById('mainPanel');
     const pipelineView = document.getElementById('pipelineView');
+    const galleryView = document.getElementById('galleryView');
     
     if (pipelineView.style.display === 'none') {
         mainContent.style.display = 'none';
+        if (galleryView) galleryView.style.display = 'none';
         pipelineView.style.display = 'flex';
         _initAutoPipelineModal();
     } else {
@@ -4981,9 +5061,15 @@ function togglePipelineView() {
 function _closePipelineView() {
     const mainContent = document.getElementById('mainPanel');
     const pipelineView = document.getElementById('pipelineView');
+    const galleryView = document.getElementById('galleryView');
+    
     if (pipelineView && pipelineView.style.display !== 'none') {
         pipelineView.style.display = 'none';
-        mainContent.style.display = 'flex';
+        if (galleryView && galleryView.style.display !== 'none') {
+            // If gallery is open, let it be. But usually they are mutually exclusive.
+        } else {
+            mainContent.style.display = 'flex';
+        }
         if (_apJobPollInterval) { clearInterval(_apJobPollInterval); _apJobPollInterval = null; }
     }
 }
@@ -5844,3 +5930,666 @@ function toggleApBrowserChipMenu() {
         }, 10);
     }
 }
+
+// ── CHARACTER GALLERY IMPLEMENTATION ────────────────────────────────────
+
+let currentGalleryCategory = null;
+let allGalleryCategories = [];
+let _galItemSelectedCategories = [];
+
+function toggleGalleryView() {
+    const mainContent = document.getElementById('mainPanel');
+    const pipelineView = document.getElementById('pipelineView');
+    const galleryView = document.getElementById('galleryView');
+    
+    const isCurrentlyOpen = galleryView.style.display !== 'none';
+    
+    if (isCurrentlyOpen) {
+        // Close gallery, restore main content
+        galleryView.style.display = 'none';
+        mainContent.style.display = 'flex';
+    } else {
+        // Open gallery, hide others
+        mainContent.style.display = 'none';
+        if (pipelineView) pipelineView.style.display = 'none';
+        galleryView.style.display = 'flex';
+        
+        // Remove active class from sidebar
+        document.querySelectorAll('.project-item').forEach(el => el.classList.remove('active'));
+        
+        loadGalleryCategories();
+        loadGalleryItems(null);
+    }
+}
+
+async function loadWizGalleryCategories() {
+    const wizSel = document.getElementById('wizGalleryCategory');
+    if (!wizSel) return;
+    
+    try {
+        const res = await apiFetch('/gallery/categories');
+        const categories = res.categories || [];
+        
+        wizSel.innerHTML = '<option value="">None (AI generates new)</option>';
+        categories.forEach(cat => {
+            const opt = document.createElement('option');
+            opt.value = cat.id;
+            opt.textContent = cat.name + (cat.visual_style ? ` (${cat.visual_style})` : '');
+            wizSel.appendChild(opt);
+        });
+    } catch (e) {
+        console.warn('Failed to load gallery categories for wizard', e);
+    }
+}
+
+let _allGalleryItemsCache = []; // for client-side search
+
+async function loadGalleryCategories() {
+    try {
+        const res = await apiFetch('/gallery/categories');
+        allGalleryCategories = res.categories || [];
+        
+        const listEl = document.getElementById('galleryCategoriesList');
+        if (!listEl) return;
+        
+        listEl.innerHTML = '';
+        
+        // "All Characters" sidebar item
+        const allItem = document.createElement('div');
+        allItem.className = 'gallery-cat-item' + (currentGalleryCategory === null ? ' active' : '');
+        allItem.innerHTML = `
+            <div class="gallery-cat-icon">👥</div>
+            <span class="gallery-cat-name">All Characters</span>
+        `;
+        allItem.onclick = () => {
+            currentGalleryCategory = null;
+            document.getElementById('galleryCurrentCategoryName').textContent = 'All Characters';
+            loadGalleryCategories();
+            loadGalleryItems(null);
+        };
+        listEl.appendChild(allItem);
+        
+        allGalleryCategories.forEach(cat => {
+            const item = document.createElement('div');
+            item.className = 'gallery-cat-item' + (currentGalleryCategory === cat.id ? ' active' : '');
+            item.innerHTML = `
+                <div class="gallery-cat-icon">🎭</div>
+                <span class="gallery-cat-name">${esc(cat.name)}</span>
+                <span class="gallery-cat-count">${cat.item_count || 0}</span>
+                <div class="gallery-cat-actions">
+                    <button class="cat-action-btn" title="Edit category" onclick="event.stopPropagation(); editGalleryCategory(${cat.id})">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button class="cat-action-btn cat-delete-btn" title="Delete category" onclick="event.stopPropagation(); deleteGalleryCategory(${cat.id}, '${esc(cat.name)}')">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+            `;
+            item.onclick = () => {
+                currentGalleryCategory = cat.id;
+                document.getElementById('galleryCurrentCategoryName').textContent = cat.name;
+                loadGalleryCategories();
+                loadGalleryItems(cat.id);
+            };
+            
+            listEl.appendChild(item);
+        });
+    } catch (e) {
+        toast('Failed to load gallery categories', 'error');
+    }
+}
+
+function editGalleryCategory(catId) {
+    const cat = allGalleryCategories.find(c => c.id === catId);
+    if (!cat) return;
+    document.getElementById('galCatId').value = cat.id;
+    document.getElementById('galCatName').value = cat.name || '';
+    document.getElementById('galCatStyle').value = cat.visual_style || '';
+    document.getElementById('galCatModalTitle').textContent = 'Edit Category';
+    // Show delete button in modal
+    const delBtn = document.getElementById('btnDeleteGalCat');
+    if (delBtn) delBtn.style.display = 'inline-flex';
+    document.getElementById('galleryCategoryModal').style.display = 'flex';
+}
+
+async function deleteGalleryCategory(catId, catName) {
+    if (!confirm(`Xóa category "${catName}"?\n\nCác character trong category này sẽ không bị xóa, chỉ bỏ liên kết.`)) return;
+    
+    try {
+        await apiFetch(`/gallery/categories/${catId}`, { method: 'DELETE' });
+        toast(`Đã xóa category "${catName}"`, 'success');
+        
+        // Reset view if we were viewing the deleted category
+        if (currentGalleryCategory === catId) {
+            currentGalleryCategory = null;
+            document.getElementById('galleryCurrentCategoryName').textContent = 'All Characters';
+            loadGalleryItems(null);
+        }
+        loadGalleryCategories();
+    } catch (e) {
+        toast('Lỗi xóa category: ' + e.message, 'error');
+    }
+}
+
+async function loadGalleryItems(categoryId = null) {
+    try {
+        let url = '/gallery/items';
+        if (categoryId) url += `?category_id=${categoryId}`;
+        
+        const res = await apiFetch(url);
+        const items = res.items || [];
+        _allGalleryItemsCache = items;
+        
+        const countEl = document.getElementById('galleryItemCount');
+        if (countEl) countEl.textContent = `${items.length} character${items.length !== 1 ? 's' : ''}`;
+        
+        _renderGalleryCards(items);
+        
+    } catch (e) {
+        toast('Failed to load gallery items', 'error');
+    }
+}
+
+function filterGalleryItems(query) {
+    const q = (query || '').toLowerCase().trim();
+    if (!q) {
+        _renderGalleryCards(_allGalleryItemsCache);
+        return;
+    }
+    const filtered = _allGalleryItemsCache.filter(item => {
+        return (item.name || '').toLowerCase().includes(q) ||
+               (item.tags || '').toLowerCase().includes(q) ||
+               (item.role_type || '').toLowerCase().includes(q);
+    });
+    _renderGalleryCards(filtered);
+}
+
+function _resolveGalleryImageUrl(url) {
+    if (!url) return '';
+    // Already a web URL
+    if (url.startsWith('/') || url.startsWith('http')) return url;
+    // Old absolute path like C:\...\gallery\filename.ext — extract filename
+    const parts = url.replace(/\\/g, '/').split('/');
+    const fname = parts[parts.length - 1];
+    if (fname) return `/api/v1/studio/gallery/image/${fname}`;
+    return url;
+}
+
+function _renderGalleryCards(items) {
+    const grid = document.getElementById('galleryItemsGrid');
+    if (!grid) return;
+    
+    grid.innerHTML = '';
+    
+    if (items.length === 0) {
+        grid.innerHTML = `
+            <div class="gallery-empty-state">
+                <div class="gallery-empty-icon">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                </div>
+                <div class="gallery-empty-title">No Characters Yet</div>
+                <div class="gallery-empty-desc">Upload reference images and add character details to build your gallery. Characters will be used as visual references in drama projects.</div>
+                <button class="btn btn-primary" onclick="showGalleryItemModal()" style="margin-top:16px;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    Add First Character
+                </button>
+            </div>`;
+        return;
+    }
+    
+    const _charTypeLabels = {
+        individual: '👤', duo: '👥', friend_group: '🤝',
+        crowd: '👨‍👩‍👧‍👦', creature: '🐾', object: '📦'
+    };
+    items.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'gallery-char-card';
+        card.onclick = () => showGalleryItemModal(item);
+        
+        const imgUrl = _resolveGalleryImageUrl(item.image_url);
+        const hasImage = !!imgUrl;
+        const charType = item.char_type || 'individual';
+        const typeIcon = _charTypeLabels[charType] || '👤';
+        const showTypeBadge = charType && charType !== 'individual';
+        
+        card.innerHTML = `
+            <div class="gallery-char-card-image">
+                ${hasImage 
+                    ? `<img src="${imgUrl}" alt="${esc(item.name)}" loading="lazy">` 
+                    : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:48px;">👤</div>`
+                }
+                ${showTypeBadge ? `<span class="gallery-char-type-badge">${typeIcon} ${esc(charType.replace('_', ' '))}</span>` : ''}
+            </div>
+            <div class="gallery-char-card-body">
+                <h4 class="gallery-char-card-name">${esc(item.name)}</h4>
+                <div class="gallery-char-card-tags">
+                    ${item.gender ? `<span class="gallery-char-tag gender">${esc(item.gender)}</span>` : ''}
+                    ${item.age_range ? `<span class="gallery-char-tag age">${esc(item.age_range)}</span>` : ''}
+                    ${item.role_type ? `<span class="gallery-char-tag role">${esc(item.role_type)}</span>` : ''}
+                </div>
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+function showGalleryCategoryModal() {
+    document.getElementById('galCatId').value = '';
+    document.getElementById('galCatName').value = '';
+    document.getElementById('galCatStyle').value = '';
+    document.getElementById('galCatModalTitle').textContent = 'New Category';
+    // Hide delete button for new category
+    const delBtn = document.getElementById('btnDeleteGalCat');
+    if (delBtn) delBtn.style.display = 'none';
+    document.getElementById('galleryCategoryModal').style.display = 'flex';
+}
+
+async function saveGalleryCategory() {
+    const id = document.getElementById('galCatId').value;
+    const name = document.getElementById('galCatName').value.trim();
+    const style = document.getElementById('galCatStyle').value.trim();
+    
+    if (!name) { toast('Please enter a category name', 'error'); return; }
+    
+    const payload = { name, visual_style: style };
+    
+    try {
+        if (id) {
+            await apiFetch(`/gallery/categories/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            toast('Category updated', 'success');
+        } else {
+            await apiFetch('/gallery/categories', { method: 'POST', body: JSON.stringify(payload) });
+            toast('Category created', 'success');
+        }
+        document.getElementById('galleryCategoryModal').style.display = 'none';
+        loadGalleryCategories();
+    } catch (e) {
+        toast('Failed to save category: ' + e.message, 'error');
+    }
+}
+
+function showGalleryItemModal(item = null) {
+    document.getElementById('galleryItemModal').style.display = 'flex';
+    document.getElementById('galItemAnalyzeStatus').style.display = 'none';
+    
+    if (item) {
+        document.getElementById('galItemModalTitle').textContent = 'Edit Character';
+        document.getElementById('galItemId').value = item.id;
+        document.getElementById('galItemName').value = item.name || '';
+        document.getElementById('galItemCharType').value = item.char_type || 'individual';
+        document.getElementById('galItemGender').value = item.gender || '';
+        document.getElementById('galItemAge').value = item.age_range || '';
+        document.getElementById('galItemRole').value = item.role_type || '';
+        document.getElementById('galItemAppearance').value = item.appearance || '';
+        document.getElementById('galItemTags').value = item.tags || '';
+        document.getElementById('galItemImageUrl').value = _resolveGalleryImageUrl(item.image_url) || '';
+        
+        document.getElementById('btnDeleteGalItem').style.display = 'block';
+        
+        // Image
+        const resolvedUrl = _resolveGalleryImageUrl(item.image_url);
+        if (resolvedUrl) {
+            document.getElementById('galItemImagePreview').src = resolvedUrl;
+            document.getElementById('galItemImagePreview').style.display = 'block';
+            document.getElementById('galItemImagePlaceholder').style.display = 'none';
+        } else {
+            document.getElementById('galItemImagePreview').style.display = 'none';
+            document.getElementById('galItemImagePlaceholder').style.display = 'block';
+        }
+        
+        // Categories
+        _galItemSelectedCategories = item.category_ids || [];
+        
+    } else {
+        document.getElementById('galItemModalTitle').textContent = 'Add Character';
+        document.getElementById('galItemId').value = '';
+        document.getElementById('galItemName').value = '';
+        document.getElementById('galItemCharType').value = 'individual';
+        document.getElementById('galItemGender').value = '';
+        document.getElementById('galItemAge').value = '';
+        document.getElementById('galItemRole').value = '';
+        document.getElementById('galItemAppearance').value = '';
+        document.getElementById('galItemTags').value = '';
+        document.getElementById('galItemImageUrl').value = '';
+        
+        document.getElementById('btnDeleteGalItem').style.display = 'none';
+        
+        document.getElementById('galItemImagePreview').style.display = 'none';
+        document.getElementById('galItemImagePlaceholder').style.display = 'block';
+        
+        // Pre-select current category if viewing one
+        _galItemSelectedCategories = currentGalleryCategory ? [currentGalleryCategory] : [];
+    }
+    
+    _renderGalItemCategoryChips();
+}
+
+function _renderGalItemCategoryChips() {
+    const container = document.getElementById('galItemCategorySelect');
+    const emptyLabel = document.getElementById('galItemCatEmpty');
+    const menu = document.getElementById('galItemCatMenu');
+    if (!container || !menu) return;
+
+    container.querySelectorAll('.chip-item').forEach(el => el.remove());
+    if (emptyLabel) emptyLabel.style.display = _galItemSelectedCategories.length === 0 ? '' : 'none';
+
+    const addBtnWrap = container.querySelector('[style*="position:relative"]');
+    
+    _galItemSelectedCategories.forEach(catId => {
+        const cat = allGalleryCategories.find(c => c.id === catId);
+        if (!cat) return;
+        
+        const chip = document.createElement('span');
+        chip.className = 'chip-item';
+        chip.innerHTML = `${esc(cat.name)}<span class="chip-remove" title="Remove">✕</span>`;
+        chip.querySelector('.chip-remove').onclick = (e) => {
+            e.stopPropagation();
+            _galItemSelectedCategories = _galItemSelectedCategories.filter(id => id !== catId);
+            _renderGalItemCategoryChips();
+        };
+        container.insertBefore(chip, addBtnWrap);
+    });
+
+    menu.innerHTML = '';
+    allGalleryCategories.forEach(cat => {
+        const isSelected = _galItemSelectedCategories.includes(cat.id);
+        const opt = document.createElement('div');
+        opt.className = 'chip-dropdown-option' + (isSelected ? ' selected' : '');
+        opt.innerHTML = `<span class="opt-name">${esc(cat.name)}</span><span class="opt-check">✓</span>`;
+        opt.onclick = () => {
+            if (isSelected) {
+                _galItemSelectedCategories = _galItemSelectedCategories.filter(id => id !== cat.id);
+            } else {
+                _galItemSelectedCategories.push(cat.id);
+            }
+            _renderGalItemCategoryChips();
+        };
+        menu.appendChild(opt);
+    });
+}
+
+function toggleGalItemCatMenu() {
+    const menu = document.getElementById('galItemCatMenu');
+    if (!menu) return;
+    menu.classList.toggle('open');
+    if (menu.classList.contains('open')) {
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!menu.contains(e.target) && e.target.id !== 'galItemCatAddBtn') {
+                    menu.classList.remove('open');
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 10);
+    }
+}
+
+async function handleGalleryImageUpload(input) {
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    
+    // Preview local image immediately
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('galItemImagePreview').src = e.target.result;
+        document.getElementById('galItemImagePreview').style.display = 'block';
+        document.getElementById('galItemImagePlaceholder').style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+    
+    // Upload
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+        const resp = await fetch('/api/v1/studio/gallery/upload-image', {
+            method: 'POST',
+            body: formData
+        });
+        const res = await resp.json();
+        if (resp.ok && res.success && res.url) {
+            document.getElementById('galItemImageUrl').value = res.url;
+            toast('Image uploaded successfully', 'success');
+        } else {
+            let errMsg = res.error || res.message || (res.detail ? JSON.stringify(res.detail) : 'Unknown error');
+            throw new Error(errMsg);
+        }
+    } catch(e) {
+        toast('Upload Error: ' + e.message, 'error');
+    }
+}
+
+async function analyzeGalleryImage(manualKey = null) {
+    const imageUrl = document.getElementById('galItemImageUrl').value;
+    if (!imageUrl) {
+        toast('Please upload an image first', 'warning');
+        return;
+    }
+    
+    const statusEl = document.getElementById('galItemAnalyzeStatus');
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'Analyzing image...';
+    
+    try {
+        const reqBody = { image_path: imageUrl };
+        if (manualKey) reqBody.api_key = manualKey;
+
+        const res = await apiFetch('/gallery/analyze-image', {
+            method: 'POST',
+            body: JSON.stringify(reqBody)
+        });
+        
+        if (res.success && res.analysis) {
+            const a = res.analysis;
+            console.log('Gallery Auto-Fill analysis:', a);
+            
+            // Character Type
+            const validTypes = ['individual', 'duo', 'friend_group', 'crowd', 'creature', 'object'];
+            let detectedType = 'individual';
+            if (a.char_type) {
+                const ct = a.char_type.toLowerCase().replace(/\s+/g, '_');
+                if (validTypes.includes(ct)) {
+                    detectedType = ct;
+                    document.getElementById('galItemCharType').value = ct;
+                }
+            }
+            
+            // Name suggestion (only if empty)
+            if (!document.getElementById('galItemName').value && a.name_suggestion) {
+                document.getElementById('galItemName').value = a.name_suggestion;
+            }
+            
+            // Gender & Age: only fill for person-type entries
+            const isPersonType = ['individual', 'duo', 'friend_group', 'crowd'].includes(detectedType);
+            if (isPersonType) {
+                if (a.gender) document.getElementById('galItemGender').value = a.gender.toLowerCase();
+                if (a.age_range) document.getElementById('galItemAge').value = a.age_range.toLowerCase().replace(/\s+/g, '_');
+            } else {
+                // For objects/creatures, clear gender & age since they're not applicable
+                document.getElementById('galItemGender').value = '';
+                document.getElementById('galItemAge').value = '';
+            }
+            
+            // Appearance: ensure plain text, not JSON
+            let appearanceText = a.appearance || a.appearance_desc || a.description || a.physical_description || '';
+            if (typeof appearanceText === 'object') {
+                appearanceText = JSON.stringify(appearanceText);
+            }
+            if (appearanceText) document.getElementById('galItemAppearance').value = appearanceText;
+            
+            // Role: always fill from AI
+            if (a.role_type && typeof a.role_type === 'string') {
+                document.getElementById('galItemRole').value = a.role_type;
+            } else if (a.role_suggestions && Array.isArray(a.role_suggestions) && a.role_suggestions.length > 0) {
+                document.getElementById('galItemRole').value = a.role_suggestions[0];
+            }
+            
+            if (a.tags) {
+                const tagsStr = Array.isArray(a.tags) ? a.tags.join(', ') : a.tags;
+                document.getElementById('galItemTags').value = tagsStr;
+            }
+            toast('Auto-Fill complete!', 'success');
+        }
+    } catch (e) {
+        statusEl.style.display = 'none';
+        // Show professional API key modal instead of ugly prompt()
+        showGeminiKeyModal(e.message);
+    } finally {
+        statusEl.style.display = 'none';
+    }
+}
+
+// ── Gemini API Key Modal Functions ──
+
+let _geminiKeyResolve = null;
+
+function showGeminiKeyModal(errorMsg = '') {
+    const modal = document.getElementById('geminiKeyModal');
+    const errorBox = document.getElementById('geminiKeyErrorBox');
+    const errorText = document.getElementById('geminiKeyErrorText');
+    const input = document.getElementById('geminiKeyInput');
+    
+    // Show error if provided
+    if (errorMsg) {
+        // Extract clean error message
+        let cleanMsg = errorMsg;
+        try {
+            // Try to extract the core message from API error JSON
+            const match = errorMsg.match(/"message"\s*:\s*"([^"]+)"/);
+            if (match) {
+                cleanMsg = match[1];
+            } else if (errorMsg.includes('API key')) {
+                cleanMsg = 'API Key không hợp lệ hoặc đã hết hạn. Vui lòng kiểm tra lại.';
+            }
+        } catch(_) {}
+        errorText.textContent = cleanMsg;
+        errorBox.style.display = 'block';
+    } else {
+        errorBox.style.display = 'none';
+    }
+    
+    input.value = '';
+    input.type = 'password';
+    modal.style.display = 'flex';
+    
+    // Focus input after animation
+    setTimeout(() => input.focus(), 100);
+}
+
+function closeGeminiKeyModal() {
+    document.getElementById('geminiKeyModal').style.display = 'none';
+    toast('Phân tích đã bị hủy', 'warning');
+}
+
+function toggleGeminiKeyVisibility() {
+    const input = document.getElementById('geminiKeyInput');
+    input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function submitGeminiKey() {
+    const key = document.getElementById('geminiKeyInput').value.trim();
+    if (!key) {
+        toast('Vui lòng nhập API Key', 'error');
+        document.getElementById('geminiKeyInput').focus();
+        return;
+    }
+    
+    const shouldSave = document.getElementById('geminiKeySaveCheck').checked;
+    const submitBtn = document.getElementById('geminiKeySubmitBtn');
+    
+    // Disable button during processing
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `
+        <div style="width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.6s linear infinite;"></div>
+        Đang xử lý...
+    `;
+    
+    try {
+        // Save key if checkbox checked
+        if (shouldSave) {
+            try {
+                await apiFetch('/gallery/save-api-key', {
+                    method: 'POST',
+                    body: JSON.stringify({ api_key: key })
+                });
+                toast('🔑 API Key đã được lưu vào Cloud Config', 'success');
+            } catch (saveErr) {
+                console.warn('Failed to save API key:', saveErr);
+                // Don't block analysis if save fails
+            }
+        }
+        
+        // Close modal and retry analysis with the key
+        document.getElementById('geminiKeyModal').style.display = 'none';
+        await analyzeGalleryImage(key);
+        
+    } catch (e) {
+        toast('Lỗi: ' + e.message, 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            Xác nhận & Phân tích
+        `;
+    }
+}
+
+async function saveGalleryItem() {
+    const id = document.getElementById('galItemId').value;
+    const name = document.getElementById('galItemName').value.trim();
+    const imageUrl = document.getElementById('galItemImageUrl').value;
+    
+    if (!name) { toast('Please enter a character name', 'error'); return; }
+    if (!imageUrl) { toast('Please upload a character reference image', 'error'); return; }
+    
+    const payload = {
+        name,
+        char_type: document.getElementById('galItemCharType').value,
+        gender: document.getElementById('galItemGender').value,
+        age_range: document.getElementById('galItemAge').value,
+        role_type: document.getElementById('galItemRole').value,
+        appearance: document.getElementById('galItemAppearance').value,
+        tags: document.getElementById('galItemTags').value,
+        image_url: imageUrl,
+        category_ids: _galItemSelectedCategories
+    };
+    
+    try {
+        if (id) {
+            await apiFetch(`/gallery/items/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            toast('Character updated', 'success');
+        } else {
+            await apiFetch('/gallery/items', { method: 'POST', body: JSON.stringify(payload) });
+            toast('Character added', 'success');
+        }
+        document.getElementById('galleryItemModal').style.display = 'none';
+        loadGalleryItems(currentGalleryCategory);
+    } catch (e) {
+        toast('Failed to save character: ' + e.message, 'error');
+    }
+}
+
+async function deleteGalleryItem() {
+    const id = document.getElementById('galItemId').value;
+    if (!id) return;
+    
+    if (!confirm('Are you sure you want to delete this character?')) return;
+    
+    try {
+        await apiFetch(`/gallery/items/${id}`, { method: 'DELETE' });
+        toast('Character deleted', 'info');
+        document.getElementById('galleryItemModal').style.display = 'none';
+        loadGalleryItems(currentGalleryCategory);
+    } catch (e) {
+        toast('Delete failed: ' + e.message, 'error');
+    }
+}
+

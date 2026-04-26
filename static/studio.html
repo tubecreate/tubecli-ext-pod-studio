@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Content Studio — AI Drama Writer</title>
-    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260419_19">
+    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260425_gallery_tab">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -25,6 +25,10 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     Settings
                 </a>
+                <button class="btn btn-ghost" onclick="toggleGalleryView()" id="btnGallery">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                    Character Gallery
+                </button>
                 <button class="btn btn-outline" onclick="togglePipelineView()" id="btnAutoPipeline" style="border-color: var(--accent); color: var(--accent);">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                     Pipeline Queue
@@ -616,6 +620,280 @@
                 </div>
             </main>
 
+            <!-- ===== Character Gallery View (Main Panel Tab) ===== -->
+            <main class="main-panel" id="galleryView" style="display:none; flex-direction: row; padding: 0; background: var(--bg-0);">
+                <!-- Gallery Sidebar -->
+                <aside class="gallery-sidebar">
+                    <div class="gallery-sidebar-header">
+                        <div class="gallery-sidebar-icon">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                        </div>
+                        <div>
+                            <div class="gallery-sidebar-title">Character Gallery</div>
+                            <div class="gallery-sidebar-desc">Thư viện nhân vật tham chiếu</div>
+                        </div>
+                    </div>
+
+                    <div class="gallery-sidebar-section-label">CATEGORIES</div>
+                    <div class="gallery-sidebar-categories" id="galleryCategoriesList">
+                        <!-- Rendered by JS -->
+                    </div>
+
+                    <div class="gallery-sidebar-actions">
+                        <button class="btn btn-outline btn-sm" onclick="showGalleryCategoryModal()" style="width:100%; justify-content:center;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            New Category
+                        </button>
+                    </div>
+
+                    <div class="gallery-sidebar-bottom">
+                        <button class="btn btn-ghost btn-sm" onclick="toggleGalleryView()" style="width:100%; justify-content:center; color: var(--text-3);">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                            Back to Editor
+                        </button>
+                    </div>
+                </aside>
+
+                <!-- Gallery Main Content -->
+                <div class="gallery-main">
+                    <div class="gallery-main-header">
+                        <div class="gallery-main-header-left">
+                            <h2 class="gallery-main-title" id="galleryCurrentCategoryName">All Characters</h2>
+                            <span class="gallery-main-count" id="galleryItemCount">0 characters</span>
+                        </div>
+                        <div class="gallery-main-header-right">
+                            <div class="gallery-search-box">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                <input type="text" placeholder="Search characters..." class="gallery-search-input" id="gallerySearchInput" oninput="filterGalleryItems(this.value)">
+                            </div>
+                            <button class="btn btn-primary" onclick="showGalleryItemModal()" id="btnNewCharItem">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                Add Character
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Gallery Items Grid -->
+                    <div class="gallery-grid-wrapper">
+                        <div id="galleryItemsGrid" class="gallery-items-grid">
+                            <!-- Rendered by JS -->
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Gallery Category Modal -->
+            <div class="overlay" id="galleryCategoryModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+                <div class="modal card" style="max-width: 400px; width: 90%;">
+                    <div class="modal-header">
+                        <h2 class="modal-title" id="galCatModalTitle">New Category</h2>
+                    </div>
+                    <div class="modal-form" style="padding: 20px;">
+                        <input type="hidden" id="galCatId">
+                        <div class="form-group">
+                            <label class="form-label">Category Name</label>
+                            <input id="galCatName" class="input" placeholder="e.g. Chibi Learning">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Visual Style / Theme</label>
+                            <input id="galCatStyle" class="input" placeholder="e.g. Anime, Realistic">
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="padding: 16px 20px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border);">
+                        <button class="btn" id="btnDeleteGalCat" style="display:none; background:rgba(239,68,68,0.1); color:#f87171; border:1px solid rgba(239,68,68,0.2); font-size:12px; gap:4px;" onclick="const id=document.getElementById('galCatId').value; const name=document.getElementById('galCatName').value; document.getElementById('galleryCategoryModal').style.display='none'; deleteGalleryCategory(parseInt(id), name);">🗑 Delete</button>
+                        <div style="display:flex; gap:10px; margin-left:auto;">
+                            <button class="btn btn-outline" onclick="document.getElementById('galleryCategoryModal').style.display='none'">Cancel</button>
+                            <button class="btn btn-primary" onclick="saveGalleryCategory()">💾 Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gallery Item Modal -->
+            <div class="overlay" id="galleryItemModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+                <div class="modal card" style="max-width: 800px; width: 90%;">
+                    <div class="modal-header">
+                        <h2 class="modal-title" id="galItemModalTitle">Add Character</h2>
+                    </div>
+                    <div class="modal-form" style="padding: 20px; display:flex; flex-direction:row; gap:24px;">
+                        <!-- Left: Image & Analysis -->
+                        <div style="width: 280px; flex-shrink: 0; display:flex; flex-direction:column; gap:16px;">
+                            <div style="width:100%; aspect-ratio:1/1; background:var(--bg-2); border-radius:10px; border:1px dashed var(--border); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative;" id="galItemImageContainer">
+                                <img id="galItemImagePreview" src="" style="width:100%; height:100%; object-fit:contain; display:none;">
+                                <div id="galItemImagePlaceholder" style="text-align:center; color:var(--text-3); padding:20px;">
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:8px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                                    <div>No Image</div>
+                                </div>
+                            </div>
+                            <input type="file" id="galItemUpload" accept="image/*" style="display:none" onchange="handleGalleryImageUpload(this)">
+                            <div style="display:flex; flex-direction:column; gap:10px;">
+                                <button class="btn btn-outline" style="width:100%; justify-content:center;" onclick="document.getElementById('galItemUpload').click()">
+                                    📷 Upload Image
+                                </button>
+                                <button class="btn btn-primary" style="width:100%; justify-content:center; background:linear-gradient(135deg, #10b981, #3b82f6); border:none;" onclick="analyzeGalleryImage()">
+                                    ✨ Auto-Fill Info
+                                </button>
+                            </div>
+                            <div id="galItemAnalyzeStatus" style="font-size:12px; color:var(--accent); text-align:center; display:none;">Analyzing image...</div>
+                        </div>
+
+                        <!-- Right: Info -->
+                        <div style="flex: 1; display:flex; flex-direction:column; gap:12px;">
+                            <input type="hidden" id="galItemId">
+                            <input type="hidden" id="galItemImageUrl">
+                            
+                            <div style="display:flex; gap:12px;">
+                                <div class="form-group" style="flex:2;">
+                                    <label class="form-label">Name</label>
+                                    <input id="galItemName" class="input" placeholder="e.g. Aiko Sensei">
+                                </div>
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">Categories</label>
+                                    <div class="chip-select" id="galItemCategorySelect" style="min-height:32px; padding:4px 8px;">
+                                        <span class="chip-select-empty" id="galItemCatEmpty">Select...</span>
+                                        <div style="position:relative; display:inline-flex;">
+                                            <span class="chip-dropdown-trigger" id="galItemCatAddBtn" onclick="toggleGalItemCatMenu()">+ Add</span>
+                                            <div class="chip-dropdown-menu" id="galItemCatMenu"></div>
+                                        </div>
+                                    </div>
+                                    <select id="galItemCategoryIds" multiple style="display:none"></select>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; gap:12px;">
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">Type</label>
+                                    <select id="galItemCharType" class="input">
+                                        <option value="individual">👤 Individual</option>
+                                        <option value="duo">👥 Duo / Pair</option>
+                                        <option value="friend_group">🤝 Friend Group</option>
+                                        <option value="crowd">👨‍👩‍👧‍👦 Crowd / Many</option>
+                                        <option value="creature">🐾 Creature / Pet</option>
+                                        <option value="object">📦 Object / Prop</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">Gender</label>
+                                    <select id="galItemGender" class="input">
+                                        <option value="">--</option>
+                                        <option value="male">Male</option>
+                                        <option value="female">Female</option>
+                                        <option value="mixed">Mixed</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">Age Range</label>
+                                    <select id="galItemAge" class="input">
+                                        <option value="">--</option>
+                                        <option value="child">Child</option>
+                                        <option value="teen">Teen</option>
+                                        <option value="young_adult">Young Adult</option>
+                                        <option value="adult">Adult</option>
+                                        <option value="middle_aged">Middle Aged</option>
+                                        <option value="elderly">Elderly</option>
+                                        <option value="mixed">Mixed Ages</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">Role Type</label>
+                                    <input id="galItemRole" class="input" placeholder="e.g. Teacher, Student">
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Appearance Details</label>
+                                <textarea id="galItemAppearance" class="input" rows="4" placeholder="Detailed visual description..."></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Tags</label>
+                                <input id="galItemTags" class="input" placeholder="e.g. cute, glasses, labcoat">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="padding: 16px 20px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border);">
+                        <button class="btn btn-outline" style="color:#ef4444; margin-right:auto; border-color:#ef4444;" id="btnDeleteGalItem" onclick="deleteGalleryItem()">Delete</button>
+                        <button class="btn btn-outline" onclick="document.getElementById('galleryItemModal').style.display='none'">Cancel</button>
+                        <button class="btn btn-primary" onclick="saveGalleryItem()">💾 Save Character</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gemini API Key Modal -->
+            <div class="overlay" id="geminiKeyModal" style="display:none" onclick="if(event.target===this)closeGeminiKeyModal()">
+                <div class="modal card" style="max-width: 480px; width: 90%; border: 1px solid rgba(139, 92, 246, 0.3);">
+                    <div style="padding: 28px 28px 0 28px;">
+                        <!-- Icon & Title -->
+                        <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
+                            <div style="width:48px; height:48px; border-radius:14px; background:linear-gradient(135deg, #8b5cf6, #6366f1); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
+                                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 style="margin:0; font-size:18px; font-weight:700; color:var(--text-0);">Gemini API Key Required</h3>
+                                <p style="margin:4px 0 0 0; font-size:13px; color:var(--text-2);">Để sử dụng AI Auto-Fill, cần cung cấp API Key</p>
+                            </div>
+                        </div>
+
+                        <!-- Error Message -->
+                        <div id="geminiKeyErrorBox" style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:12px 14px; margin-bottom:16px; display:none;">
+                            <div style="display:flex; align-items:flex-start; gap:8px;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" style="flex-shrink:0; margin-top:2px;">
+                                    <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                                </svg>
+                                <p id="geminiKeyErrorText" style="margin:0; font-size:12px; color:#ef4444; line-height:1.5; word-break:break-word;"></p>
+                            </div>
+                        </div>
+
+                        <!-- Input -->
+                        <div style="margin-bottom:16px;">
+                            <label style="font-size:12px; font-weight:600; color:var(--text-1); margin-bottom:6px; display:block;">Gemini API Key</label>
+                            <div style="position:relative;">
+                                <input id="geminiKeyInput" class="input" type="password" placeholder="AIza..." style="padding-right:40px; font-family:var(--font-mono); font-size:13px; letter-spacing:0.5px;">
+                                <button type="button" onclick="toggleGeminiKeyVisibility()" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--text-3); padding:4px;" title="Show/Hide">
+                                    <svg id="geminiKeyEyeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Save checkbox -->
+                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-1); cursor:pointer; padding:10px 12px; background:var(--bg-1); border-radius:8px; border:1px solid var(--border); margin-bottom:6px;">
+                            <input type="checkbox" id="geminiKeySaveCheck" checked>
+                            <div>
+                                <div style="font-weight:500;">Lưu key để dùng lại</div>
+                                <div style="font-size:11px; color:var(--text-3); margin-top:2px;">Key sẽ được lưu vào Cloud API Keys config</div>
+                            </div>
+                        </label>
+
+                        <!-- Get Key Link -->
+                        <div style="text-align:center; margin-top:12px;">
+                            <a href="https://aistudio.google.com/apikey" target="_blank" style="font-size:12px; color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                                </svg>
+                                Lấy API Key miễn phí tại Google AI Studio
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Footer -->
+                    <div style="padding:16px 28px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border); margin-top:20px;">
+                        <button class="btn btn-outline" onclick="closeGeminiKeyModal()">Hủy</button>
+                        <button class="btn btn-primary" onclick="submitGeminiKey()" id="geminiKeySubmitBtn" style="background:linear-gradient(135deg, #8b5cf6, #6366f1); border:none; min-width:140px;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                            Xác nhận & Phân tích
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+
             <!-- Job Edit Modal -->
             <div class="overlay" id="apJobEditModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
                 <div class="modal card" style="max-width: 500px; width: 90%;">
@@ -757,17 +1035,17 @@
                                     <option value="Xianxia Donghua">⚔️ Hoạt hình Tu tiên</option>
                                 </select>
                             </label>
-                            <label class="field" style="flex: 0.5;">
+                            <label class="field" style="flex: 0.8;">
                                 <span class="field-label">Max Episodes</span>
                                 <select id="wizEpisodes" class="input">
-                                    <option value="0">Auto (AI chọn)</option>
-                                    <option value="1">Tối đa 1 Tập</option>
-                                    <option value="2">Tối đa 2 Tập</option>
-                                    <option value="3">Tối đa 3 Tập</option>
-                                    <option value="5" selected>Tối đa 5 Tập</option>
-                                    <option value="10">Tối đa 10 Tập</option>
-                                    <option value="15">Tối đa 15 Tập</option>
-                                    <option value="20">Tối đa 20 Tập</option>
+                                    <option value="0">Auto</option>
+                                    <option value="1">1 Tập</option>
+                                    <option value="2">2 Tập</option>
+                                    <option value="3">3 Tập</option>
+                                    <option value="5" selected>5 Tập</option>
+                                    <option value="10">10 Tập</option>
+                                    <option value="15">15 Tập</option>
+                                    <option value="20">20 Tập</option>
                                 </select>
                             </label>
 
@@ -840,6 +1118,13 @@
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
                             <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">👥 Character Gallery</span>
+                                <select id="wizGalleryCategory" class="input">
+                                    <option value="">None (AI generates new)</option>
+                                    <!-- Populated by JS -->
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 1;">
                                 <span class="field-label" style="font-size:11px;">🎥 Camera Angle</span>
                                 <select id="wizCameraAngle" class="input">
                                     <option value="Default">Mặc định</option>
@@ -875,10 +1160,12 @@
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
                             <label class="field" style="flex: 1;">
-                                <span class="field-label" style="font-size:11px;">🔤 NOTEXT</span>
-                                <label style="display:flex; align-items:center; gap:8px; height: 32px; background:var(--bg-1); border:1px solid var(--border); border-radius:6px; padding:0 8px; font-size:12px; cursor:pointer;" title="Chặn AI vẽ text dính vào video">
-                                    <input type="checkbox" id="wizNoTextPrompt" checked /> No Text in Video
-                                </label>
+                                <span class="field-label" style="font-size:11px;">🔤 Text in Video</span>
+                                <select id="wizNoTextPrompt" class="input">
+                                    <option value="none">None (Không áp dụng)</option>
+                                    <option value="notext" selected>No Text (Chỉ icon)</option>
+                                    <option value="english_only">English Text Only</option>
+                                </select>
                             </label>
                             <label class="field" style="flex: 1;">
                                 <span class="field-label" style="font-size:11px;">📐 Video Aspect Ratio</span>
@@ -1309,6 +1596,6 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/content-studio-static/studio.js?v=20260424_01"></script>
+    <script src="/content-studio-static/studio2.js?v=20260426_autofill14"></script>
 </body>
 </html>

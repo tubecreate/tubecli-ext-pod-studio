@@ -68,6 +68,15 @@ class Database:
             self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN narration_source TEXT DEFAULT 'prose'")
             self.conn.commit()
             logger.info("Migration: added narration_source to auto_pipeline_jobs")
+        # Migrate char_gallery_items
+        try:
+            gi_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(char_gallery_items)").fetchall()}
+            if gi_cols and "char_type" not in gi_cols:
+                self.conn.execute("ALTER TABLE char_gallery_items ADD COLUMN char_type TEXT DEFAULT 'individual'")
+                self.conn.commit()
+                logger.info("Migration: added char_type to char_gallery_items")
+        except Exception:
+            pass
 
     def _dict(self, row: sqlite3.Row) -> dict:
         if row is None:
@@ -237,11 +246,12 @@ class Database:
         now = _now()
         cur = self.conn.execute(
             """INSERT INTO characters (drama_id, name, role, description, appearance,
-               personality, voice_style, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               personality, voice_style, image_url, reference_images, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (drama_id, data.get("name", ""), data.get("role", ""),
              data.get("description", ""), data.get("appearance", ""),
              data.get("personality", ""), data.get("voice_style", ""),
+             data.get("image_url", ""), data.get("reference_images", "[]"),
              now, now),
         )
         self.conn.commit()
@@ -342,9 +352,16 @@ class Database:
             if not name:
                 continue
             if name in existing:
-                # Update existing
-                self.update_character(existing[name]["id"], ch)
-                saved.append(existing[name])
+                # Update existing — but preserve image_url and reference_images if already set
+                update_data = dict(ch)
+                ex = existing[name]
+                # Don't let AI extractor overwrite gallery-imported images
+                if ex.get("image_url") and not update_data.get("image_url"):
+                    update_data.pop("image_url", None)
+                if ex.get("reference_images") and ex["reference_images"] != "[]" and not update_data.get("reference_images"):
+                    update_data.pop("reference_images", None)
+                self.update_character(ex["id"], update_data)
+                saved.append(ex)
             else:
                 # Create new
                 new_ch = self.create_character(drama_id, ch)
@@ -620,3 +637,228 @@ class Database:
         self.conn.commit()
         return True
 
+    # ── Character Gallery ────────────────────────────────────
+
+    # -- Categories --
+
+    def create_gallery_category(self, data: dict) -> dict:
+        now = _now()
+        cur = self.conn.execute(
+            """INSERT INTO char_gallery_categories (name, description, visual_style,
+               thumbnail, sort_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data.get("name", "Untitled"),
+                data.get("description", ""),
+                data.get("visual_style", ""),
+                data.get("thumbnail", ""),
+                data.get("sort_order", 0),
+                now, now,
+            ),
+        )
+        self.conn.commit()
+        return self.get_gallery_category(cur.lastrowid)
+
+    def list_gallery_categories(self) -> List[dict]:
+        rows = self.conn.execute(
+            """SELECT c.*, COUNT(ci.item_id) as item_count
+               FROM char_gallery_categories c
+               LEFT JOIN char_gallery_category_items ci ON c.id = ci.category_id
+               WHERE c.deleted_at IS NULL
+               GROUP BY c.id
+               ORDER BY c.sort_order, c.name"""
+        ).fetchall()
+        return self._dicts(rows)
+
+    def get_gallery_category(self, cat_id: int) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM char_gallery_categories WHERE id = ? AND deleted_at IS NULL",
+            (cat_id,)
+        ).fetchone()
+        return self._dict(row)
+
+    def update_gallery_category(self, cat_id: int, data: dict) -> Optional[dict]:
+        fields, values = [], []
+        for key in ["name", "description", "visual_style", "thumbnail", "sort_order"]:
+            if key in data:
+                fields.append(f"{key} = ?")
+                values.append(data[key])
+        if not fields:
+            return self.get_gallery_category(cat_id)
+        fields.append("updated_at = ?")
+        values.append(_now())
+        values.append(cat_id)
+        self.conn.execute(
+            f"UPDATE char_gallery_categories SET {', '.join(fields)} WHERE id = ?", values
+        )
+        self.conn.commit()
+        return self.get_gallery_category(cat_id)
+
+    def delete_gallery_category(self, cat_id: int) -> bool:
+        self.conn.execute(
+            "UPDATE char_gallery_categories SET deleted_at = ? WHERE id = ?", (_now(), cat_id)
+        )
+        # Remove junction entries
+        self.conn.execute("DELETE FROM char_gallery_category_items WHERE category_id = ?", (cat_id,))
+        self.conn.commit()
+        return True
+
+    # -- Gallery Items --
+
+    def create_gallery_item(self, data: dict) -> dict:
+        now = _now()
+        cur = self.conn.execute(
+            """INSERT INTO char_gallery_items (name, char_type, gender, age_range, role_type,
+               appearance, personality, voice_style, image_url, reference_images,
+               tags, metadata, sort_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data.get("name", ""),
+                data.get("char_type", "individual"),
+                data.get("gender", ""),
+                data.get("age_range", ""),
+                data.get("role_type", ""),
+                data.get("appearance", ""),
+                data.get("personality", ""),
+                data.get("voice_style", ""),
+                data.get("image_url", ""),
+                json.dumps(data.get("reference_images", [])),
+                data.get("tags", ""),
+                json.dumps(data.get("metadata", {})),
+                data.get("sort_order", 0),
+                now, now,
+            ),
+        )
+        self.conn.commit()
+        item_id = cur.lastrowid
+
+        # Link to categories
+        cat_ids = data.get("category_ids", [])
+        for cid in cat_ids:
+            try:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO char_gallery_category_items (category_id, item_id) VALUES (?, ?)",
+                    (cid, item_id)
+                )
+            except Exception:
+                pass
+        self.conn.commit()
+        return self.get_gallery_item(item_id)
+
+    def list_gallery_items(self, category_id: int = None) -> List[dict]:
+        if category_id:
+            rows = self.conn.execute(
+                """SELECT i.* FROM char_gallery_items i
+                   JOIN char_gallery_category_items ci ON i.id = ci.item_id
+                   WHERE ci.category_id = ? AND i.deleted_at IS NULL
+                   ORDER BY i.sort_order, i.name""",
+                (category_id,)
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM char_gallery_items
+                   WHERE deleted_at IS NULL ORDER BY sort_order, name"""
+            ).fetchall()
+        results = self._dicts(rows)
+        # Attach category IDs to each item
+        for item in results:
+            cats = self.conn.execute(
+                "SELECT category_id FROM char_gallery_category_items WHERE item_id = ?",
+                (item["id"],)
+            ).fetchall()
+            item["category_ids"] = [r["category_id"] for r in cats]
+        return results
+
+    def get_gallery_item(self, item_id: int) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM char_gallery_items WHERE id = ? AND deleted_at IS NULL",
+            (item_id,)
+        ).fetchone()
+        if not row:
+            return None
+        item = self._dict(row)
+        cats = self.conn.execute(
+            "SELECT category_id FROM char_gallery_category_items WHERE item_id = ?",
+            (item_id,)
+        ).fetchall()
+        item["category_ids"] = [r["category_id"] for r in cats]
+        return item
+
+    def update_gallery_item(self, item_id: int, data: dict) -> Optional[dict]:
+        fields, values = [], []
+        for key in ["name", "char_type", "gender", "age_range", "role_type", "appearance",
+                     "personality", "voice_style", "image_url", "tags", "sort_order"]:
+            if key in data:
+                fields.append(f"{key} = ?")
+                values.append(data[key])
+        for key in ["reference_images", "metadata"]:
+            if key in data:
+                fields.append(f"{key} = ?")
+                values.append(json.dumps(data[key]) if isinstance(data[key], (list, dict)) else data[key])
+        if fields:
+            fields.append("updated_at = ?")
+            values.append(_now())
+            values.append(item_id)
+            self.conn.execute(
+                f"UPDATE char_gallery_items SET {', '.join(fields)} WHERE id = ?", values
+            )
+
+        # Update category links if provided
+        if "category_ids" in data:
+            self.conn.execute("DELETE FROM char_gallery_category_items WHERE item_id = ?", (item_id,))
+            for cid in data["category_ids"]:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO char_gallery_category_items (category_id, item_id) VALUES (?, ?)",
+                    (cid, item_id)
+                )
+        self.conn.commit()
+        return self.get_gallery_item(item_id)
+
+    def delete_gallery_item(self, item_id: int) -> bool:
+        self.conn.execute(
+            "UPDATE char_gallery_items SET deleted_at = ? WHERE id = ?", (_now(), item_id)
+        )
+        self.conn.execute("DELETE FROM char_gallery_category_items WHERE item_id = ?", (item_id,))
+        self.conn.commit()
+        return True
+
+    def search_gallery_items(self, query: str = "", gender: str = "",
+                              age_range: str = "", visual_style: str = "") -> List[dict]:
+        """Search gallery items with filters."""
+        conditions = ["i.deleted_at IS NULL"]
+        params = []
+
+        if query:
+            conditions.append("(i.name LIKE ? OR i.appearance LIKE ? OR i.tags LIKE ? OR i.role_type LIKE ?)")
+            q = f"%{query}%"
+            params.extend([q, q, q, q])
+        if gender:
+            conditions.append("i.gender = ?")
+            params.append(gender)
+        if age_range:
+            conditions.append("i.age_range = ?")
+            params.append(age_range)
+
+        where = " AND ".join(conditions)
+
+        if visual_style:
+            # Filter by category visual_style
+            sql = f"""SELECT DISTINCT i.* FROM char_gallery_items i
+                      JOIN char_gallery_category_items ci ON i.id = ci.item_id
+                      JOIN char_gallery_categories c ON ci.category_id = c.id
+                      WHERE {where} AND c.visual_style LIKE ?
+                      ORDER BY i.sort_order, i.name"""
+            params.append(f"%{visual_style}%")
+        else:
+            sql = f"""SELECT i.* FROM char_gallery_items i
+                      WHERE {where} ORDER BY i.sort_order, i.name"""
+
+        rows = self.conn.execute(sql, params).fetchall()
+        results = self._dicts(rows)
+        for item in results:
+            cats = self.conn.execute(
+                "SELECT category_id FROM char_gallery_category_items WHERE item_id = ?",
+                (item["id"],)
+            ).fetchall()
+            item["category_ids"] = [r["category_id"] for r in cats]
+        return results

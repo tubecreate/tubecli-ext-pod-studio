@@ -238,4 +238,62 @@ CREATE TABLE IF NOT EXISTS channel_watchers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- ═══════════════════════════════════════════════════
+-- Character Gallery — reusable character templates
+-- ═══════════════════════════════════════════════════
+
+-- Gallery Categories (groups of characters)
+CREATE TABLE IF NOT EXISTS char_gallery_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    visual_style TEXT DEFAULT '',
+    thumbnail TEXT DEFAULT '',
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+
+-- Gallery Items (template characters)
+CREATE TABLE IF NOT EXISTS char_gallery_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    char_type TEXT DEFAULT 'individual',
+    gender TEXT DEFAULT '',
+    age_range TEXT DEFAULT '',
+    role_type TEXT DEFAULT '',
+    appearance TEXT DEFAULT '',
+    personality TEXT DEFAULT '',
+    voice_style TEXT DEFAULT '',
+    image_url TEXT DEFAULT '',
+    reference_images TEXT DEFAULT '[]',
+    tags TEXT DEFAULT '',
+    metadata TEXT DEFAULT '{}',
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+
+-- Gallery Category-Item junction (M:N)
+CREATE TABLE IF NOT EXISTS char_gallery_category_items (
+    category_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    PRIMARY KEY (category_id, item_id),
+    FOREIGN KEY (category_id) REFERENCES char_gallery_categories(id),
+    FOREIGN KEY (item_id) REFERENCES char_gallery_items(id)
+);
+
+-- ═══════════════════════════════════════════════════
+-- Presets — server-side storage for wizard presets
+-- ═══════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    data TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
