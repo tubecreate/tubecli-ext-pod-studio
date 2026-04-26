@@ -422,27 +422,10 @@ async def create_drama(request: Request):
         
     drama = _db().create_drama(data)
     
-    # Auto-clone gallery characters if category assigned
-    meta = data.get("metadata", {})
-    if isinstance(meta, dict) and "gallery_category_id" in meta:
-        try:
-            cat_id = meta["gallery_category_id"]
-            db_instance = _db()
-            items = db_instance.list_gallery_items(cat_id)
-            for gi in items:
-                char_data = {
-                    "name": gi.get("name", ""),
-                    "role": gi.get("role_type", ""),
-                    "description": gi.get("personality", "") or gi.get("appearance", ""),
-                    "appearance": gi.get("appearance", ""),
-                    "voice_style": gi.get("voice_style", ""),
-                    "image_url": gi.get("image_url", ""),
-                    "reference_images": json.dumps([gi.get("image_url")] if gi.get("image_url") else []),
-                }
-                db_instance.create_character(drama["id"], char_data)
-        except Exception as e:
-            logger.warning(f"Failed to clone gallery characters: {e}")
-            
+    # The gallery_category_id is stored in metadata, but we no longer auto-clone 
+    # characters here. Instead, we let the AI Extractor agent intelligently 
+    # select the most suitable characters from the gallery during the Extract step.
+    
     return drama
 
 
