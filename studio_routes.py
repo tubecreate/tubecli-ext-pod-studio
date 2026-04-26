@@ -1323,12 +1323,34 @@ async def extract_characters_scenes(episode_id: int):
     existing_chars = _db().list_characters(drama_id)
     existing_scenes = _db().list_scenes(drama_id)
     drama = _db().get_drama(drama_id)
+    drama_meta = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
     context = {
         "visual_style": drama.get("style", "realistic") if drama else "realistic",
-        "content_format": json.loads(drama.get("metadata", "{}") or "{}").get("content_format", "Drama / Narrative") if drama else "Drama / Narrative",
+        "content_format": drama_meta.get("content_format", "Drama / Narrative"),
         "existing_characters": [{"name": c["name"], "role": c["role"]} for c in existing_chars],
         "existing_scenes": [{"location": s["location"], "time": s["time"]} for s in existing_scenes],
     }
+
+    # Inject available gallery characters for the AI to select from
+    gallery_category_id = drama_meta.get("gallery_category_id")
+    if gallery_category_id:
+        try:
+            gallery_items = _db().list_gallery_items(gallery_category_id)
+            context["available_gallery_characters"] = [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "char_type": item.get("char_type", "individual"),
+                    "gender": item.get("gender", ""),
+                    "age_range": item.get("age_range", ""),
+                    "role_type": item.get("role_type", ""),
+                    "tags": item.get("tags", ""),
+                    "appearance_summary": item.get("appearance", "")[:200]
+                }
+                for item in gallery_items
+            ]
+        except Exception as e:
+            logger.error(f"Failed to load gallery items for context: {e}")
 
     agent = _get_agent("extractor")
 
@@ -1364,6 +1386,27 @@ async def extract_characters_scenes(episode_id: int):
 
         if characters:
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(characters)} characters...'})}\n\n"
+            
+            # Enrich characters with gallery attributes if they were matched
+            for char in characters:
+                gid = char.get("gallery_item_id")
+                if gid:
+                    try:
+                        g_item = _db().get_gallery_item(int(gid))
+                        if g_item:
+                            if g_item.get("image_url"):
+                                char["image_url"] = g_item["image_url"]
+                            if g_item.get("reference_images"):
+                                char["reference_images"] = g_item["reference_images"]
+                            if g_item.get("voice_style"):
+                                char["voice_style"] = g_item["voice_style"]
+                            # Use gallery appearance as base but let AI description augment it
+                            base_app = g_item.get("appearance", "")
+                            if base_app:
+                                char["appearance"] = f"{base_app}\n\nAdditional Details: {char.get('appearance', '')}"
+                    except Exception as e:
+                        logger.error(f"Failed to merge gallery item {gid}: {e}")
+
             saved_chars = _db().save_characters_dedup(drama_id, episode_id, characters)
 
         if scenes:

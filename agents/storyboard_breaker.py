@@ -76,10 +76,12 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
    - If `text_in_video` = "notext": ABSOLUTELY NO text, words, letters, numbers, or typography in `image_prompt` and `video_prompt`! If the scene features a sign, letter, phone screen, or title, DO NOT ask the AI to render text. Instead, describe symbolic visuals, abstract icons, or emojis (e.g. instead of 'a sign saying Danger', write 'a red warning triangle icon'). Also add "no text, no letters, no words" at the end of every `image_prompt` and `video_prompt`.
    - If `text_in_video` = "english_only": You MAY include English/Latin text in prompts. If the script is in a non-Latin language (e.g. Chinese, Vietnamese, Korean), you MUST translate any text elements to English before including them. Add "English text only, no CJK characters" at the end of prompts that contain text.
    - If `text_in_video` = "none": No restriction on text. You may include text in any language as described in the scene.
-   (Also check legacy `no_text_in_prompt`: if true and `text_in_video` is missing, treat as "notext")
 9. `dialogue` MUST be in the SAME LANGUAGE as the script. If narration_source is 'prose', leave dialogue EMPTY.
 10. `character_names` should list characters visible or speaking in the shot.
-11. Empty/environmental shots can have empty character_names.
+    - **CRITICAL**: Do NOT just randomly pick the first characters from the Context list! 
+    - Carefully evaluate the action and description of the scene. If the scene specifies a generic role (e.g., "a businessman", "an angry child"), search the Context `characters` list for the BEST matching character based on their name, role, and personality. 
+    - ONLY include the exact name of the best matching character(s) in `character_names`.
+11. If the shot does not feature any characters, or no characters in the Context fit the scene, leave `character_names` EMPTY (`[]`). Do not force characters into empty/environmental shots.
 12. Output ONLY the JSON, no other text.
 """
 
