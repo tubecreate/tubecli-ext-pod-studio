@@ -5495,11 +5495,28 @@ function _renderApJobRow(job) {
         <td class="pq-col-actions">
             <div style="display:flex; justify-content:flex-end; gap:8px;">
                 ${job.drama_id ? `<button class="pq-edit-btn" onclick="openQueueDrama(${job.drama_id})" title="Mở Project & Resume">📂</button>` : ''}
+                ${job.status === 'error' ? `<button class="pq-edit-btn" onclick="retryApJob(${job.id})" title="Thử lại" style="color:var(--accent);">🔄</button>` : ''}
                 ${canEdit ? `<button class="pq-edit-btn" onclick="editApJob(${job.id})" title="Chỉnh sửa">✏️</button>` : ''}
                 <button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>
             </div>
         </td>
     </tr>`;
+}
+
+async function retryApJob(jobId) {
+    if (!confirm('Bạn có muốn đưa job này vào lại hàng đợi để xử lý không?')) return;
+    try {
+        const payload = { status: 'pending', error_message: null };
+        await apiFetch('/auto-pipeline/jobs/' + jobId, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+        });
+        toast('Đã chuyển job về trạng thái pending', 'success');
+        await loadApJobs();
+        await apiFetch('/auto-pipeline/start', { method: 'POST' });
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+    }
 }
 
 // ── Open Queue Project with Resume ──

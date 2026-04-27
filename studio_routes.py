@@ -3683,6 +3683,9 @@ async def _process_single_job(job: dict):
             
         full_text = "".join(full_response)
         
+        if full_text.strip().startswith("❌"):
+            raise Exception(f"AI API Error: {full_text.strip()}")
+            
         try:
             outline_json = _repair_json(full_text)
         except Exception as e:
