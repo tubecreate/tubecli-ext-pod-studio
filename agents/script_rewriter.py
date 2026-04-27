@@ -50,7 +50,16 @@ If the context JSON contains a `previous_episode` object, it means you are writi
 - CRITICAL SCENE NUMBERING: Look carefully at `previous_episode.ending_script_context` to find the highest `## S[number]` used recently. Your FIRST scene in this new episode MUST continue sequentially from that number! (e.g. If it ended at `## S09`, you MUST start at `## S10`. NEVER restart at S01!).
 - If the user provides NO raw content (empty message/content) but says something like "continue the story", you MUST invent the next logical plot events picking up EXACTLY where `previous_episode.ending_script_context` left off.
 - Do NOT summarize or repeat the events of the previous episode. Start the first scene immediately after.
-- Ensure character relationships and subplots carry over naturally. Use `characters` list from context to avoid inventing new characters if existing ones fit better."""
+- Ensure character relationships and subplots carry over naturally. Use `characters` list from context to avoid inventing new characters if existing ones fit better.
+
+## Gallery Character Usage (IMPORTANT)
+If the context contains `gallery_characters`, these are pre-defined visual characters with reference images available.
+- You MUST use these gallery characters as visual actors in your script. Reference them by their EXACT gallery name.
+- Choose gallery characters that MATCH the gender and role needed for each part of the content.
+- For educational/non-drama content: assign gallery characters as visual representations for concepts.
+  Example: If gallery has "Nhân vật Chibi" (male, child), use "Nhân vật Chibi" as the visual actor for explanations.
+- Do NOT invent new character names when a gallery character fits. The gallery characters have reference images — using them ensures visual consistency.
+- If the script needs a character type NOT available in the gallery (e.g. needs a female but gallery only has males), you MAY create a new character with a descriptive name."""
 
 
 class ScriptRewriterAgent(ContentAgent):

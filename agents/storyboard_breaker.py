@@ -73,7 +73,7 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
    STYLE EXCEPTION: If `visual_style` or `character_style` is a simplified/abstract style (e.g. "Stick Figure", "Chibi", "Pixel Art", "Doodle", "Big Head", "Cute", "2D", "Cartoon"), do NOT include realistic physical attributes like height, weight, body proportions, or detailed anatomy. Instead, describe characters by their distinguishing features only (hair color, clothing, accessories).
 7. `bgm_prompt` and `sound_effect` should be specific, not generic ("tense" → "low cello tremolo with heartbeat pulse")
 8. TYPOGRAPHY CONSTRAINT — Check `text_in_video` in Context (values: "none", "notext", "english_only"):
-   - If `text_in_video` = "notext": ABSOLUTELY NO text, words, letters, numbers, or typography in `image_prompt` and `video_prompt`! If the scene features a sign, letter, phone screen, or title, DO NOT ask the AI to render text. Instead, describe symbolic visuals, abstract icons, or emojis (e.g. instead of 'a sign saying Danger', write 'a red warning triangle icon'). Also add "no text, no letters, no words" at the end of every `image_prompt` and `video_prompt`.
+   - If `text_in_video` = "notext": ABSOLUTELY NO text, words, letters, or typography in `image_prompt` and `video_prompt`! Numbers (0-9) and special characters (%, $, #) ARE allowed for data/statistics. If the scene features a sign, letter, phone screen, or title, DO NOT ask the AI to render text. Instead, describe symbolic visuals, abstract icons, or emojis (e.g. instead of 'a sign saying Danger', write 'a red warning triangle icon'). Also add "no text, no letters, no words" at the end of every `image_prompt` and `video_prompt`.
    - If `text_in_video` = "english_only": You MAY include English/Latin text in prompts. If the script is in a non-Latin language (e.g. Chinese, Vietnamese, Korean), you MUST translate any text elements to English before including them. Add "English text only, no CJK characters" at the end of prompts that contain text.
    - If `text_in_video` = "none": No restriction on text. You may include text in any language as described in the scene.
 9. `dialogue` MUST be in the SAME LANGUAGE as the script. If narration_source is 'prose', leave dialogue EMPTY.
@@ -82,7 +82,8 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
     - Carefully evaluate the action and description of the scene. If the scene specifies a generic role (e.g., "a businessman", "an angry child"), search the Context `characters` list for the BEST matching character based on their name, role, and personality. 
     - ONLY include the exact name of the best matching character(s) in `character_names`.
 11. If the shot does not feature any characters, or no characters in the Context fit the scene, leave `character_names` EMPTY (`[]`). Do not force characters into empty/environmental shots.
-12. Output ONLY the JSON, no other text.
+12. DURATION CAP: Each shot MUST have `duration` <= 15 seconds. If a scene contains more than ~15 seconds of narration text (roughly 40-50 words), you MUST split that scene into multiple shots with suffixed titles (e.g. "Nightmare Awakening (Part 1)", "Nightmare Awakening (Part 2)"). Distribute the narration_text evenly across the sub-shots. Each sub-shot inherits the same characters, location, and atmosphere.
+13. Output ONLY the JSON, no other text.
 """
 
 

@@ -557,14 +557,23 @@
                                 
                                 <!-- Config Row 2 -->
                                 <div style="display:flex; gap:12px; align-items:flex-end;">
-                                    <div style="flex:2; display:flex; gap:12px; padding:8px 12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border);">
-                                        <div style="display:flex; align-items:center; gap:8px;">
-                                            <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadFb" onchange="toggleApUploadTarget('fb')"> FB Page</label>
-                                            <select id="apFbPage" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                    <div style="flex:2; display:flex; gap:12px; padding:8px 12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); align-items: center; justify-content: space-between;">
+                                        <div style="display:flex; gap:12px; align-items:center;">
+                                            <div style="display:flex; align-items:center; gap:8px;">
+                                                <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadFb" onchange="toggleApUploadTarget('fb')"> FB Page</label>
+                                                <select id="apFbPage" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                            </div>
+                                            <div style="display:flex; align-items:center; gap:8px;">
+                                                <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadYt" onchange="toggleApUploadTarget('yt')"> YT Channel</label>
+                                                <select id="apYtChannel" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                            </div>
                                         </div>
-                                        <div style="display:flex; align-items:center; gap:8px;">
-                                            <label style="display:flex; align-items:center; gap:4px; font-size:12px;"><input type="checkbox" id="apUploadYt" onchange="toggleApUploadTarget('yt')"> YT Channel</label>
-                                            <select id="apYtChannel" class="input" style="width:100px; height:24px; font-size:11px; padding:0 4px; display:none;" disabled><option value="">-- Chọn --</option></select>
+                                        <div style="display:flex; align-items:center; gap:8px; padding-left:12px; border-left:1px solid var(--border);">
+                                            <label style="font-size:11px; color:var(--text-2);">Hiển thị:</label>
+                                            <select id="apUploadPrivacy" class="input" style="width:80px; height:24px; font-size:11px; padding:0 4px;">
+                                                <option value="private" selected>Private</option>
+                                                <option value="public">Public</option>
+                                            </select>
                                         </div>
                                     </div>
                                     <div style="flex:1; text-align:right;">
@@ -580,7 +589,6 @@
                                 <input type="hidden" id="apLanguage" value="vi">
                                 <input type="hidden" id="apContentFormat" value="Educational / Learning">
                                 <input type="hidden" id="apMaxEpisodes" value="1">
-                                <input type="hidden" id="apUploadPrivacy" value="private">
                             </div>
                         </div>
                     </div>

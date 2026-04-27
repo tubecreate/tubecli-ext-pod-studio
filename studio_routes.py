@@ -1204,10 +1204,33 @@ async def agent_chat(request: Request):
         drama = _db().get_drama(drama_id)
         chars = _db().list_characters(drama_id)
         scenes = _db().list_scenes(drama_id)
+        drama_meta_chat = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
         context["visual_style"] = drama.get("style", "realistic") if drama else "realistic"
-        context["content_format"] = json.loads(drama.get("metadata", "{}") or "{}").get("content_format", "Drama / Narrative") if drama else "Drama / Narrative"
+        context["content_format"] = drama_meta_chat.get("content_format", "Drama / Narrative")
         context["characters"] = [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c.get("appearance", ""), "personality": c.get("personality", "")} for c in chars]
         context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s.get("description", "")} for s in scenes]
+
+        # ── Inject gallery character roster for Script Rewriter ──
+        # So the AI can reference gallery characters by name tag in the script
+        gallery_cat_id_chat = drama_meta_chat.get("gallery_category_id")
+        if gallery_cat_id_chat and agent_type == "script_rewriter":
+            try:
+                gallery_items_chat = _db().list_gallery_items(gallery_cat_id_chat)
+                if gallery_items_chat:
+                    roster = []
+                    for gi in gallery_items_chat:
+                        roster.append({
+                            "name": gi["name"],
+                            "gender": gi.get("gender", ""),
+                            "age_range": gi.get("age_range", ""),
+                            "role_type": gi.get("role_type", ""),
+                            "tags": gi.get("tags", ""),
+                            "appearance": (gi.get("appearance", "") or "")[:150],
+                        })
+                    context["gallery_characters"] = roster
+                    logger.info(f"[script_rewriter] Injected {len(roster)} gallery characters into context")
+            except Exception as e:
+                logger.warning(f"Failed to inject gallery roster for script_rewriter: {e}")
 
         # Auto-fetch previous episode for continuity context
         eps = _db().list_episodes(drama_id)
@@ -1340,10 +1363,32 @@ async def extract_characters_scenes(episode_id: int):
     async def generate():
         yield f"data: {json.dumps({'event': 'status', 'message': 'Analyzing script...'})}\n\n"
 
-        # Collect full AI response
+        # Build extraction message based on content format
+        content_format = context.get("content_format", "Drama / Narrative")
+        is_drama = "Drama" in content_format or "Phim" in content_format or "Narrative" in content_format
+        
+        if is_drama:
+            extract_msg = (
+                "Extract ALL characters and scenes from this script. "
+                "Do NOT skip any named character even if minor. "
+                "If character/scene already exists in context, skip it."
+            )
+        else:
+            extract_msg = (
+                "Extract ALL visual characters/actors and scenes from this educational/informational script.\n"
+                "IMPORTANT RULES:\n"
+                "- Extract EVERY visual actor from [SHOW:] and [DISPLAY:] tags — including generic unnamed actors "
+                "(e.g. 'một người nằm trằn trọc', 'Hai người đang nói chuyện', 'đám đông').\n"
+                "- CONSOLIDATE the same character in different poses into ONE entry "
+                "(e.g. 'Nhân vật Chibi đang ngồi' + 'Nhân vật Chibi nhận tin nhắn' = ONE character 'Nhân vật Chibi').\n"
+                "- Do NOT extract 'Narrator' or 'Người dẫn chuyện' — they are voice-only.\n"
+                "- For EACH unique visual actor, create a character entry with detailed appearance.\n"
+                "- If character/scene already exists in context, skip it."
+            )
+        
         full_response = []
         async for chunk in agent.chat_stream(
-            f"Extract ALL characters and scenes from this script. Do NOT skip any named character even if minor. If character/scene already exists in context, skip it.\n\nScript:\n{script[:15000]}",
+            f"{extract_msg}\n\nScript:\n{script[:15000]}",
             language, base_url, api_key, model, agent_temp, context
         ):
             full_response.append(chunk)
@@ -1368,9 +1413,108 @@ async def extract_characters_scenes(episode_id: int):
         saved_scenes = []
 
         if characters:
-            yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(characters)} characters...'})}\n\n"
-            
-            # Enrich characters with gallery attributes if they were matched
+            yield f"data: {json.dumps({'event': 'status', 'message': f'Matching {len(characters)} characters against gallery...'})}\n\n"
+
+            # ── Backend Deterministic Gallery Matching ──
+            # Load gallery items if available
+            _gallery_items_full = []
+            _gallery_cat_id = drama_meta.get("gallery_category_id")
+            if _gallery_cat_id:
+                try:
+                    _gallery_items_full = _db().list_gallery_items(_gallery_cat_id)
+                except Exception:
+                    pass
+
+            if _gallery_items_full:
+                _used_gallery_ids = set()
+
+                def _score_match(char_data, gallery_item):
+                    """Score how well a gallery item matches an extracted character."""
+                    score = 0
+                    # Gender match (STRICT — most important)
+                    c_gender = (char_data.get("gender", "") or "").lower().strip()
+                    g_gender = (gallery_item.get("gender", "") or "").lower().strip()
+                    # Infer gender from appearance if not explicit
+                    if not c_gender:
+                        app = (char_data.get("appearance", "") or "").lower()
+                        if any(w in app for w in ["cô gái", "female", "woman", "girl", "nữ", "she", "her", "phụ nữ"]):
+                            c_gender = "female"
+                        elif any(w in app for w in ["chàng trai", "male", "man", "boy", "nam", "he", "his", "đàn ông"]):
+                            c_gender = "male"
+                    if c_gender and g_gender:
+                        if c_gender == g_gender:
+                            score += 40  # Big bonus for gender match
+                        else:
+                            return -100  # HARD REJECT gender mismatch
+
+                    # Name similarity
+                    c_name = (char_data.get("name", "") or "").lower()
+                    g_name = (gallery_item.get("name", "") or "").lower()
+                    if c_name and g_name:
+                        if g_name in c_name or c_name in g_name:
+                            score += 30  # Strong name match
+                        else:
+                            # Check word overlap
+                            c_words = set(c_name.split())
+                            g_words = set(g_name.split())
+                            overlap = c_words & g_words
+                            if overlap:
+                                score += 15 * len(overlap)
+
+                    # Tags match
+                    g_tags = set(t.strip().lower() for t in (gallery_item.get("tags", "") or "").split(",") if t.strip())
+                    if g_tags:
+                        c_text = f"{c_name} {char_data.get('appearance', '')} {char_data.get('personality', '')}".lower()
+                        tag_hits = sum(1 for t in g_tags if t in c_text)
+                        score += tag_hits * 10
+
+                    # Role type match
+                    g_role = (gallery_item.get("role_type", "") or "").lower()
+                    c_role = (char_data.get("role", "") or "").lower()
+                    if g_role and c_role and (g_role in c_role or c_role in g_role):
+                        score += 10
+
+                    # Age range match
+                    g_age = (gallery_item.get("age_range", "") or "").lower()
+                    c_app = (char_data.get("appearance", "") or "").lower()
+                    if g_age and g_age in c_app:
+                        score += 10
+
+                    return score
+
+                for char in characters:
+                    # Skip if AI already set a valid gallery_item_id and it's in our gallery
+                    ai_gid = char.get("gallery_item_id")
+                    if ai_gid and any(gi["id"] == ai_gid for gi in _gallery_items_full) and ai_gid not in _used_gallery_ids:
+                        _used_gallery_ids.add(ai_gid)
+                        logger.info(f"Character '{char.get('name')}' — kept AI match gallery_item_id={ai_gid}")
+                        continue
+
+                    # Backend scoring: find best unused gallery match
+                    best_gi = None
+                    best_score = 0
+                    for gi in _gallery_items_full:
+                        if gi["id"] in _used_gallery_ids:
+                            continue
+                        s = _score_match(char, gi)
+                        if s > best_score:
+                            best_score = s
+                            best_gi = gi
+
+                    if best_gi and best_score >= 20:
+                        char["gallery_item_id"] = best_gi["id"]
+                        char["suitability_score"] = best_score
+                        _used_gallery_ids.add(best_gi["id"])
+                        logger.info(f"Character '{char.get('name')}' → matched gallery '{best_gi['name']}' (score={best_score})")
+                    else:
+                        char["gallery_item_id"] = None
+                        char["suitability_score"] = None
+                        logger.info(f"Character '{char.get('name')}' → no gallery match (best_score={best_score})")
+
+                match_count = sum(1 for c in characters if c.get("gallery_item_id"))
+                yield f"data: {json.dumps({'event': 'status', 'message': f'Gallery matched: {match_count}/{len(characters)} characters'})}\n\n"
+
+            # Enrich matched characters with gallery attributes
             for char in characters:
                 gid = char.get("gallery_item_id")
                 if gid:
@@ -1383,13 +1527,13 @@ async def extract_characters_scenes(episode_id: int):
                                 char["reference_images"] = g_item["reference_images"]
                             if g_item.get("voice_style"):
                                 char["voice_style"] = g_item["voice_style"]
-                            # Use gallery appearance as base but let AI description augment it
                             base_app = g_item.get("appearance", "")
                             if base_app:
                                 char["appearance"] = f"{base_app}\n\nAdditional Details: {char.get('appearance', '')}"
                     except Exception as e:
                         logger.error(f"Failed to merge gallery item {gid}: {e}")
 
+            yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(characters)} characters...'})}\n\n"
             saved_chars = _db().save_characters_dedup(drama_id, episode_id, characters)
 
         if scenes:
@@ -1816,6 +1960,46 @@ async def generate_storyboard(episode_id: int, request: Request):
                 yield f"data: {json.dumps({'event': 'error', 'message': 'Could not locate shots array in AI response across all chunks.'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
+
+            # -- Auto-split shots exceeding MAX_SHOT_DURATION --
+            import math as _math_sb
+            MAX_SHOT_DURATION = 15
+            split_result = []
+            split_count = 0
+            for shot in all_shots:
+                dur = shot.get("duration", 10)
+                if isinstance(dur, str):
+                    try:
+                        dur = int(dur)
+                    except (ValueError, TypeError):
+                        dur = 10
+                if dur > MAX_SHOT_DURATION:
+                    num_parts = _math_sb.ceil(dur / MAX_SHOT_DURATION)
+                    sub_dur = round(dur / num_parts)
+                    narration = shot.get("narration_text", "") or ""
+                    # Split narration by sentence boundaries
+                    _sentences = re.split(r'(?<=[.!?\u3002\uff01\uff1f])\s+', narration) if narration.strip() else ['']
+                    _sentences = [s for s in _sentences if s.strip()]
+                    if not _sentences:
+                        _sentences = ['']
+                    _spp = max(1, len(_sentences) // num_parts)
+                    for part_idx in range(num_parts):
+                        sub_shot = dict(shot)
+                        sub_shot["duration"] = sub_dur
+                        orig_title = shot.get("title", "")
+                        sub_shot["title"] = f"{orig_title} (Part {part_idx + 1}/{num_parts})"
+                        # Distribute narration sentences
+                        s_start = part_idx * _spp
+                        s_end = s_start + _spp if part_idx < num_parts - 1 else len(_sentences)
+                        sub_shot["narration_text"] = " ".join(_sentences[s_start:s_end])
+                        split_result.append(sub_shot)
+                    split_count += 1
+                    logger.info(f"Auto-split shot '{shot.get('title', '')}' ({dur}s) into {num_parts} sub-shots of ~{sub_dur}s")
+                else:
+                    split_result.append(shot)
+            if split_count > 0:
+                yield f"data: {json.dumps({'event': 'status', 'message': f'Auto-split {split_count} shots exceeding {MAX_SHOT_DURATION}s'})}\n\n"
+            all_shots = split_result
 
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(all_shots)} shots...'})}\n\n"
 
@@ -2336,7 +2520,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
         elif char_ids:
             logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
-    # --- Inject gallery reference images as fallback for shots without character refs ---
+    # --- Inject gallery reference images ONLY for shots with characters but missing refs ---
     try:
         drama_meta = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
         gallery_cat_id = drama_meta.get("gallery_category_id")
@@ -2360,17 +2544,21 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             if gallery_ref_images:
                 for shot in shots:
                     existing_refs = shot.get("ref_images", [])
-                    if not existing_refs:
-                        # No character refs found — use gallery images instead
+                    # Only inject gallery refs if:
+                    # 1. Shot has NO character ref images already
+                    # 2. Shot actually has characters assigned (not an empty/scenery shot)
+                    char_names = shot.get("character_names", [])
+                    if isinstance(char_names, str):
+                        try:
+                            char_names = json.loads(char_names)
+                        except:
+                            char_names = []
+                    if not existing_refs and char_names:
+                        # Shot has characters but no ref images — use gallery as fallback
                         shot["ref_images"] = gallery_ref_images[:3]
-                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(shot['ref_images'])} gallery ref images (no char refs)")
-                    else:
-                        # Merge: add gallery images not already included
-                        combined = list(existing_refs)
-                        for gi_img in gallery_ref_images:
-                            if gi_img not in combined and len(combined) < 3:
-                                combined.append(gi_img)
-                        shot["ref_images"] = combined
+                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(shot['ref_images'])} gallery ref images (fallback)")
+                    # Do NOT merge gallery images into shots that already have character refs
+                    # The character-specific refs are more accurate than generic gallery images
                 logger.info(f"Gallery ref injection: {len(gallery_ref_images)} gallery images available from category {gallery_cat_id}")
     except Exception as e:
         logger.warning(f"Failed to inject gallery ref images: {e}")
@@ -2390,7 +2578,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     if not text_in_video and drama_meta.get("no_text_in_prompt"):
         text_in_video = "notext"
     if text_in_video == "notext":
-        notext_suffix = ". IMPORTANT: no text, no letters, no words, no numbers, no typography in the video."
+        notext_suffix = ". IMPORTANT: no text, no letters, no words, no typography in the video."
         for shot in shots:
             p = shot.get("image_prompt", "")
             if p and notext_suffix not in p:

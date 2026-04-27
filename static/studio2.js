@@ -5210,9 +5210,11 @@ function toggleApUploadTarget(platform) {
 
 async function _loadFbPages() {
     const sel = document.getElementById('apFbPage');
+    sel.innerHTML = '<option value="" disabled selected>⏳ Đang tải...</option>';
     try {
         const res = await fetch('/api/v1/video_manager/accounts?provider=facebook');
         const data = await res.json();
+        sel.innerHTML = '<option value="">-- Chọn --</option>'; // Reset
         if (data.accounts && data.accounts.length > 0) {
             for (const acc of data.accounts) {
                 try {
@@ -5229,15 +5231,17 @@ async function _loadFbPages() {
         }
         if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy page nào</option>';
     } catch(e) {
-        sel.innerHTML += `<option value="" disabled>⚠️ ${e.message}</option>`;
+        sel.innerHTML = `<option value="" disabled>⚠️ ${e.message}</option>`;
     }
 }
 
 async function _loadYtChannels() {
     const sel = document.getElementById('apYtChannel');
+    sel.innerHTML = '<option value="" disabled selected>⏳ Đang tải...</option>';
     try {
         const res = await fetch('/api/v1/video_manager/accounts?provider=youtube');
         const data = await res.json();
+        sel.innerHTML = '<option value="">-- Chọn --</option>'; // Reset
         if (data.accounts && data.accounts.length > 0) {
             for (const acc of data.accounts) {
                 try {
@@ -5254,7 +5258,7 @@ async function _loadYtChannels() {
         }
         if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy channel nào</option>';
     } catch(e) {
-        sel.innerHTML += `<option value="" disabled>⚠️ ${e.message}</option>`;
+        sel.innerHTML = `<option value="" disabled>⚠️ ${e.message}</option>`;
     }
 }
 
