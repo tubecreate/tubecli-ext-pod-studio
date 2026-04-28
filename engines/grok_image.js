@@ -53,8 +53,27 @@ async function sleep(ms) {
 
     let plugin = chromium;
 
+    // Cleanup stale lock files that prevent browser launch after crash
+    const lockFiles = [
+        path.join(storageDir, 'SingletonLock'),
+        path.join(storageDir, 'SingletonSocket'),
+        path.join(storageDir, 'SingletonCookie'),
+        path.join(storageDir, 'Default', 'LOCK'),
+    ];
+    for (const lf of lockFiles) {
+        try {
+            if (fs.existsSync(lf)) {
+                fs.unlinkSync(lf);
+                log(`Removed stale lock: ${path.basename(lf)}`);
+            }
+        } catch (e) {
+            log(`Could not remove lock ${path.basename(lf)}: ${e.message}`);
+        }
+    }
+
     log('Launching browser...');
     const context = await plugin.launchPersistentContext(storageDir, {
+        channel: 'chrome',
         headless,
         args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
         no_viewport: !headless,

@@ -68,6 +68,10 @@ class Database:
             self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN narration_source TEXT DEFAULT 'prose'")
             self.conn.commit()
             logger.info("Migration: added narration_source to auto_pipeline_jobs")
+        if "gallery_category_id" not in ap_cols:
+            self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN gallery_category_id INTEGER")
+            self.conn.commit()
+            logger.info("Migration: added gallery_category_id to auto_pipeline_jobs")
         # Migrate char_gallery_items
         try:
             gi_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(char_gallery_items)").fetchall()}
@@ -490,8 +494,8 @@ class Database:
                preset_name, pipeline_template, content_format, visual_style, max_episodes,
                language, voice_preset, browser_profiles, aspect_ratio, narration_source,
                seo_mode, seo_title_template, seo_description_template, seo_tags,
-               upload_targets, upload_privacy, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               upload_targets, upload_privacy, gallery_category_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.get("source_type", "youtube_link"),
                 data.get("source_url", ""),
@@ -513,6 +517,7 @@ class Database:
                 json.dumps(data.get("seo_tags", [])),
                 json.dumps(data.get("upload_targets", [])),
                 data.get("upload_privacy", "private"),
+                data.get("gallery_category_id"),
                 now, now,
             ),
         )
@@ -542,7 +547,7 @@ class Database:
                      "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
                      "preset_name", "pipeline_template", "content_format", "visual_style", 
                      "max_episodes", "language", "voice_preset", "browser_profiles",
-                     "aspect_ratio", "narration_source",
+                     "aspect_ratio", "narration_source", "gallery_category_id",
                      "seo_mode", "seo_title_template", "seo_description_template", "seo_tags",
                      "upload_targets", "upload_privacy"]:
             if key in data:

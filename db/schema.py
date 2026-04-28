@@ -193,6 +193,9 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
     upload_targets TEXT DEFAULT '[]',
     upload_privacy TEXT DEFAULT 'private',
 
+    -- Gallery
+    gallery_category_id INTEGER,
+
     -- Result references
     drama_id INTEGER,
     episode_ids TEXT DEFAULT '[]',

@@ -62,11 +62,10 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
 - Keep in the ORIGINAL LANGUAGE of the script
 
 ## Rules
-1. 1-TO-1 MAPPING LAW: You MUST output exactly ONE shot per Scene Heading (`## S` block) in the script. Do NOT split a scene into multiple shots. Do NOT combine scenes.
-2. Read the script chronologically. For every single `## S` heading, create precisely one JSON shot object representing the entirety of that scene.
-3. DO NOT compress, skip, or summarize. If the script contains 25 scenes, your JSON array MUST contain exactly 25 shots!
-4. `image_prompt` and `video_prompt` MUST be in English.
-5. `image_prompt` MUST explicitly embed the `camera_angle` from Context. CRITICAL: To prevent faces from dominating the screen, if `camera_angle` specifies wide/cinematic, the very first words of the image_prompt MUST BE EXACTLY: "[Camera Angle]: A wide shot...". 
+1. DYNAMIC MAPPING: By default, create ONE shot per Scene Heading (`## S` block). HOWEVER, if the narration text for a scene is long (more than ~40-50 words / ~15 seconds), you MUST BREAK THE SCENE into multiple consecutive shots (e.g., "Awakening (Part 1)", "Awakening (Part 2)").
+2. Read the script chronologically. Do NOT compress, skip, or summarize. Capture the entire script.
+3. `image_prompt` and `video_prompt` MUST be in English.
+4. `image_prompt` MUST explicitly embed the `camera_angle` from Context. CRITICAL: To prevent faces from dominating the screen, if `camera_angle` specifies wide/cinematic, the very first words of the image_prompt MUST BE EXACTLY: "[Camera Angle]: A wide shot...". 
    Additionally, check `prompt_focus` in Context. If "Costumes and Scenery", highly detail the character's clothing and the beautiful environment. If "Character Emotions", detail facial tears, sweat, smiles, etc. If "Action and Motion", describe intense dynamic movement verbs. If "Lighting and Atmosphere", describe cinematic volumetric lighting, rays, shadows. Do this explicitly!
 6. When characters are present, DO NOT invent new clothing or features. ADHERE STRICTLY to their `appearance`. 
    CRITICAL: If an `ethnicity` is specified in the Context (e.g. "East Asian", "European"), you MUST explicitly prepend the character description with this ethnicity (e.g. "An East Asian man with short hair...") to enforce racial consistency across images.

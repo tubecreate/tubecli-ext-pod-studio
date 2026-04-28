@@ -1089,6 +1089,31 @@ async function doExtract() {
     isStreaming = true;
     document.getElementById('btnExtract').disabled = true;
 
+    // ── Resolve browser profile for auto char-image gen ──────────────────────
+    // Priority: drama metadata → chip UI selection → localStorage fallback
+    let extractBrowserProfile = '';
+    try {
+        const existingMeta = JSON.parse(currentDrama?.metadata || '{}');
+        extractBrowserProfile = existingMeta.browser_profile_name || '';
+        if (!extractBrowserProfile) {
+            // Try chip UI first (most up-to-date selection)
+            const chipProfile = (_chipSelectedProfiles && _chipSelectedProfiles.length > 0) ? _chipSelectedProfiles[0] : '';
+            // Then localStorage saved value
+            const lsProfile = (localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '').split(',').filter(Boolean)[0] || '';
+            extractBrowserProfile = chipProfile || lsProfile;
+            // Save discovered profile back to drama metadata so future ops find it
+            if (extractBrowserProfile && currentDrama) {
+                existingMeta.browser_profile_name = extractBrowserProfile;
+                await apiFetch(`/dramas/${currentDrama.id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ metadata: JSON.stringify(existingMeta) })
+                });
+                currentDrama.metadata = JSON.stringify(existingMeta);
+            }
+        }
+    } catch(e) { console.warn('[doExtract] Could not resolve browser profile', e); }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Show loading state inside extract panel
     const extractResults = document.getElementById('extractResults');
     document.getElementById('extractEmpty').style.display = 'none';
@@ -1112,6 +1137,7 @@ async function doExtract() {
         const response = await fetch(`${API}/episodes/${currentEpisode.id}/extract`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile_name: extractBrowserProfile }),
             signal: typeof realtimeAbortController !== 'undefined' && realtimeAbortController ? realtimeAbortController.signal : undefined
         });
 
@@ -1436,31 +1462,165 @@ function openSceneDetail(sceneId) {
 }
 
 async function generateCharRefAI(charId) {
-    // Get a browser profile to use
-    const savedProfile = localStorage.getItem('cs_last_browser_profile') || '';
-    if (!savedProfile) {
-        toast('Please select a browser profile first (Auto-Pilot wizard → Browser Profiles)', 'error');
-        return;
-    }
-    
     const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
     if (!char) { toast('Character not found', 'error'); return; }
     if (!char.appearance || !char.appearance.trim()) {
         toast(`Please fill in the Appearance field for "${char.name}" first (click Edit)`, 'error');
         return;
     }
-    
+    // Show the profile picker modal — profile selection happens there
+    await _openCharGenProfileModal(charId);
+}
+
+// ── Profile Picker Modal Helpers ───────────────────────────
+let _charGenPendingCharId = null;
+let _charGenSelectedProfile = null;
+let _charGenAllProfiles = [];
+
+async function _openCharGenProfileModal(charId) {
+    _charGenPendingCharId = charId;
+    _charGenSelectedProfile = null;
+
+    const modal = document.getElementById('charGenProfileModal');
+    const listEl = document.getElementById('charGenProfileList');
+    const loadingEl = document.getElementById('charGenProfileLoading');
+    const confirmBtn = document.getElementById('charGenProfileConfirmBtn');
+    const selectedEl = document.getElementById('charGenProfileSelected');
+    const searchEl = document.getElementById('charGenProfileSearch');
+
+    if (!modal) return;
+
+    // Reset UI
+    listEl.innerHTML = '';
+    listEl.appendChild(loadingEl || (() => {
+        const d = document.createElement('div'); d.id = 'charGenProfileLoading'; d.textContent = 'Đang tải...'; return d;
+    })());
+    if (loadingEl) { loadingEl.style.display = ''; listEl.appendChild(loadingEl); }
+    confirmBtn.disabled = true;
+    if (selectedEl) selectedEl.style.display = 'none';
+    if (searchEl) searchEl.value = '';
+
+    modal.style.display = 'flex';
+
+    try {
+        const res = await fetch('/api/v1/studio/browser-profiles');
+        const data = await res.json();
+        _charGenAllProfiles = data.profiles || [];
+    } catch(e) {
+        _charGenAllProfiles = [];
+        toast('Không thể tải danh sách profile: ' + e.message, 'error');
+    }
+
+    _renderCharGenProfiles(_charGenAllProfiles);
+
+    // Pre-select last used profile if it still exists
+    const lastProfile = localStorage.getItem('cs_last_browser_profile') || '';
+    if (lastProfile && _charGenAllProfiles.includes(lastProfile)) {
+        _charGenSelectProfile(lastProfile);
+    }
+}
+
+function _renderCharGenProfiles(profiles) {
+    const listEl = document.getElementById('charGenProfileList');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    if (!profiles.length) {
+        listEl.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-3); font-size:13px;">Không tìm thấy profile nào trong <code>data/browser_profiles</code></div>';
+        return;
+    }
+
+    const lastProfile = localStorage.getItem('cs_last_browser_profile') || '';
+    profiles.forEach(name => {
+        const item = document.createElement('div');
+        const isLast = name === lastProfile;
+        item.dataset.profile = name;
+        item.style.cssText = `padding:8px 12px; border-radius:6px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; transition:background 0.15s; ${isLast ? 'background:rgba(139,92,246,0.12); border:1px solid rgba(139,92,246,0.3);' : 'border:1px solid transparent;'}`;
+        item.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${isLast ? '#a78bfa' : 'var(--text-3)'}" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            <span style="color:${isLast ? '#a78bfa' : 'var(--text-1)'}; font-weight:${isLast ? '600' : '400'};">${name}</span>
+            ${isLast ? '<span style="margin-left:auto; font-size:10px; background:#7c3aed30; color:#a78bfa; padding:2px 6px; border-radius:4px;">Lần trước</span>' : ''}
+        `;
+        item.onmouseover = () => { if (item.dataset.profile !== _charGenSelectedProfile) item.style.background = 'var(--bg-2)'; };
+        item.onmouseout = () => { if (item.dataset.profile !== _charGenSelectedProfile) item.style.background = 'transparent'; };
+        item.onclick = () => _charGenSelectProfile(name);
+        listEl.appendChild(item);
+    });
+}
+
+function _charGenSelectProfile(name) {
+    _charGenSelectedProfile = name;
+
+    // Update list items highlight
+    const listEl = document.getElementById('charGenProfileList');
+    if (listEl) {
+        listEl.querySelectorAll('[data-profile]').forEach(el => {
+            const isSelected = el.dataset.profile === name;
+            el.style.background = isSelected ? 'rgba(139,92,246,0.15)' : 'transparent';
+            el.style.border = isSelected ? '1px solid rgba(139,92,246,0.4)' : '1px solid transparent';
+        });
+    }
+
+    // Show selected badge
+    const selEl = document.getElementById('charGenProfileSelected');
+    const selName = document.getElementById('charGenProfileSelectedName');
+    if (selEl && selName) {
+        selName.textContent = name;
+        selEl.style.display = '';
+    }
+
+    // Enable confirm
+    const btn = document.getElementById('charGenProfileConfirmBtn');
+    if (btn) btn.disabled = false;
+}
+
+function _filterCharGenProfiles(query) {
+    const q = query.trim().toLowerCase();
+    const filtered = q ? _charGenAllProfiles.filter(n => n.toLowerCase().includes(q)) : _charGenAllProfiles;
+    _renderCharGenProfiles(filtered);
+    // Re-apply selection highlight after re-render
+    if (_charGenSelectedProfile && filtered.includes(_charGenSelectedProfile)) {
+        _charGenSelectProfile(_charGenSelectedProfile);
+    }
+}
+
+function _closeCharGenProfileModal() {
+    const modal = document.getElementById('charGenProfileModal');
+    if (modal) modal.style.display = 'none';
+    _charGenPendingCharId = null;
+    _charGenSelectedProfile = null;
+}
+
+async function _confirmCharGenProfile() {
+    const profile = _charGenSelectedProfile;
+    const charId = _charGenPendingCharId;
+
+    if (!profile || !charId) return;
+
+    // Save to localStorage if checkbox checked
+    const saveCheck = document.getElementById('charGenProfileSaveCheck');
+    if (saveCheck && saveCheck.checked) {
+        localStorage.setItem('cs_last_browser_profile', profile);
+    }
+
+    // Close modal
+    const modal = document.getElementById('charGenProfileModal');
+    if (modal) modal.style.display = 'none';
+
+    // Find char for display
+    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+
     const btn = document.getElementById(`btnGenChar${charId}`);
     if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
-    
+
     try {
         const res = await apiFetch(`/characters/${charId}/generate-ref`, {
             method: 'POST',
-            body: JSON.stringify({ profile_name: savedProfile }),
+            body: JSON.stringify({ profile_name: profile }),
         });
-        
+
         if (res.task_id) {
-            toast(`Generating portrait for ${char.name}...`, 'info');
+            toast(`🎨 Đang tạo ảnh nhân vật "${char?.name || charId}"...`, 'info');
             _pollCharGenStatus(res.task_id, charId, btn);
         }
     } catch(e) {
@@ -1468,6 +1628,7 @@ async function generateCharRefAI(charId) {
         if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
     }
 }
+
 
 function _pollCharGenStatus(taskId, charId, btn) {
     let polls = 0;
@@ -1478,7 +1639,7 @@ function _pollCharGenStatus(taskId, charId, btn) {
         if (polls > maxPolls) {
             clearInterval(interval);
             if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
-            toast('Generation timeout', 'error');
+            toast('⏱ Quá thời gian chờ (150s)', 'error');
             return;
         }
         
@@ -1487,14 +1648,26 @@ function _pollCharGenStatus(taskId, charId, btn) {
             if (status.status === 'done') {
                 clearInterval(interval);
                 if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
-                toast('Character portrait generated! 🎉', 'success');
-                loadExtractData(); // Refresh gallery
+                toast('✅ Đã tạo ảnh nhân vật thành công!', 'success');
+                loadExtractData();
             } else if (status.status === 'error') {
                 clearInterval(interval);
                 if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
-                toast('Generation failed: ' + (status.message || 'Unknown error'), 'error');
+                const msg = status.message || '';
+                if (msg.includes('Playwright load failed') || msg.includes('Crash:')) {
+                    toast(`❌ Lỗi khởi động browser: ${msg}`, 'error');
+                } else if (msg.includes('not logged') || msg.includes('login')) {
+                    toast('❌ Profile chưa đăng nhập Grok! Thử lại và đăng nhập trong 60 giây.', 'error');
+                } else if (msg.includes('Profile') && msg.includes('not found')) {
+                    toast(`❌ Không tìm thấy profile browser. Kiểm tra lại cài đặt.`, 'error');
+                } else if (msg.includes('Input box not found')) {
+                    toast('❌ Grok đổi giao diện — không tìm thấy ô nhập. Báo lại để cập nhật.', 'error');
+                } else if (msg.includes('Timeout')) {
+                    toast('⏱ Grok không tạo ảnh trong thời gian chờ. Thử lại sau.', 'error');
+                } else {
+                    toast(`❌ Gen thất bại: ${msg || 'Lỗi không xác định'}`, 'error');
+                }
             }
-            // else still running, continue polling
         } catch(e) {
             // Ignore poll errors
         }
@@ -2305,7 +2478,17 @@ async function startRealtimeAutoPilot() {
     
     // Save selected profiles from wizard to localStorage + drama metadata
     const wizProfileSel = document.getElementById('wizBrowserProfileExec');
-    const selectedVideoProfiles = wizProfileSel ? Array.from(wizProfileSel.selectedOptions).map(o => o.value) : [];
+    let selectedVideoProfiles = wizProfileSel ? Array.from(wizProfileSel.selectedOptions).map(o => o.value).filter(Boolean) : [];
+    // Fallback: if chip UI has values (may not yet be synced) use those
+    if (selectedVideoProfiles.length === 0 && _chipSelectedProfiles.length > 0) {
+        selectedVideoProfiles = [..._chipSelectedProfiles];
+        _syncChipsToSelect(); // force sync
+    }
+    // Last-resort fallback: use localStorage saved value
+    if (selectedVideoProfiles.length === 0) {
+        const lsFallback = (localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '').split(',').filter(Boolean);
+        if (lsFallback.length > 0) selectedVideoProfiles = lsFallback;
+    }
     const selectedProfile = selectedVideoProfiles.length > 0 ? selectedVideoProfiles[0] : '';
     const wizVoiceSel = document.getElementById('wizVoiceProfileExec');
     let selectedVoice = wizVoiceSel ? wizVoiceSel.value : '';
@@ -2867,8 +3050,9 @@ async function _loadBrowserProfilesIntoSelect(selectId) {
         sel.innerHTML = `<option value="">⚠️ ${e.message}</option>`;
     }
     // Auto-render chip UI if the chip container exists
+    // For wizard profile selector: also restore last-used chips from localStorage
     if (selectId === 'wizBrowserProfileExec') {
-        _renderBrowserChips();
+        _initChipsFromSaved();
     }
 }
 
@@ -5091,6 +5275,11 @@ async function _initAutoPipelineModal() {
     // Load voice profiles
     await _loadVoiceProfilesIntoSelect('apVoice');
 
+    // Load gallery categories
+    if (typeof _loadGalleryCategoriesIntoSelect === 'function') {
+        await _loadGalleryCategoriesIntoSelect('apGalleryCategory');
+    }
+
     // Load jobs
     await loadApJobs();
 
@@ -5136,6 +5325,7 @@ function applyApPreset() {
         wizLanguage: 'apLanguage',
         wizContentFormat: 'apContentFormat',
         wizEpisodes: 'apMaxEpisodes',
+        wizGalleryCategory: 'apGalleryCategory',
     };
     for (const [wizId, apId] of Object.entries(pipelineMap)) {
         const val = data[wizId];
@@ -5281,6 +5471,8 @@ async function submitBatchQueue() {
         if (!voicePreset.includes('|')) voicePreset = `${voicePreset}|${engine}`;
     }
 
+    const galleryCatId = document.getElementById('apGalleryCategory')?.value;
+
     const seoMode = document.querySelector('input[name="apSeoMode"]:checked')?.value || 'ai_generate';
     const seoTagsStr = document.getElementById('apSeoTags')?.value || '';
     const seoTags = seoTagsStr ? seoTagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
@@ -5332,6 +5524,7 @@ async function submitBatchQueue() {
         seo_tags: seoTags,
         upload_targets: uploadTargets,
         upload_privacy: document.getElementById('apUploadPrivacy')?.value || 'private',
+        gallery_category_id: galleryCatId ? parseInt(galleryCatId) : null,
         preset_name: presetName,
         preset_data: presetData,
     };
@@ -5353,8 +5546,6 @@ async function submitBatchQueue() {
         // Auto-start the pipeline
         await apiFetch('/auto-pipeline/start', { method: 'POST' });
 
-        // Switch to jobs tab
-        switchApTab('jobs');
         await loadApJobs();
         _startApJobPolling();
 
@@ -5362,7 +5553,7 @@ async function submitBatchQueue() {
         toast('❌ Lỗi tạo jobs: ' + e.message, 'error');
     } finally {
         document.getElementById('apSubmitBtn').disabled = false;
-        document.getElementById('apSubmitBtn').innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> ⚡ Bắt Đầu Tự Động';
+        document.getElementById('apSubmitBtn').innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> ⚡ Thêm vào hàng đợi';
     }
 }
 
@@ -5465,6 +5656,24 @@ function _renderApJobRow(job) {
         nsBadge = `<span style="background:rgba(20,184,166,0.15); color:#5eead4; padding:2px 6px; border-radius:4px; border:1px solid rgba(20,184,166,0.3);" title="Narration Source">🗣️ ${nsLabel}</span>`;
     }
 
+    let galleryBadge = '';
+    let galCatId = job.gallery_category_id;
+    
+    // Fallback to preset if not saved in job
+    if (!galCatId && job.preset_name) {
+        try {
+            const presets = JSON.parse(localStorage.getItem('studio_wiz_presets') || '{}');
+            const pd = presets[job.preset_name];
+            if (pd && pd.wizGalleryCategory) galCatId = pd.wizGalleryCategory;
+        } catch(e) {}
+    }
+
+    if (galCatId) {
+        const catName = window._galleryCategoryMap ? window._galleryCategoryMap[galCatId] : `Cat ${galCatId}`;
+        const displayName = catName || `Cat ${galCatId}`;
+        galleryBadge = `<span style="background:rgba(236,72,153,0.15); color:#f472b6; padding:2px 6px; border-radius:4px; border:1px solid rgba(236,72,153,0.3);" title="Gallery Category">🎨 ${displayName}</span>`;
+    }
+
     const canEdit = job.status === 'pending' || job.status === 'error';
 
     return `<tr class="pq-row">
@@ -5482,6 +5691,7 @@ function _renderApJobRow(job) {
                 ${job.content_format ? `<span style="background:var(--bg-2); padding:2px 6px; border-radius:4px; border:1px solid var(--border);" title="Định dạng nội dung">📝 ${job.content_format.split('/')[0].trim()}</span>` : ''}
                 ${vStyleBadge}
                 ${cStyleBadge}
+                ${galleryBadge}
                 ${arBadge}
                 ${nsBadge}
             </div>
@@ -5558,6 +5768,10 @@ async function editApJob(jobId) {
     await _loadVoiceProfilesIntoSelect('editJobVoice');
     const voiceParts = (job.voice_preset || '').split('|');
     voiceSel.value = voiceParts[0] || '';
+    
+    // Gallery
+    await _loadGalleryCategoriesIntoSelect('editJobGallery');
+    document.getElementById('editJobGallery').value = job.gallery_category_id || '';
     
     // Browser profiles
     let profiles = [];
@@ -5643,11 +5857,14 @@ async function saveApJobEdit() {
         return;
     }
     
+    const galleryCatId = document.getElementById('editJobGallery').value;
+    
     const payload = {
         preset_name,
         voice_preset: voicePreset,
         browser_profiles: _editJobBrowserChips,
-        upload_targets
+        upload_targets,
+        gallery_category_id: galleryCatId ? parseInt(galleryCatId) : null
     };
     
     // Automatically extract hidden fields from preset if a preset was chosen
@@ -5659,6 +5876,7 @@ async function saveApJobEdit() {
             if (data.wizLanguage) payload.language = data.wizLanguage;
             if (data.wizContentFormat) payload.content_format = data.wizContentFormat;
             if (data.wizEpisodes) payload.max_episodes = data.wizEpisodes;
+            if (data.wizGalleryCategory && !galleryCatId) payload.gallery_category_id = parseInt(data.wizGalleryCategory);
         }
     }
     
@@ -5983,24 +6201,31 @@ function toggleGalleryView() {
     }
 }
 
-async function loadWizGalleryCategories() {
-    const wizSel = document.getElementById('wizGalleryCategory');
-    if (!wizSel) return;
+async function _loadGalleryCategoriesIntoSelect(selectId) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
     
     try {
         const res = await apiFetch('/gallery/categories');
         const categories = res.categories || [];
         
-        wizSel.innerHTML = '<option value="">None (AI generates new)</option>';
+        if (!window._galleryCategoryMap) window._galleryCategoryMap = {};
+        
+        sel.innerHTML = '<option value="">None (AI generates new)</option>';
         categories.forEach(cat => {
+            window._galleryCategoryMap[cat.id] = cat.name;
             const opt = document.createElement('option');
             opt.value = cat.id;
             opt.textContent = cat.name + (cat.visual_style ? ` (${cat.visual_style})` : '');
-            wizSel.appendChild(opt);
+            sel.appendChild(opt);
         });
     } catch (e) {
-        console.warn('Failed to load gallery categories for wizard', e);
+        console.warn(`Failed to load gallery categories for ${selectId}`, e);
     }
+}
+
+async function loadWizGalleryCategories() {
+    await _loadGalleryCategoriesIntoSelect('wizGalleryCategory');
 }
 
 let _allGalleryItemsCache = []; // for client-side search

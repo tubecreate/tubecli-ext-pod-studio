@@ -1,28 +1,57 @@
 #!/usr/bin/env node
 /**
- * grok_char_image.js — Generate single character reference images from Grok Imagine.
- * Uses TubeCLI browser profile, navigates to grok.com/imagine in Image mode.
+ * grok_char_image.js — Generate single character reference images from Grok.
+ * Uses TubeCLI browser profile, navigates to grok.com (chat) in Image mode.
  * 
  * Usage: node grok_char_image.js --profile <name> --prompt "..." --output <path> --profiles-dir <dir>
  */
 
-const minimist = require('minimist');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const { chromium } = require('playwright');
 
-const args = minimist(process.argv.slice(2));
+// Inline arg parser — no external dependencies needed
+function parseArgs(argv) {
+    const result = {};
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i].startsWith('--')) {
+            const key = argv[i].slice(2);
+            const val = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
+            result[key] = val;
+        } else if (argv[i].startsWith('-') && argv[i].length === 2) {
+            const key = argv[i].slice(1);
+            const val = argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : true;
+            result[key] = val;
+        }
+    }
+    return result;
+}
+const args = parseArgs(process.argv.slice(2));
+
 const profileName = args.profile || args.p;
 const prompt = args.prompt;
 const outputPath = args.output;
 const profilesDir = args['profiles-dir'] || path.join(__dirname, '..', '..', '..', '..', 'data', 'browser_profiles');
-const headless = args.headless === true || args.headless === 'true';
+const headless = args.headless === 'true';
 const timeout = parseInt(args.timeout || '120') * 1000;
 
+// Catch-all: any unhandled crash → output JSON to stdout so backend can parse it
+process.on('uncaughtException', (err) => {
+    process.stdout.write(JSON.stringify({ status: 'error', message: 'Crash: ' + (err.message || String(err)) }) + '\n');
+    process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+    process.stdout.write(JSON.stringify({ status: 'error', message: 'Rejection: ' + (err && err.message ? err.message : String(err)) }) + '\n');
+    process.exit(1);
+});
+
+// Resolve playwright from browser extension's own node_modules (absolute, reliable)
+// This is done lazily inside the IIFE so errors go through our handlers
+const BROWSER_EXT_DIR = path.resolve(__dirname, '..', '..', '..', '..', 'tubecli', 'extensions', 'browser');
+
 if (!profileName || !prompt || !outputPath) {
-    console.error(JSON.stringify({ status: 'error', message: 'Required: --profile, --prompt, --output' }));
+    console.log(JSON.stringify({ status: 'error', message: 'Required: --profile, --prompt, --output' }));
     process.exit(1);
 }
 
@@ -30,7 +59,7 @@ const profileDir = path.join(profilesDir, profileName);
 const cookiesPath = path.join(profileDir, 'cookies.json');
 
 if (!fs.existsSync(profileDir)) {
-    console.error(JSON.stringify({ status: 'error', message: `Profile "${profileName}" not found` }));
+    console.log(JSON.stringify({ status: 'error', message: `Profile "${profileName}" not found at: ${profileDir}` }));
     process.exit(1);
 }
 
@@ -62,33 +91,84 @@ function downloadFile(url, dest) {
 
 (async () => {
     log(`Profile: ${profileName}, Generating AI Character image...`);
+    log(`BROWSER_EXT_DIR: ${BROWSER_EXT_DIR}`);
 
-    const context = await chromium.launchPersistentContext(profileDir, {
-        headless,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
-        viewport: headless ? { width: 1280, height: 800 } : null,
-    });
-
-    if (fs.existsSync(cookiesPath)) {
-        try {
-            const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf-8'));
-            if (Array.isArray(cookies) && cookies.length > 0) await context.addCookies(cookies);
-        } catch (e) {}
+    // Load playwright here so any load error is caught by our uncaughtException handler
+    let chromium;
+    try {
+        chromium = require(path.join(BROWSER_EXT_DIR, 'node_modules', 'playwright')).chromium;
+        log('Playwright loaded OK');
+    } catch(e) {
+        console.log(JSON.stringify({ status: 'error', message: 'Playwright load failed: ' + e.message + ' | BROWSER_EXT_DIR=' + BROWSER_EXT_DIR }));
+        process.exit(1);
     }
 
-    const page = context.pages()[0] || await context.newPage();
-    let capturedImageUrl = null;
+    // --- Clean up stale Chrome profile lock files (left over from crashed sessions) ---
+    const _lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const _lf of _lockFiles) {
+        const _lfPath = path.join(profileDir, _lf);
+        if (fs.existsSync(_lfPath)) {
+            try { fs.unlinkSync(_lfPath); log(`Cleaned stale lock: ${_lf}`); }
+            catch(e) { log(`Could not remove lock ${_lf}: ${e.message}`); }
+        }
+    }
+    // Also clean Default/LOCK which causes persistent context crash
+    const _defaultLock = path.join(profileDir, 'Default', 'LOCK');
+    if (fs.existsSync(_defaultLock)) {
+        try { fs.unlinkSync(_defaultLock); log('Cleaned stale lock: Default/LOCK'); }
+        catch(e) { log(`Could not remove Default/LOCK: ${e.message}`); }
+    }
+
+    let context = null;
 
     try {
+        context = await chromium.launchPersistentContext(profileDir, {
+            channel: 'chrome',
+            headless,
+            args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+            viewport: headless ? { width: 1280, height: 800 } : null,
+        });
+
+        if (fs.existsSync(cookiesPath)) {
+            try {
+                const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf-8'));
+                if (Array.isArray(cookies) && cookies.length > 0) await context.addCookies(cookies);
+            } catch (e) {}
+        }
+
+        const page = context.pages()[0] || await context.newPage();
+        let capturedImageUrl = null;
+
         log('Navigating to grok.com...');
         await page.goto('https://grok.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await sleep(3000);
+        await sleep(4000);
 
-        const loginBtn = await page.$('a[href*="login"], button:text("Sign in")');
-        if (loginBtn) {
-            console.log(JSON.stringify({ status: 'error', message: `Profile "${profileName}" is not logged into Grok.` }));
-            await context.close();
-            process.exit(1);
+        // --- Login check: if not logged in, wait up to 60s for manual login ---
+        const isLoggedOut = async () => {
+            const loginBtn = await page.$('a[href*="login"], button:text("Sign in"), a[href*="sign-in"], button[data-testid*="login"]');
+            return !!loginBtn;
+        };
+
+        if (await isLoggedOut()) {
+            log('⚠️  Not logged in — waiting up to 60 seconds for manual login...');
+            const loginDeadline = Date.now() + 60000;
+            let loggedIn = false;
+            while (Date.now() < loginDeadline) {
+                await sleep(3000);
+                if (!(await isLoggedOut())) {
+                    loggedIn = true;
+                    log('✅ Login detected! Continuing...');
+                    await sleep(2000); // let page settle after login
+                    break;
+                }
+                const remaining = Math.round((loginDeadline - Date.now()) / 1000);
+                log(`Still waiting for login... ${remaining}s remaining`);
+            }
+            if (!loggedIn) {
+                console.log(JSON.stringify({ status: 'error', message: `Profile "${profileName}" is not logged into Grok. Please open the browser profile and log in at grok.com.` }));
+                await context.close();
+                process.exit(1);
+            }
         }
 
         // Make sure we're in IMAGE mode (not Video)
@@ -143,26 +223,55 @@ function downloadFile(url, dest) {
         let inputEl = null;
         const inputSelectors = [
             'textarea[placeholder*="imagine"]',
+            'textarea[placeholder*="Imagine"]',
             'textarea[placeholder*="Ask"]',
             'textarea[placeholder*="tưởng"]',
+            'textarea[placeholder*="Nhập"]',
+            'textarea[placeholder*="Type"]',
+            'textarea[placeholder*="Enter"]',
+            'p[contenteditable="true"]',
+            'div[contenteditable="true"][data-lexical-editor]',
             'div[contenteditable="true"]',
+            '[data-testid="ask-input"] textarea',
+            '[data-testid="imagine-input"] textarea',
+            '.chat-input textarea',
             'textarea'
         ];
         
-        await sleep(1000);
-        for (let attempt = 0; attempt < 3; attempt++) {
+        await sleep(2000);
+        for (let attempt = 0; attempt < 5; attempt++) {
             for (const sel of inputSelectors) {
                 try {
                     const el = page.locator(sel).last();
-                    if (await el.isVisible({ timeout: 1000 })) { inputEl = el; break; }
+                    if (await el.isVisible({ timeout: 1500 })) {
+                        log(`Input found with selector: ${sel}`);
+                        inputEl = el;
+                        break;
+                    }
                 } catch (e) {}
             }
             if (inputEl) break;
-            await sleep(2000);
+            log(`Input not found yet, attempt ${attempt + 1}/5, waiting...`);
+            await sleep(3000);
         }
 
         if (!inputEl) {
-            console.log(JSON.stringify({ status: 'error', message: 'Input box not found' }));
+            // Last resort: dump all textareas/editables for debugging
+            try {
+                const allInputs = await page.evaluate(() => {
+                    const els = document.querySelectorAll('textarea, [contenteditable]');
+                    return Array.from(els).map(el => ({
+                        tag: el.tagName,
+                        ph: el.placeholder || '',
+                        ce: el.contentEditable,
+                        vis: el.offsetParent !== null,
+                        id: el.id,
+                        cls: el.className.substring(0, 60)
+                    }));
+                });
+                log(`DEBUG inputs found: ${JSON.stringify(allInputs)}`);
+            } catch(e) {}
+            console.log(JSON.stringify({ status: 'error', message: 'Input box not found on grok.com/imagine. Grok UI may have changed.' }));
             await context.close();
             process.exit(1);
         }
@@ -410,8 +519,10 @@ function downloadFile(url, dest) {
         }
 
     } catch (e) {
-        console.log(JSON.stringify({ status: 'error', message: e.message }));
+        console.log(JSON.stringify({ status: 'error', message: e.message || String(e) }));
     } finally {
-        await context.close();
+        if (context) {
+            try { await context.close(); } catch(e) {}
+        }
     }
 })();

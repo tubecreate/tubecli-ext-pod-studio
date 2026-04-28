@@ -1022,12 +1022,19 @@ async def generate_character_ref(char_id: int, request: Request, background_task
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=150)
             
             stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
             
+            if stderr_text:
+                logger.info(f"[CharGen stderr]\n{stderr_text[-2000:]}")
+            
+            # Parse the JSON result from stdout (both success and error come through console.log → stdout)
+            error_msg = "Generation failed"
             if stdout_text:
                 for line in reversed(stdout_text.splitlines()):
-                    if line.strip().startswith("{"):
+                    line = line.strip()
+                    if line.startswith("{"):
                         try:
-                            result = json.loads(line.strip())
+                            result = json.loads(line)
                             if result.get("status") == "success" and os.path.exists(output_path):
                                 # Update character with new reference image
                                 try:
@@ -1041,16 +1048,47 @@ async def generate_character_ref(char_id: int, request: Request, background_task
                                 })
                                 _gen_tasks[task_id] = {"status": "done", "path": output_path, "filename": filename}
                                 return
+                            elif result.get("status") == "error":
+                                # Capture the real error message from the JS script
+                                error_msg = result.get("message", "Generation failed")
                         except:
                             pass
+                        break  # Only need the last JSON line
             
-            _gen_tasks[task_id] = {"status": "error", "message": "Generation failed"}
+            logger.error(f"[CharGen] Failed for char {char_id}: {error_msg}")
+            _gen_tasks[task_id] = {"status": "error", "message": error_msg}
         except Exception as e:
             logger.error(f"Character image gen error: {e}")
             _gen_tasks[task_id] = {"status": "error", "message": str(e)}
     
     background_tasks.add_task(_run_generation)
     return {"status": "started", "task_id": task_id}
+
+
+
+@router.get("/api/v1/studio/browser-profiles")
+async def list_browser_profiles():
+    """List available browser profiles from data/browser_profiles directory."""
+    try:
+        from tubecli.config import DATA_DIR
+        profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+    except Exception:
+        from pathlib import Path
+        profiles_dir = str(Path(_ext_dir).parents[2] / "data" / "browser_profiles")
+
+    if not os.path.isdir(profiles_dir):
+        return {"profiles": [], "profiles_dir": profiles_dir}
+
+    profiles = []
+    try:
+        for name in sorted(os.listdir(profiles_dir)):
+            profile_path = os.path.join(profiles_dir, name)
+            if os.path.isdir(profile_path):
+                profiles.append(name)
+    except Exception as e:
+        logger.warning(f"Failed to list profiles: {e}")
+
+    return {"profiles": profiles, "profiles_dir": profiles_dir}
 
 
 @router.get("/api/v1/studio/generate-status/{task_id}")
@@ -1302,9 +1340,19 @@ def _get_agent(agent_type: str):
 # ── Extract Characters & Scenes ─────────────────────────────
 
 @router.post("/api/v1/studio/episodes/{episode_id}/extract")
-async def extract_characters_scenes(episode_id: int):
+async def extract_characters_scenes(episode_id: int, request: Request):
     """AI extracts characters and scenes from script, saves to DB with dedup.
-    Returns SSE stream with progress + final extracted data."""
+    Returns SSE stream with progress + final extracted data.
+    Optional body: { profile_name: str }  — overrides drama metadata browser_profile_name."""
+    # Parse optional JSON body (profile_name override)
+    _req_profile_name = ""
+    try:
+        _ctype = request.headers.get("content-type", "")
+        if "application/json" in _ctype:
+            _body = await request.json()
+            _req_profile_name = (_body.get("profile_name") or "").strip()
+    except Exception:
+        pass
     ep = _db().get_episode(episode_id)
     if not ep:
         raise HTTPException(404, "Episode not found")
@@ -1558,9 +1606,26 @@ async def extract_characters_scenes(episode_id: int):
             char_style = _get_char_style(drama_obj) if drama_obj else "Realistic"
             try:
                 drama_meta_img = json.loads(drama_obj.get("metadata", "{}") or "{}")
-                profile_name_img = drama_meta_img.get("browser_profile_name") or drama_meta_img.get("browser_profile") or ""
-            except:
-                profile_name_img = ""
+                # Priority: request body override > drama metadata (browser_profile_name / browser_profile)
+                profile_name_img = (
+                    _req_profile_name
+                    or drama_meta_img.get("browser_profile_name")
+                    or drama_meta_img.get("browser_profile")
+                    or ""
+                )
+                logger.info(f"[extract] browser profile resolved: req='{_req_profile_name}' meta='{drama_meta_img.get('browser_profile_name')}' → using='{profile_name_img}'")
+                # If we got profile from request and drama metadata was missing it, persist it
+                if _req_profile_name and not drama_meta_img.get("browser_profile_name"):
+                    drama_meta_img["browser_profile_name"] = _req_profile_name
+                    _db().conn.execute(
+                        "UPDATE dramas SET metadata = ? WHERE id = ?",
+                        (json.dumps(drama_meta_img), drama_id)
+                    )
+                    _db().conn.commit()
+                    logger.info(f"[extract] Persisted browser_profile_name='{_req_profile_name}' to drama {drama_id} metadata")
+            except Exception as _meta_ex:
+                logger.warning(f"[extract] Failed to parse drama metadata: {_meta_ex}")
+                profile_name_img = _req_profile_name or ""
 
             if not profile_name_img:
                 _msg = "⚠️ Chưa chọn Browser Profile — bỏ qua tạo ảnh AI cho " + str(len(chars_for_gen)) + " nhân vật. Chọn profile rồi bấm AI Gen."
@@ -2624,7 +2689,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     async def _runner():
         _video_tasks[task_id]["status"] = "running"
         try:
-            import sys, os
+            import sys, os, re
             ext_dir = os.path.dirname(os.path.abspath(__file__))
             engines_dir = os.path.join(ext_dir, "engines")
             if engines_dir not in sys.path:
@@ -2649,6 +2714,77 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 if status == "error":
                     _video_tasks[task_id]["errors"].append(shot_id)
 
+            # ── Sensitive word list for prompt cleaning ──
+            _sensitive_words = [
+                # Violence / weapons
+                "kill", "murder", "blood", "gore", "violent", "violence",
+                "weapon", "gun", "knife", "sword", "attack", "stab", "shoot",
+                "dead", "death", "die", "dying", "corpse", "wound", "bleeding",
+                "fight", "punch", "slap", "hit", "beat", "abuse", "torture",
+                "war", "bomb", "explosion", "destroy", "destruction",
+                # Sexual / NSFW
+                "nude", "naked", "sexy", "sexual", "erotic", "kiss", "kissing",
+                "hug", "hugging", "embrace", "intimate", "romance", "romantic",
+                "seductive", "seduce", "lust", "desire", "passion", "passionate",
+                "breast", "thigh", "body", "skin", "touch", "touching",
+                "bed", "bedroom", "undress", "strip",
+                # Drugs / substance
+                "drug", "drugs", "alcohol", "drunk", "smoking", "cigarette",
+                "inject", "needle", "overdose",
+                # Hate / discrimination
+                "hate", "racist", "racism", "discriminat",
+                # Self-harm
+                "suicide", "self-harm", "cut", "hang",
+                # Vietnamese equivalents
+                "giết", "chết", "máu", "bạo lực", "vũ khí", "súng", "dao",
+                "khỏa thân", "gợi cảm", "tình dục", "ôm", "hôn",
+                "ma túy", "rượu", "thuốc lá",
+            ]
+
+            def _extract_core_prompt(raw):
+                """Extract the visual prompt from structured [VIDEO PROMPT] or [IMAGE PROMPT] sections."""
+                for tag in ["[VIDEO PROMPT]", "[IMAGE PROMPT]"]:
+                    if tag in raw:
+                        match = re.search(re.escape(tag) + r'\s*(.*?)(?:\[|$)', raw, re.DOTALL)
+                        if match:
+                            return match.group(1).strip()
+                return raw
+
+            def _clean_sensitive(text):
+                """Remove NSFW/sensitive words from prompt."""
+                cleaned = text
+                for word in _sensitive_words:
+                    pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+                    cleaned = pattern.sub('', cleaned)
+                return re.sub(r'\s+', ' ', cleaned).strip()
+
+            def _simplify_prompt(raw, attempt):
+                """Progressively simplify prompt based on retry attempt number.
+                attempt 1: clean sensitive words + keep first 2 sentences
+                attempt 2: even shorter (1 sentence) + generic style cue
+                attempt 3: ultra-minimal description + safe animation style
+                """
+                core = _extract_core_prompt(raw)
+                core = _clean_sensitive(core)
+                sentences = re.split(r'[.!?]+', core)
+                sentences = [s.strip() for s in sentences if s.strip()]
+
+                if attempt == 1:
+                    # Keep first 2 sentences + style cue
+                    simplified = '. '.join(sentences[:2])
+                    if simplified:
+                        simplified += '.'
+                    return f"[VIDEO PROMPT]\n{simplified}\nSimple animation, clean composition, minimal details."
+                elif attempt == 2:
+                    # Keep only first sentence + safe animation
+                    simplified = sentences[0] if sentences else "A calm scene"
+                    return f"[VIDEO PROMPT]\n{simplified}. Smooth animation, soft lighting, simple background."
+                else:
+                    # Ultra-minimal: just keywords + maximum safety
+                    keywords = ' '.join(sentences[0].split()[:8]) if sentences else "peaceful landscape"
+                    return f"[VIDEO PROMPT]\n{keywords}. Gentle animated scene, minimal movement, soft colors."
+
+            # ── Initial attempt (attempt 0) ──
             results = await batch_generate(
                 shots=shots,
                 profile_names=profile_names,
@@ -2658,73 +2794,29 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 progress_callback=on_progress,
             )
 
-            # ── Phase 2: Retry failed shots with simplified prompt ──
-            failed_ids = set(_video_tasks[task_id].get("errors", []))
-            failed_shots = [s for s in shots if s["id"] in failed_ids]
-            
-            if failed_shots:
-                logger.info(f"Retrying {len(failed_shots)} failed shots with simplified prompts...")
-                _video_tasks[task_id]["status"] = f"retrying {len(failed_shots)} failed shots"
-                
-                # Simplify prompts: keep only first 2 sentences, add style cue
+            # ── Retry loop: up to 3 retries with progressively simplified prompts ──
+            MAX_RETRIES = 3
+            for attempt in range(1, MAX_RETRIES + 1):
+                failed_ids = set(_video_tasks[task_id].get("errors", []))
+                failed_shots = [s for s in shots if s["id"] in failed_ids]
+
+                if not failed_shots:
+                    break
+
+                logger.info(f"Retry attempt {attempt}/{MAX_RETRIES}: {len(failed_shots)} failed shots")
+                _video_tasks[task_id]["status"] = f"retry {attempt}/{MAX_RETRIES} — {len(failed_shots)} shots"
+
+                # Simplify prompts progressively
                 for shot in failed_shots:
-                    raw = shot.get("image_prompt", "")
-                    # Extract just core visual from [VIDEO PROMPT] or [IMAGE PROMPT]
-                    import re
-                    for tag in ["[VIDEO PROMPT]", "[IMAGE PROMPT]"]:
-                        if tag in raw:
-                            match = re.search(re.escape(tag) + r'\s*(.*?)(?:\[|$)', raw, re.DOTALL)
-                            if match:
-                                raw = match.group(1).strip()
-                                break
-                    
-                    # ── Filter sensitive/NSFW words that trigger content policies ──
-                    _sensitive_words = [
-                        # Violence / weapons
-                        "kill", "murder", "blood", "gore", "violent", "violence",
-                        "weapon", "gun", "knife", "sword", "attack", "stab", "shoot",
-                        "dead", "death", "die", "dying", "corpse", "wound", "bleeding",
-                        "fight", "punch", "slap", "hit", "beat", "abuse", "torture",
-                        "war", "bomb", "explosion", "destroy", "destruction",
-                        # Sexual / NSFW
-                        "nude", "naked", "sexy", "sexual", "erotic", "kiss", "kissing",
-                        "hug", "hugging", "embrace", "intimate", "romance", "romantic",
-                        "seductive", "seduce", "lust", "desire", "passion", "passionate",
-                        "breast", "thigh", "body", "skin", "touch", "touching",
-                        "bed", "bedroom", "undress", "strip",
-                        # Drugs / substance
-                        "drug", "drugs", "alcohol", "drunk", "smoking", "cigarette",
-                        "inject", "needle", "overdose",
-                        # Hate / discrimination  
-                        "hate", "racist", "racism", "discriminat",
-                        # Self-harm
-                        "suicide", "self-harm", "cut", "hang",
-                        # Vietnamese equivalents
-                        "giết", "chết", "máu", "bạo lực", "vũ khí", "súng", "dao",
-                        "khỏa thân", "gợi cảm", "tình dục", "ôm", "hôn",
-                        "ma túy", "rượu", "thuốc lá",
-                    ]
-                    
-                    # Case-insensitive word replacement
-                    cleaned = raw
-                    for word in _sensitive_words:
-                        pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-                        cleaned = pattern.sub('', cleaned)
-                    # Clean up extra whitespace
-                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                    raw = cleaned
-                    
-                    # Keep first 2 sentences max
-                    sentences = re.split(r'[.!?]+', raw)
-                    simplified = '. '.join(s.strip() for s in sentences[:2] if s.strip())
-                    if simplified:
-                        simplified += '.'
-                    # Reset video_url so it's picked up again
+                    original_prompt = shot.get("_original_prompt") or shot.get("image_prompt", "")
+                    # Preserve original prompt for subsequent retries
+                    if not shot.get("_original_prompt"):
+                        shot["_original_prompt"] = original_prompt
                     shot["video_url"] = ""
-                    shot["image_prompt"] = f"[VIDEO PROMPT]\n{simplified}\nSimple animation, clean composition, minimal details."
-                    logger.info(f"Retry shot {shot['id']}: simplified prompt = {simplified[:80]}...")
-                
-                # Clear errors for retry
+                    shot["image_prompt"] = _simplify_prompt(original_prompt, attempt)
+                    logger.info(f"Retry {attempt} shot {shot['id']}: {shot['image_prompt'][:80]}...")
+
+                # Clear errors for this retry round
                 _video_tasks[task_id]["errors"] = []
                 retry_results = await batch_generate(
                     shots=failed_shots,
@@ -2736,39 +2828,28 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 )
                 results.extend(retry_results)
 
-            # ── Phase 3: Generate fallback slide for persistent failures ──
+            # ── After all retries: skip remaining failures (NO fallback text slides) ──
             still_failed_ids = set(_video_tasks[task_id].get("errors", []))
-            still_failed = [s for s in shots if s["id"] in still_failed_ids]
-            
-            if still_failed:
-                logger.info(f"Generating {len(still_failed)} fallback slide images...")
-                _video_tasks[task_id]["status"] = f"creating {len(still_failed)} fallback slides"
-                
-                for shot in still_failed:
-                    try:
-                        slide_path = _generate_fallback_slide(
-                            shot, episode_id, video_aspect_ratio,
-                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines")
-                        )
-                        if slide_path:
-                            _db().update_storyboard(shot["id"], {"video_url": slide_path, "status": "video_fallback"})
-                            _video_tasks[task_id]["done"] = _video_tasks[task_id].get("done", 0)
-                            logger.info(f"Fallback slide for shot {shot['id']}: {slide_path}")
-                    except Exception as e:
-                        logger.error(f"Fallback slide error shot {shot['id']}: {e}")
+            if still_failed_ids:
+                logger.warning(
+                    f"Skipping {len(still_failed_ids)} shots after {MAX_RETRIES} retries: {still_failed_ids}"
+                )
+                for sid in still_failed_ids:
+                    _db().update_storyboard(sid, {"status": "video_skipped"})
+                    if sid in _video_tasks[task_id]["shot_progress"]:
+                        _video_tasks[task_id]["shot_progress"][sid] = {"percent": 0, "status": "skipped"}
 
             successful = [r for r in results if r.get("status") == "success"]
-            fallback_count = len(still_failed)
-            total_ok = len(successful) + fallback_count
-            
-            if total_ok > 0:
+            skipped_count = len(still_failed_ids)
+
+            if successful:
                 _video_tasks[task_id]["status"] = "completed"
-                if fallback_count > 0:
-                    _video_tasks[task_id]["status"] = f"completed ({fallback_count} fallback slides)"
+                if skipped_count > 0:
+                    _video_tasks[task_id]["status"] = f"completed ({skipped_count} shots skipped)"
                 _video_tasks[task_id]["done"] = _video_tasks[task_id]["total"]
             elif results:
-                _video_tasks[task_id]["status"] = f"error: {len(results)} shots failed"
-                _video_tasks[task_id]["done"] = len(successful)
+                _video_tasks[task_id]["status"] = f"error: all {len(results)} shots failed after {MAX_RETRIES} retries"
+                _video_tasks[task_id]["done"] = 0
             else:
                 _video_tasks[task_id]["status"] = "error: Node script crashed or returned no results. Check logs."
 
@@ -3466,6 +3547,7 @@ async def create_auto_pipeline_jobs(request: Request):
         "seo_tags": data.get("seo_tags", []),
         "upload_targets": data.get("upload_targets", []),
         "upload_privacy": data.get("upload_privacy", "private"),
+        "gallery_category_id": data.get("gallery_category_id"),
     }
 
     db = _db()
@@ -3624,6 +3706,9 @@ async def _process_single_job(job: dict):
         "aspect_ratio": job.get("aspect_ratio", "16:9"),
         "narration_source": job.get("narration_source", "prose"),
     }
+
+    if job.get("gallery_category_id"):
+        drama_meta["gallery_category_id"] = job["gallery_category_id"]
 
     browser_profiles = json.loads(job.get("browser_profiles", "[]")) if isinstance(job.get("browser_profiles"), str) else job.get("browser_profiles", [])
     if browser_profiles:
