@@ -228,7 +228,9 @@ def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Real
         "dark fantasy": "Dark fantasy art style, dramatic shadows, gothic aesthetic",
         "hollywood cinematic": "Photorealistic, Hollywood cinematic lighting, studio quality",
     }
-    style_desc = style_map.get(visual_style.lower().strip(), style_map["realistic"])
+    # Use mapped style, or pass through the raw visual_style directly
+    style_desc = style_map.get(visual_style.lower().strip(),
+                               f"{visual_style.strip()} style, highly detailed, professional quality")
     
     # Map aspect ratio to readable description for Grok
     ar_map = {
@@ -257,6 +259,65 @@ def _get_char_style(drama: dict) -> str:
         if len(parts) > 1:
             return parts[1].strip().split("|")[0].strip()
     return "Realistic"
+
+
+def _get_visual_style(drama: dict) -> str:
+    """Extract Visual Style from drama.style string like 'Visual Style: X | Character Style: Y'."""
+    style_str = drama.get("style", "") or ""
+    if "Visual Style:" in style_str:
+        parts = style_str.split("Visual Style:")
+        if len(parts) > 1:
+            return parts[1].strip().split("|")[0].strip()
+    # Fallback: use first segment or the raw style
+    return style_str.split("|")[0].strip() if "|" in style_str else (style_str.strip() or "Realistic")
+
+
+def _build_scene_ref_prompt(location: str, time_of_day: str, description: str,
+                            visual_style: str = "Realistic", aspect_ratio: str = "16:9") -> str:
+    """Build a scene/environment image prompt (like a cinematic still) in the project's visual style."""
+    # Map project style to prompt style descriptor
+    style_map = {
+        "default": "Photorealistic, cinematic lighting, professional cinematography",
+        "realistic": "Photorealistic, cinematic lighting, professional cinematography",
+        "anime": "Anime background art style, vibrant colors, detailed environment, anime aesthetic",
+        "donghua": "Chinese animation (Donghua) background style, detailed linework, vibrant scenery",
+        "chibi": "Chibi world background, cute aesthetic, colorful simple environment",
+        "3d cartoon": "3D Cartoon environment render, Pixar/Disney style, smooth shading",
+        "stick figure": "Simple line drawing environment, minimalist style",
+        "dark fantasy": "Dark fantasy landscape, dramatic shadows, gothic atmospheric environment",
+        "hollywood cinematic": "Photorealistic, Hollywood cinematic lighting, professional cinematography",
+    }
+    # Use mapped style, or pass through the raw visual_style directly
+    style_desc = style_map.get(visual_style.lower().strip(),
+                               f"{visual_style.strip()} style environment, highly detailed, professional quality")
+
+    # Map aspect ratio
+    ar_map = {
+        "1:1": "1:1 square",
+        "16:9": "16:9 widescreen landscape",
+        "9:16": "9:16 vertical portrait",
+        "4:3": "4:3 landscape",
+        "3:4": "3:4 portrait",
+    }
+    ar_desc = ar_map.get(aspect_ratio, aspect_ratio or "16:9 widescreen landscape")
+
+    # Build descriptive scene prompt
+    scene_parts = []
+    if location:
+        scene_parts.append(location.strip())
+    if time_of_day:
+        scene_parts.append(f"during {time_of_day.strip()}")
+    if description:
+        scene_parts.append(description.strip())
+    scene_desc = ", ".join(scene_parts) if scene_parts else "a cinematic scene"
+
+    return (
+        f"Generate in {ar_desc} aspect ratio: "
+        f"Cinematic wide establishing shot of {scene_desc}. "
+        f"No people, no characters, no text, no letters. "
+        f"Focus on environment, architecture, atmosphere and lighting. "
+        f"{style_desc}, highly detailed environment, 4K."
+    )
 
 
 def _settings():
@@ -763,6 +824,98 @@ async def _autopilot_runner(drama_id: int):
                 logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
                 # Non-fatal: continue to storyboard step
 
+            # 4c. Flow: Generate AI reference images for scenes without images
+            meta["autopilot_status"] = f"running {idx+1}/{total} - generating scene images"
+            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            
+            try:
+                scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
+                scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+                all_scenes = _db().list_scenes(drama_id)
+                scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not s.get("image_url", "").strip()]
+                
+                logger.info(f"Autopilot scene gen: ep {ep_num}, total scenes={len(all_scenes)}, needing images={len(scenes_needing_images)}, profile={scene_profile}")
+                
+                if scenes_needing_images:
+                    logger.info(f"Autopilot: generating ref images for {len(scenes_needing_images)} NEW scenes")
+                    
+                    from pathlib import Path
+                    grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    top_dir = Path(_ext_dir).parents[2]
+                    browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+                    
+                    try:
+                        from tubecli.config import DATA_DIR
+                        profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+                    except:
+                        profiles_dir = str(top_dir / "data" / "browser_profiles")
+                    
+                    ref_dir = _get_ref_dir()
+                    from datetime import datetime as _dt
+                    
+                    for si, scene_obj in enumerate(scenes_needing_images):
+                        sid = scene_obj["id"]
+                        slocation = scene_obj.get("location", "Unknown")
+                        stime = scene_obj.get("time", "")
+                        sdesc = scene_obj.get("description", "")
+                        
+                        meta["autopilot_status"] = f"running {idx+1}/{total} - scene ref {si+1}/{len(scenes_needing_images)}: {slocation[:30]}"
+                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                        
+                        scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
+                        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                        out_file = f"scene_{sid}_ai_{ts}.png"
+                        out_path = os.path.join(ref_dir, out_file)
+                        
+                        cmd = [
+                            "node", grok_script,
+                            "--profile", scene_profile,
+                            "--prompt", scene_prompt,
+                            "--output", out_path,
+                            "--profiles-dir", profiles_dir,
+                            "--timeout", "120"
+                        ]
+                        env = os.environ.copy()
+                        env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                        
+                        try:
+                            proc = await asyncio.create_subprocess_exec(
+                                *cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                cwd=browser_ext_dir,
+                                env=env,
+                            )
+                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
+                            stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
+                            
+                            # Check result
+                            img_ok = False
+                            if stdout_text:
+                                for line in reversed(stdout_text.splitlines()):
+                                    if line.strip().startswith("{"):
+                                        try:
+                                            result = json.loads(line.strip())
+                                            if result.get("status") == "success" and os.path.exists(out_path):
+                                                _db().update_scene(sid, {"image_url": out_path})
+                                                img_ok = True
+                                                logger.info(f"  ✓ Generated ref image for scene '{slocation}'")
+                                                break
+                                        except:
+                                            pass
+                            if not img_ok:
+                                logger.warning(f"  ✗ Image gen failed for scene '{slocation}' — skipping (no retry)")
+                        except Exception as ce:
+                            logger.warning(f"  ✗ Failed to generate ref for scene '{slocation}': {ce} — skipping (no retry)")
+                            continue
+                else:
+                    logger.info(f"Autopilot: no NEW scenes need image generation for ep {ep_num}")
+            except Exception as e:
+                import traceback
+                logger.error(f"Autopilot scene image gen error: {e}\n{traceback.format_exc()}")
+                # Non-fatal: continue to storyboard step
+
             # 5. Flow: Storyboard Breaker
             import re as _re_ap
             _ap_headings = _re_ap.findall(r'^## S\d+[^\n]*', script, _re_ap.MULTILINE)
@@ -1064,6 +1217,117 @@ async def generate_character_ref(char_id: int, request: Request, background_task
     background_tasks.add_task(_run_generation)
     return {"status": "started", "task_id": task_id}
 
+
+@router.post("/api/v1/studio/scenes/{scene_id}/generate-ref")
+async def generate_scene_ref(scene_id: int, request: Request, background_tasks: BackgroundTasks):
+    """Generate a scene reference image using Grok Imagine — same flow as character ref gen."""
+    data = await request.json()
+    profile_name = data.get("profile_name", "")
+    
+    if not profile_name:
+        raise HTTPException(400, "Browser profile required")
+    
+    db = _db()
+    scene = db._dict(db.conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone())
+    if not scene:
+        raise HTTPException(404, "Scene not found")
+    
+    location = (scene.get("location", "") or "").strip()
+    if not location:
+        raise HTTPException(400, "Scene has no location description.")
+    
+    # Get visual style from drama
+    drama = db.get_drama(scene.get("drama_id")) if scene.get("drama_id") else None
+    scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+    
+    # Get aspect ratio from drama metadata
+    scene_aspect_ratio = "16:9"
+    if drama:
+        try:
+            drama_meta = json.loads(drama.get("metadata", "{}") or "{}")
+            scene_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+        except:
+            pass
+    
+    time_of_day = (scene.get("time", "") or "").strip()
+    description = (scene.get("description", "") or "").strip()
+    prompt = _build_scene_ref_prompt(location, time_of_day, description, scene_visual_style, scene_aspect_ratio)
+    
+    ref_dir = _get_ref_dir()
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"scene_{scene_id}_ai_{timestamp}.png"
+    output_path = os.path.join(ref_dir, filename)
+    
+    task_id = f"scenegen_{scene_id}_{timestamp}"
+    _gen_tasks[task_id] = {"status": "running", "scene_id": scene_id, "location": location}
+    
+    async def _run_generation():
+        import asyncio
+        try:
+            grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+            from pathlib import Path
+            top_dir = Path(_ext_dir).parents[2]
+            browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+            
+            try:
+                from tubecli.config import DATA_DIR
+                profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+            except:
+                profiles_dir = str(top_dir / "data" / "browser_profiles")
+            
+            cmd = [
+                "node", grok_script,
+                "--profile", profile_name,
+                "--prompt", prompt,
+                "--output", output_path,
+                "--profiles-dir", profiles_dir,
+                "--timeout", "120"
+            ]
+            
+            env = os.environ.copy()
+            env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+            
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=browser_ext_dir,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=150)
+            
+            stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
+            
+            if stderr_text:
+                logger.info(f"[SceneGen stderr]\n{stderr_text[-2000:]}")
+            
+            error_msg = "Generation failed"
+            if stdout_text:
+                for line in reversed(stdout_text.splitlines()):
+                    line = line.strip()
+                    if line.startswith("{"):
+                        try:
+                            result = json.loads(line)
+                            if result.get("status") == "success" and os.path.exists(output_path):
+                                db.update_scene(scene_id, {"image_url": output_path})
+                                _gen_tasks[task_id] = {"status": "done", "path": output_path, "filename": filename}
+                                return
+                            elif result.get("status") == "error":
+                                error_msg = result.get("message", "Generation failed")
+                        except:
+                            pass
+                        break
+            
+            logger.error(f"[SceneGen] Failed for scene {scene_id}: {error_msg}")
+            _gen_tasks[task_id] = {"status": "error", "message": error_msg}
+        except Exception as e:
+            logger.error(f"Scene image gen error: {e}")
+            _gen_tasks[task_id] = {"status": "error", "message": str(e)}
+    
+    background_tasks.add_task(_run_generation)
+    return {"status": "started", "task_id": task_id}
 
 
 @router.get("/api/v1/studio/browser-profiles")
@@ -1708,6 +1972,91 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                         yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh " + _cn + ": " + str(_ex)[:80]})}\n\n'
                 _msg3 = f"🎨 Hoàn thành: {_gok} thành công, {_ger} thất bại"
                 yield f'data: {json.dumps({"event": "status", "message": _msg3})}\n\n'
+
+        # --- Auto-generate AI reference images for new scenes ---
+        all_drama_scenes = _db().list_scenes(drama_id)
+        scenes_for_gen = [sc for sc in all_drama_scenes if sc.get("location", "").strip() and not sc.get("image_url", "").strip()]
+        if scenes_for_gen:
+            drama_obj_sc = _db().get_drama(drama_id)
+            scene_visual_style = _get_visual_style(drama_obj_sc) if drama_obj_sc else "Realistic"
+            try:
+                drama_meta_sc = json.loads(drama_obj_sc.get("metadata", "{}") or "{}")
+                profile_name_sc = (
+                    _req_profile_name
+                    or drama_meta_sc.get("browser_profile_name")
+                    or drama_meta_sc.get("browser_profile")
+                    or ""
+                )
+            except:
+                profile_name_sc = _req_profile_name or ""
+            
+            scene_ar = "16:9"
+            try:
+                scene_ar = drama_meta_sc.get("aspect_ratio", "16:9")
+            except:
+                pass
+
+            if not profile_name_sc:
+                _smsg = "⚠️ Chưa chọn Browser Profile — bỏ qua tạo ảnh AI cho " + str(len(scenes_for_gen)) + " cảnh."
+                yield f'data: {json.dumps({"event": "status", "message": _smsg})}\n\n'
+            else:
+                _smsg = "🖼️ Đang tạo ảnh tham chiếu cho " + str(len(scenes_for_gen)) + " cảnh mới..."
+                yield f'data: {json.dumps({"event": "status", "message": _smsg})}\n\n'
+                from pathlib import Path as _PSc
+                _grok_sc = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                _top_sc = _PSc(_ext_dir).parents[2]
+                _bdir_sc = str(_top_sc / "tubecli" / "extensions" / "browser")
+                try:
+                    from tubecli.config import DATA_DIR as _DSc
+                    _pdir_sc = os.path.join(str(_DSc), "browser_profiles")
+                except:
+                    _pdir_sc = str(_top_sc / "data" / "browser_profiles")
+                _rdir_sc = _get_ref_dir()
+                from datetime import datetime as _dtsc
+                _sok = 0
+                _ser = 0
+                for _si, _so_obj in enumerate(scenes_for_gen):
+                    _sid = _so_obj["id"]
+                    _sloc = _so_obj.get("location", "Unknown")
+                    _stime = _so_obj.get("time", "")
+                    _sdesc = _so_obj.get("description", "")
+                    _smsg2 = f"🖼️ [{_si+1}/{len(scenes_for_gen)}] Tạo ảnh cảnh: {_sloc[:40]}..."
+                    yield f'data: {json.dumps({"event": "status", "message": _smsg2})}\n\n'
+                    _sp = _build_scene_ref_prompt(_sloc, _stime, _sdesc, scene_visual_style, scene_ar)
+                    _sts = _dtsc.now().strftime("%Y%m%d_%H%M%S")
+                    _sout = os.path.join(_rdir_sc, f"scene_{_sid}_ai_{_sts}.png")
+                    os.makedirs(os.path.dirname(_sout), exist_ok=True)
+                    logger.info(f"SceneGen [{_sloc[:30]}] output={_sout}, profile={profile_name_sc}")
+                    _scmd = ["node", _grok_sc, "--profile", profile_name_sc, "--prompt", _sp, "--output", _sout, "--profiles-dir", _pdir_sc, "--timeout", "120"]
+                    _senv = os.environ.copy()
+                    _senv["NODE_PATH"] = os.path.join(_bdir_sc, "node_modules")
+                    try:
+                        _spr = await asyncio.create_subprocess_exec(*_scmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir_sc, env=_senv)
+                        _sso, _sse = await asyncio.wait_for(_spr.communicate(), timeout=150)
+                        _ssot = _sso.decode("utf-8", errors="replace").strip()
+                        _simok = False
+                        if _ssot:
+                            for _sln in reversed(_ssot.splitlines()):
+                                if _sln.strip().startswith("{"):
+                                    try:
+                                        _srj = json.loads(_sln.strip())
+                                        actual_path_sc = _srj.get("path", _sout)
+                                        if _srj.get("status") == "success" and os.path.exists(actual_path_sc):
+                                            _db().update_scene(_sid, {"image_url": actual_path_sc})
+                                            _simok = True
+                                            _sok += 1
+                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cảnh " + _sloc[:40]})}\n\n'
+                                            break
+                                    except:
+                                        pass
+                        if not _simok:
+                            _ser += 1
+                            yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh cảnh " + _sloc[:40]})}\n\n'
+                    except Exception as _sex:
+                        _ser += 1
+                        yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh cảnh " + _sloc[:40] + ": " + str(_sex)[:60]})}\n\n'
+                _smsg3 = f"🖼️ Hoàn thành cảnh: {_sok} thành công, {_ser} thất bại"
+                yield f'data: {json.dumps({"event": "status", "message": _smsg3})}\n\n'
 
         # Return final result
         result = {
@@ -2627,6 +2976,26 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 logger.info(f"Gallery ref injection: {len(gallery_ref_images)} gallery images available from category {gallery_cat_id}")
     except Exception as e:
         logger.warning(f"Failed to inject gallery ref images: {e}")
+
+    # --- Inject scene images as ref_images for shots with scene_id ---
+    try:
+        all_scenes = {s["id"]: s for s in db.list_scenes(drama_id)} if drama_id else {}
+        for shot in shots:
+            scene_id = shot.get("scene_id")
+            if not scene_id:
+                continue
+            scene = all_scenes.get(scene_id)
+            if not scene:
+                continue
+            scene_img = scene.get("image_url", "")
+            if scene_img and os.path.isfile(scene_img):
+                existing_refs = shot.get("ref_images", [])
+                if scene_img not in existing_refs:
+                    # Scene image goes FIRST (highest priority for establishing the shot)
+                    shot["ref_images"] = [scene_img] + existing_refs[:2]  # max 3 total
+                    logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected scene image from scene {scene_id}")
+    except Exception as e:
+        logger.warning(f"Failed to inject scene ref images: {e}")
 
     # Inject aspect ratio from drama metadata
     try:

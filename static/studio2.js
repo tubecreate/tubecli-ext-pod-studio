@@ -1315,6 +1315,7 @@ function renderExtractResults(data) {
                     </div>
                     <div class="ref-card-actions">
                         <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();triggerSceneRefUpload(${s.id})" title="Upload scene image">📷 Upload</button>
+                        <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();generateSceneRefAI(${s.id})" title="Generate with Grok AI" id="btnGenScene${s.id}">🎨 AI Gen</button>
                     </div>
                 </div>
             `;
@@ -1591,43 +1592,7 @@ function _closeCharGenProfileModal() {
     _charGenSelectedProfile = null;
 }
 
-async function _confirmCharGenProfile() {
-    const profile = _charGenSelectedProfile;
-    const charId = _charGenPendingCharId;
-
-    if (!profile || !charId) return;
-
-    // Save to localStorage if checkbox checked
-    const saveCheck = document.getElementById('charGenProfileSaveCheck');
-    if (saveCheck && saveCheck.checked) {
-        localStorage.setItem('cs_last_browser_profile', profile);
-    }
-
-    // Close modal
-    const modal = document.getElementById('charGenProfileModal');
-    if (modal) modal.style.display = 'none';
-
-    // Find char for display
-    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
-
-    const btn = document.getElementById(`btnGenChar${charId}`);
-    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
-
-    try {
-        const res = await apiFetch(`/characters/${charId}/generate-ref`, {
-            method: 'POST',
-            body: JSON.stringify({ profile_name: profile }),
-        });
-
-        if (res.task_id) {
-            toast(`🎨 Đang tạo ảnh nhân vật "${char?.name || charId}"...`, 'info');
-            _pollCharGenStatus(res.task_id, charId, btn);
-        }
-    } catch(e) {
-        toast('AI Generate failed: ' + e.message, 'error');
-        if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
-    }
-}
+// _confirmCharGenProfile is defined below — unified version handles both char and scene gen
 
 
 function _pollCharGenStatus(taskId, charId, btn) {
@@ -1663,6 +1628,131 @@ function _pollCharGenStatus(taskId, charId, btn) {
                 } else if (msg.includes('Input box not found')) {
                     toast('❌ Grok đổi giao diện — không tìm thấy ô nhập. Báo lại để cập nhật.', 'error');
                 } else if (msg.includes('Timeout')) {
+                    toast('⏱ Grok không tạo ảnh trong thời gian chờ. Thử lại sau.', 'error');
+                } else {
+                    toast(`❌ Gen thất bại: ${msg || 'Lỗi không xác định'}`, 'error');
+                }
+            }
+        } catch(e) {
+            // Ignore poll errors
+        }
+    }, 3000);
+}
+
+// ── Scene AI Image Generation ──────────────────────────────
+async function generateSceneRefAI(sceneId) {
+    const scene = (window.currentDramaScenes || []).find(s => s.id === sceneId);
+    if (!scene) { toast('Scene not found', 'error'); return; }
+    if (!scene.location || !scene.location.trim()) {
+        toast(`Scene has no location description`, 'error');
+        return;
+    }
+    // Reuse the same profile picker modal as character gen
+    _sceneGenPendingSceneId = sceneId;
+    await _openCharGenProfileModal(null); // open modal, we override confirm
+    // Override the confirm action to call scene gen instead of char gen
+    _charGenPendingCharId = null; // clear char pending
+}
+
+let _sceneGenPendingSceneId = null;
+
+// Override confirm to handle scene gen when _sceneGenPendingSceneId is set
+const _origConfirmCharGen = typeof _confirmCharGenProfile === 'function' ? _confirmCharGenProfile : null;
+
+async function _confirmCharGenProfile() {
+    const profile = _charGenSelectedProfile;
+    
+    // Handle scene gen if pending
+    if (_sceneGenPendingSceneId && profile) {
+        const sceneId = _sceneGenPendingSceneId;
+        _sceneGenPendingSceneId = null;
+        
+        const saveCheck = document.getElementById('charGenProfileSaveCheck');
+        if (saveCheck && saveCheck.checked) {
+            localStorage.setItem('cs_last_browser_profile', profile);
+        }
+        
+        const modal = document.getElementById('charGenProfileModal');
+        if (modal) modal.style.display = 'none';
+        
+        const scene = (window.currentDramaScenes || []).find(s => s.id === sceneId);
+        const btn = document.getElementById(`btnGenScene${sceneId}`);
+        if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
+        
+        try {
+            const res = await apiFetch(`/scenes/${sceneId}/generate-ref`, {
+                method: 'POST',
+                body: JSON.stringify({ profile_name: profile }),
+            });
+            
+            if (res.task_id) {
+                toast(`🎨 Đang tạo ảnh cảnh "${scene?.location || sceneId}"...`, 'info');
+                _pollSceneGenStatus(res.task_id, sceneId, btn);
+            }
+        } catch(e) {
+            toast('AI Generate failed: ' + e.message, 'error');
+            if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+        }
+        return;
+    }
+    
+    // Original char gen flow
+    const charId = _charGenPendingCharId;
+    if (!profile || !charId) return;
+    
+    const saveCheck = document.getElementById('charGenProfileSaveCheck');
+    if (saveCheck && saveCheck.checked) {
+        localStorage.setItem('cs_last_browser_profile', profile);
+    }
+    
+    const modal = document.getElementById('charGenProfileModal');
+    if (modal) modal.style.display = 'none';
+    
+    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    const btn = document.getElementById(`btnGenChar${charId}`);
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
+    
+    try {
+        const res = await apiFetch(`/characters/${charId}/generate-ref`, {
+            method: 'POST',
+            body: JSON.stringify({ profile_name: profile }),
+        });
+        
+        if (res.task_id) {
+            toast(`🎨 Đang tạo ảnh nhân vật "${char?.name || charId}"...`, 'info');
+            _pollCharGenStatus(res.task_id, charId, btn);
+        }
+    } catch(e) {
+        toast('AI Generate failed: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+    }
+}
+
+function _pollSceneGenStatus(taskId, sceneId, btn) {
+    let polls = 0;
+    const maxPolls = 50;
+    
+    const interval = setInterval(async () => {
+        polls++;
+        if (polls > maxPolls) {
+            clearInterval(interval);
+            if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+            toast('⏱ Quá thời gian chờ (150s)', 'error');
+            return;
+        }
+        
+        try {
+            const status = await apiFetch(`/generate-status/${taskId}`);
+            if (status.status === 'done') {
+                clearInterval(interval);
+                if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+                toast('✅ Đã tạo ảnh cảnh thành công!', 'success');
+                loadExtractData();
+            } else if (status.status === 'error') {
+                clearInterval(interval);
+                if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+                const msg = status.message || '';
+                if (msg.includes('Timeout')) {
                     toast('⏱ Grok không tạo ảnh trong thời gian chờ. Thử lại sau.', 'error');
                 } else {
                     toast(`❌ Gen thất bại: ${msg || 'Lỗi không xác định'}`, 'error');
