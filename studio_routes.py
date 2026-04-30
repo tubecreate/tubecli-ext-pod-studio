@@ -3100,7 +3100,7 @@ async def clear_episode_videos(episode_id: int):
 
 @router.post("/api/v1/studio/episodes/{episode_id}/gen-videos")
 async def start_gen_videos(episode_id: int, request: Request, background_tasks: BackgroundTasks):
-    """Start Grok video generation for an episode's storyboard shots."""
+    """Start video generation for an episode's storyboard shots. Supports engine: 'grok' (default) or 'veo3'."""
     data = await request.json()
     profile_names = data.get("profile_names")
     if not profile_names:
@@ -3109,6 +3109,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
 
     headless = data.get("headless", False)
     overwrite = data.get("overwrite", False)
+    engine = data.get("engine", "grok")  # 'grok' or 'veo3'
 
     if not profile_names:
         raise HTTPException(400, "At least one browser profile is required")
@@ -3332,7 +3333,12 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             engines_dir = os.path.join(ext_dir, "engines")
             if engines_dir not in sys.path:
                 sys.path.insert(0, engines_dir)
-            from grok_video_engine import batch_generate
+            if engine == "veo3":
+                from veo3_video_engine import batch_generate
+                logger.info("Using Veo3 (Google VideoFX) engine")
+            else:
+                from grok_video_engine import batch_generate
+                logger.info("Using Grok video engine")
 
             async def on_progress(done, total, shot_id, status, path=None, percent=0):
                 _video_tasks[task_id]["done"] = done
@@ -4174,16 +4180,21 @@ async def serve_grok_image(filename: str):
 
 @router.get("/api/v1/studio/grok-video/{filename}")
 async def serve_grok_video(filename: str):
-    """Serve a locally generated Grok video."""
+    """Serve a locally generated video (Grok or Veo3)."""
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
+        grok_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
+        veo3_dir = os.path.join(str(DATA_DIR), "content_studio", "veo3_videos")
     except Exception:
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "grok_videos")
+        base = os.path.dirname(os.path.abspath(__file__))
+        grok_dir = os.path.join(base, "outputs", "grok_videos")
+        veo3_dir = os.path.join(base, "outputs", "veo3_videos")
 
-    path = os.path.join(out_dir, filename)
-    if os.path.exists(path):
-        return FileResponse(path)
+    # Check grok_videos first, then veo3_videos
+    for d in [grok_dir, veo3_dir]:
+        p = os.path.join(d, filename)
+        if os.path.exists(p):
+            return FileResponse(p, media_type="video/mp4")
     raise HTTPException(404, "Video not found")
 
 
@@ -5296,27 +5307,104 @@ async def save_gemini_api_key(request: Request):
         raise HTTPException(400, "API key is required")
 
     try:
-        from tubecli.config import DATA_DIR
-        keys_path = os.path.join(str(DATA_DIR), "cloud_api_keys.json")
+        from tubecli.extensions.cloud_api.extension import key_manager
 
-        # Load existing keys or create new
-        keys = {}
-        if os.path.isfile(keys_path):
-            with open(keys_path, "r", encoding="utf-8") as f:
-                keys = json.load(f)
+        # Save using the proper manager to support dict format and multiple keys
+        # Auto-label: gallery_1, gallery_2, ...
+        existing = key_manager._keys.get("gemini", {})
+        if isinstance(existing, str):
+            existing = {}
+        idx = 1
+        while f"gallery_{idx}" in existing:
+            idx += 1
+        label = f"gallery_{idx}"
+        key_manager.add_key("gemini", api_key, label)
 
-        # Update gemini key
-        keys["gemini"] = api_key
-
-        # Save back
-        with open(keys_path, "w", encoding="utf-8") as f:
-            json.dump(keys, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"Gemini API key saved to {keys_path}")
-        return {"success": True, "message": "Gemini API key saved successfully"}
+        logger.info(f"Gemini API key saved via gallery modal as '{label}'")
+        return {"success": True, "message": "Gemini API key saved successfully", "label": label}
     except Exception as e:
         logger.error(f"Failed to save Gemini API key: {e}")
         raise HTTPException(500, f"Failed to save API key: {str(e)}")
+
+
+@router.get("/api/v1/studio/gallery/list-gemini-keys")
+async def list_gemini_keys():
+    """List all saved Gemini API keys (masked) with active status."""
+    try:
+        from tubecli.extensions.cloud_api.extension import key_manager
+        key_manager._load()
+        entries = key_manager._keys.get("gemini", {})
+
+        # Handle legacy string format
+        if isinstance(entries, str) and entries:
+            masked = entries[:8] + "..." + entries[-4:] if len(entries) > 12 else "***"
+            return {"keys": [{"label": "default", "masked_key": masked, "active": True}]}
+
+        if not isinstance(entries, dict):
+            return {"keys": []}
+
+        result = []
+        for label, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            key_val = entry.get("key", "")
+            masked = key_val[:8] + "..." + key_val[-4:] if len(key_val) > 12 else "***"
+            result.append({
+                "label": label,
+                "masked_key": masked,
+                "active": entry.get("active", False),
+                "added_at": entry.get("added_at", ""),
+            })
+        return {"keys": result}
+    except Exception as e:
+        logger.error(f"Failed to list Gemini keys: {e}")
+        return {"keys": []}
+
+
+@router.post("/api/v1/studio/gallery/set-active-gemini-key")
+async def set_active_gemini_key(request: Request):
+    """Set a specific Gemini key label as the active one (deactivate others)."""
+    data = await request.json()
+    target_label = data.get("label", "").strip()
+    if not target_label:
+        raise HTTPException(400, "Label is required")
+
+    try:
+        from tubecli.extensions.cloud_api.extension import key_manager
+        key_manager._load()
+        entries = key_manager._keys.get("gemini", {})
+        if not isinstance(entries, dict) or target_label not in entries:
+            raise HTTPException(404, f"Key '{target_label}' not found")
+
+        # Deactivate all, then activate the target
+        for label, entry in entries.items():
+            if isinstance(entry, dict):
+                entry["active"] = (label == target_label)
+        key_manager._save()
+        logger.info(f"Active Gemini key set to '{target_label}'")
+        return {"success": True, "message": f"Active key changed to '{target_label}'"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set active Gemini key: {e}")
+        raise HTTPException(500, f"Failed: {str(e)}")
+
+
+@router.post("/api/v1/studio/gallery/delete-gemini-key")
+async def delete_gemini_key(request: Request):
+    """Delete a specific Gemini key by label."""
+    data = await request.json()
+    target_label = data.get("label", "").strip()
+    if not target_label:
+        raise HTTPException(400, "Label is required")
+
+    try:
+        from tubecli.extensions.cloud_api.extension import key_manager
+        result = key_manager.remove_key("gemini", target_label)
+        return {"success": result.get("status") == "success", "message": result.get("message", "")}
+    except Exception as e:
+        logger.error(f"Failed to delete Gemini key: {e}")
+        raise HTTPException(500, f"Failed: {str(e)}")
 
 
 @router.post("/api/v1/studio/gallery/analyze-image")
@@ -5373,14 +5461,10 @@ async def analyze_gallery_image(request: Request):
         filepath = image_path
 
     if not api_key:
-        # Try to get from workspace config
+        # Try to get from KeyManager
         try:
-            from tubecli.config import DATA_DIR
-            keys_path = os.path.join(str(DATA_DIR), "cloud_api_keys.json")
-            if os.path.isfile(keys_path):
-                with open(keys_path, "r") as f:
-                    keys = json.load(f)
-                api_key = keys.get("gemini", "")
+            from tubecli.extensions.cloud_api.extension import key_manager
+            api_key = key_manager.get_active_key("gemini")
         except Exception:
             pass
 

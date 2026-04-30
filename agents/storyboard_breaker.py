@@ -86,6 +86,7 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
 11. If the shot does not feature any characters, or no characters in the Context fit the scene, leave `character_names` EMPTY (`[]`). Do not force characters into empty/environmental shots.
 12. DURATION CAP: Each shot MUST have `duration` <= 15 seconds. If a scene contains more than ~15 seconds of narration text (roughly 40-50 words), you MUST split that scene into multiple shots with suffixed titles (e.g. "Nightmare Awakening (Part 1)", "Nightmare Awakening (Part 2)"). Distribute the narration_text evenly across the sub-shots. Each sub-shot inherits the same characters, location, and atmosphere.
 13. Output ONLY the JSON, no other text.
+14. ANATOMY RULES: To prevent deformed AI characters, if a shot contains characters, you MUST append this exact phrase to the end of the `image_prompt`: ", perfect anatomy, no mutations, no extra limbs, no missing limbs, exactly two arms, exactly two legs, single head, high quality". Do NOT add this to scenery-only shots.
 
 ### Gallery Asset & Effect Targeting
 - The Context may include `visual_assets` (charts, infographics, diagrams) and `visual_effects` (holograms, overlays, thought bubbles).

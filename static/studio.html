@@ -307,7 +307,7 @@
                                     </button>
                                     <button class="btn btn-sm" id="btnGenVideos" onclick="openGenVideosDialog()">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-                                        Gen Videos (Grok)
+                                        Gen Videos
                                     </button>
                                 </div>
                             </div>
@@ -814,8 +814,26 @@
                                 <button class="btn btn-primary" style="width:100%; justify-content:center; background:linear-gradient(135deg, #10b981, #3b82f6); border:none;" onclick="analyzeGalleryImage()">
                                     ✨ Auto-Fill Info
                                 </button>
+                                <button class="btn btn-outline" style="width:100%; justify-content:center; font-size:12px; padding:6px 10px;" onclick="toggleGeminiKeyPanel()">
+                                    🔑 Đổi API Key
+                                </button>
+                                <div style="font-size:11px; color:var(--text-2); text-align:center; line-height:1.4;">
+                                    *Lưu ý: Nếu nhận thông báo "High Demand" (Quá tải), vui lòng chờ 5s và bấm thử lại.
+                                </div>
                             </div>
                             <div id="galItemAnalyzeStatus" style="font-size:12px; color:var(--accent); text-align:center; display:none;">Analyzing image...</div>
+
+                            <!-- Gemini Key Management Panel (hidden by default) -->
+                            <div id="geminiKeyPanel" style="display:none; margin-top:8px; border:1px solid var(--border); border-radius:10px; background:var(--bg-1); overflow:hidden;">
+                                <div style="padding:10px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+                                    <span style="font-size:12px; font-weight:600; color:var(--text-1);">🔑 Gemini API Keys</span>
+                                    <button class="btn btn-outline" style="font-size:11px; padding:3px 8px;" onclick="showGeminiKeyModal()">+ Thêm Key</button>
+                                </div>
+                                <div id="geminiKeyList" style="max-height:180px; overflow-y:auto; padding:6px;"></div>
+                                <div id="geminiKeyEmpty" style="padding:14px; text-align:center; font-size:12px; color:var(--text-3); display:none;">
+                                    Chưa có key nào. Nhấn <b>+ Thêm Key</b> để bắt đầu.
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Right: Info -->
@@ -1390,8 +1408,18 @@
                                 </div>
                             </label>
                             
+                            <label class="field" style="flex:0.7;">
+                                <span class="field-label">🎬 Video Engine</span>
+                                <div class="select-wrapper">
+                                    <select id="wizVideoEngine" class="input" onchange="onVideoEngineChange()">
+                                        <option value="grok">🤖 Grok Video</option>
+                                        <option value="veo3">🎬 Veo3 (Google)</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
                             <label class="field" style="flex:1;">
-                                <span class="field-label">🌐 Browser Profiles (Grok Gen)</span>
+                                <span class="field-label" id="wizBrowserLabel">🌐 Browser Profiles (Grok Gen)</span>
                                 <div class="chip-select" id="wizBrowserChipSelect">
                                     <span class="chip-select-empty" id="wizBrowserChipEmpty">Click + to add browsers</span>
                                     <!-- chips render here -->
@@ -1557,11 +1585,18 @@
         <div class="modal-overlay" id="genVideosModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
             <div class="modal" style="width:500px;">
                 <div class="modal-header">
-                    <h2 class="modal-title">🎞 Generate Videos with Grok</h2>
+                    <h2 class="modal-title" id="genVidModalTitle">🎞 Generate Videos</h2>
                 </div>
                 <div class="modal-form">
                     <label class="field">
-                        <span class="field-label">Browser Profile (Chrome đã login Grok)</span>
+                        <span class="field-label">🎬 Video Engine</span>
+                        <select id="genVidEngine" class="input" onchange="onGenVidEngineChange()">
+                            <option value="grok">🤖 Grok Video</option>
+                            <option value="veo3">🎬 Veo3 (Google VideoFX)</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label" id="genVidProfileLabel">Browser Profile (Chrome đã login)</span>
                         <select id="genVidProfile" class="input" multiple size="4" style="height: 100px;">
                             <option value="">Đang load profiles...</option>
                         </select>

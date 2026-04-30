@@ -1,0 +1,733 @@
+#!/usr/bin/env node
+/**
+ * veo3_video.js — Generate videos from Google Veo3 (VideoFX Flow) using TubeCLI browser profile.
+ * Processes multiple shots using labs.google/fx/vi/tools/flow with Playwright automation.
+ * 
+ * Usage: node veo3_video.js --profile <name> --shots-file <path> [--profiles-dir <path>] [--headless] [--timeout <seconds>]
+ * 
+ * Output: JSON lines on stdout for each shot result:
+ *   { "status": "generating", "shot_id": <id>, "percent": <0-100> }
+ *   { "status": "success", "shot_id": <id>, "path": "<output_path>" }
+ *   { "status": "error", "shot_id": <id>, "message": "<reason>" }
+ */
+
+const minimist = require('minimist');
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('playwright');
+
+const args = minimist(process.argv.slice(2));
+const profileName = args.profile || args.p;
+const shotsFile = args['shots-file'];
+const profilesDir = args['profiles-dir'] || path.join(__dirname, '..', '..', '..', '..', 'data', 'browser_profiles');
+const headless = args.headless === true || args.headless === 'true';
+const timeout = parseInt(args.timeout || '300') * 1000; // 5 minutes default (Veo3 is slower)
+
+// Configure antidetect browser engine path
+const browserExtDir = path.join(__dirname, '..', '..', '..', '..', 'tubecli', 'extensions', 'browser');
+
+const VEO3_FLOW_URL = 'https://labs.google/fx/vi/tools/flow';
+
+if (!profileName || !shotsFile) {
+    console.error(JSON.stringify({ status: 'error', message: 'Required: --profile, --shots-file' }));
+    process.exit(1);
+}
+
+let shots = [];
+try {
+    shots = JSON.parse(fs.readFileSync(shotsFile, 'utf-8'));
+} catch (e) {
+    console.error(JSON.stringify({ status: 'error', message: 'Could not read shots-file' }));
+    process.exit(1);
+}
+
+const profileDir = path.join(profilesDir, profileName);
+const cookiesPath = path.join(profileDir, 'cookies.json');
+const storageDir = profileDir;
+
+if (!fs.existsSync(profileDir)) {
+    console.error(JSON.stringify({ status: 'error', message: `Profile "${profileName}" not found at ${profileDir}` }));
+    process.exit(1);
+}
+
+function log(msg) {
+    process.stderr.write('[Veo3Video] ' + msg + '\n');
+}
+
+async function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+}
+
+(async () => {
+    log(`Profile: ${profileName}, Processing ${shots.length} shots for Veo3 video.`);
+
+    // Cleanup stale lock files
+    const lockFiles = [
+        path.join(storageDir, 'SingletonLock'),
+        path.join(storageDir, 'SingletonSocket'),
+        path.join(storageDir, 'SingletonCookie'),
+        path.join(storageDir, 'Default', 'LOCK'),
+    ];
+    for (const lf of lockFiles) {
+        try {
+            if (fs.existsSync(lf)) {
+                fs.unlinkSync(lf);
+                log(`Removed stale lock: ${path.basename(lf)}`);
+            }
+        } catch (e) {}
+    }
+
+    log('Launching browser...');
+    const context = await chromium.launchPersistentContext(storageDir, {
+        channel: 'chrome',
+        headless,
+        args: ['--no-sandbox', '--test-type', '--disable-blink-features=AutomationControlled', '--window-size=1280,900'],
+        ignoreDefaultArgs: ['--enable-automation'],
+        viewport: { width: 1280, height: 800 },
+    });
+
+    if (fs.existsSync(cookiesPath)) {
+        try {
+            const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf-8'));
+            if (Array.isArray(cookies) && cookies.length > 0) await context.addCookies(cookies);
+        } catch (e) {}
+    }
+
+    const page = context.pages()[0] || await context.newPage();
+    
+    // Intercept video responses from Veo3 CDN
+    let capturedVideoUrl = null;
+    page.on('response', async (response) => {
+        const url = response.url();
+        const ct = response.headers()['content-type'] || '';
+        
+        // Veo3 videos come from the media API
+        // Pattern: /fx/api/trpc/media.getMediaUrlRedirect?name=<uuid>
+        // Or direct video content
+        const isVideoContent = ct.startsWith('video/') || (url.includes('.mp4') && !url.includes('_next/'));
+        const isVeoMedia = url.includes('media.getMediaUrlRedirect') || url.includes('media.getMedia');
+        
+        if (isVideoContent || isVeoMedia) {
+            if (ct.startsWith('video/') || url.includes('.mp4')) {
+                capturedVideoUrl = url;
+                log('*** CAPTURED VIDEO URL: ' + url.substring(0, 150));
+            }
+        }
+    });
+
+    try {
+        // Navigate to Flow and create new project for this batch
+        log('Navigating to Veo3 Flow...');
+        await page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await sleep(4000);
+
+        // Check for landing page "Create with Flow" button
+        try {
+            const landingBtn = page.locator('button:has-text("Create with Flow"), button:has-text("Tạo bằng Flow"), a:has-text("Create with Flow")').first();
+            if (await landingBtn.isVisible({ timeout: 2000 })) {
+                log('Landing page detected, clicking Create with Flow...');
+                await landingBtn.click();
+                await sleep(5000);
+            }
+        } catch (e) {}
+
+        // Check if logged in
+        if (page.url().includes('accounts.google.com') || page.url().includes('signin')) {
+            log('Not logged into Google. Attempting auto-login...');
+            
+            // Read credentials from profile config.json
+            const configPath = path.join(profileDir, 'config.json');
+            let googleCreds = null;
+            try {
+                const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+                googleCreds = config.google_account;
+            } catch (e) {
+                log('Could not read config.json: ' + e.message);
+            }
+            
+            if (googleCreds && googleCreds.email && googleCreds.password) {
+                log(`Auto-login with account: ${googleCreds.email}`);
+                try {
+                    // Use the shared login module from browser extension
+                    const loginModule = await import(
+                        'file:///' + path.join(browserExtDir, 'actions', 'login.js').replace(/\\/g, '/')
+                    );
+                    await loginModule.login(page, {
+                        email: googleCreds.email,
+                        password: googleCreds.password,
+                        recoveryEmail: googleCreds.recoveryEmail || '',
+                        twoFactorCodes: googleCreds.twoFactorCodes || '',
+                        platform: 'google'
+                    });
+                    log('Login completed via shared login module.');
+                } catch (loginErr) {
+                    log('Auto-login error: ' + loginErr.message);
+                }
+                
+                // Wait for login to complete (redirect away from accounts.google.com)
+                let loginWaitAttempts = 0;
+                while (page.url().includes('accounts.google.com') || page.url().includes('signin')) {
+                    await sleep(2000);
+                    loginWaitAttempts++;
+                    if (loginWaitAttempts > 30) {
+                        log('Auto-login may have stalled. Waiting for manual intervention...');
+                        break;
+                    }
+                }
+            } else {
+                log('No Google credentials found in profile config.');
+                
+                // Attempt to click an existing account on the 'Choose an account' screen
+                try {
+                    const accountLink = page.locator('div[data-email], li div[role="link"]:has-text("@")').first();
+                    if (await accountLink.isVisible({ timeout: 2000 })) {
+                        log('Found an existing account on screen, clicking it...');
+                        await accountLink.click();
+                        await sleep(3000);
+                        
+                        // Check if it asks for a password
+                        const passInput = page.locator('input[type="password"]');
+                        if (await passInput.isVisible({ timeout: 2000 })) {
+                            log('Password required. Waiting for manual intervention...');
+                        } else {
+                            log('No password required, proceeding...');
+                        }
+                    }
+                } catch (e) {}
+
+                let loginWaitAttempts = 0;
+                while (page.url().includes('accounts.google.com') || page.url().includes('signin')) {
+                    await sleep(2000);
+                    loginWaitAttempts++;
+                    if (loginWaitAttempts > 150) {
+                        throw new Error('Timeout waiting for manual login (5 minutes).');
+                    }
+                }
+            }
+            
+            // Ensure we land on the right page after login
+            log('Login complete! Ensuring we are on Flow...');
+            if (!page.url().includes('tools/flow')) {
+                await page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            }
+            await sleep(4000);
+            
+            // Try clicking the landing button again if we just logged in
+            try {
+                const landingBtn = page.locator('button:has-text("Create with Flow"), button:has-text("Tạo bằng Flow"), a:has-text("Create with Flow")').first();
+                if (await landingBtn.isVisible({ timeout: 2000 })) {
+                    log('Landing page detected again, clicking Create with Flow...');
+                    await landingBtn.click();
+                    await sleep(5000);
+                }
+            } catch (e) {}
+        }
+
+        // Create new project
+        log('Creating new project...');
+        try {
+            const newProjectBtn = page.locator('button:has-text("Dự án mới"), button:has-text("New project")').first();
+            if (await newProjectBtn.isVisible({ timeout: 5000 })) {
+                await newProjectBtn.click();
+                await sleep(3000);
+                log('New project created');
+            } else {
+                // Maybe already in a project, check for prompt input
+                const promptInput = page.locator('textarea, div[contenteditable="true"], input[placeholder*="tạo"], input[placeholder*="create"]').first();
+                if (await promptInput.isVisible({ timeout: 3000 })) {
+                    log('Already in a project view');
+                } else {
+                    log('Creating project via alternative method...');
+                    // Click the "+" button in the top bar
+                    const addBtn = page.locator('button:has(i:text("add_2"))').first();
+                    if (await addBtn.isVisible({ timeout: 2000 })) {
+                        await addBtn.click();
+                        await sleep(3000);
+                    }
+                }
+            }
+        } catch (e) {
+            log('Project creation: ' + e.message);
+        }
+
+        // Setup global download listener to catch both automated and manual downloads
+        let currentShotOutput = null;
+        let videoSaved = false;
+        
+        page.on('download', async (download) => {
+            if (!currentShotOutput) return;
+            log('Download event captured (Automated or Manual)!');
+            try {
+                fs.mkdirSync(path.dirname(currentShotOutput), { recursive: true });
+                await download.saveAs(currentShotOutput);
+                if (fs.existsSync(currentShotOutput) && fs.statSync(currentShotOutput).size > 10000) {
+                    videoSaved = true;
+                    log(`Video successfully saved to ${currentShotOutput}`);
+                }
+            } catch(e) {
+                log('Error saving intercepted download: ' + e.message);
+            }
+        });
+
+        // Process each shot
+        for (let idx = 0; idx < shots.length; idx++) {
+            const shot = shots[idx];
+            log(`--- Shot ${shot.id} [${idx + 1}/${shots.length}] ---`);
+            capturedVideoUrl = null;
+            currentShotOutput = shot.output;
+            videoSaved = false;
+
+            // Configure settings (Mode & Aspect ratio)
+            try {
+                await _configureSettings(page, shot.aspect_ratio || '9:16');
+            } catch (e) {
+                log('Could not configure settings: ' + e.message);
+            }
+
+            // Upload reference images (if any)
+            const refImages = shot.ref_images || [];
+            if (refImages.length > 0) {
+                await _uploadRefImages(page, refImages);
+            }
+
+            // Find and fill the prompt input
+            let inputEl = null;
+            try {
+                await sleep(1000);
+                
+                // Try multiple selectors for the prompt input
+                const inputSelectors = [
+                    'textarea[placeholder*="tạo"]',
+                    'textarea[placeholder*="create"]',
+                    'textarea[placeholder*="muốn"]',
+                    'textarea',
+                    'div[contenteditable="true"]',
+                ];
+                
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    for (const sel of inputSelectors) {
+                        try {
+                            const el = page.locator(sel).last();
+                            if (await el.isVisible({ timeout: 1500 })) {
+                                inputEl = el;
+                                break;
+                            }
+                        } catch (e) {}
+                    }
+                    if (inputEl) break;
+                    log('Waiting for input box...');
+                    await sleep(2000);
+                }
+
+                if (!inputEl) throw new Error('Input box not found');
+
+                await inputEl.click();
+                await sleep(500);
+
+                // Clear existing text
+                await inputEl.fill('');
+                await sleep(200);
+
+                // Build prompt with aspect ratio hint
+                let promptClean = shot.prompt.replace(/\n+/g, ' ').trim();
+                const aspectRatio = shot.aspect_ratio || '9:16';
+                if (!promptClean.includes('aspect ratio') && !promptClean.includes('16:9') && !promptClean.includes('9:16')) {
+                    const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
+                    promptClean += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
+                }
+
+                try {
+                    await inputEl.fill(promptClean);
+                } catch (e) {
+                    await page.keyboard.type(promptClean, { delay: 5 });
+                }
+                await sleep(1000);
+
+                // Submit the prompt
+                log('Submitting prompt...');
+                let submitted = false;
+
+                // Method 1: Click the arrow submit button (the → icon button)
+                try {
+                    const submitBtn = page.locator('button:has(i:text("arrow_forward"))').last();
+                    if (await submitBtn.isVisible({ timeout: 2000 })) {
+                        await submitBtn.click();
+                        submitted = true;
+                        log('Submitted via arrow_forward button');
+                    }
+                } catch (e) {}
+
+                // Method 2: Try the Tạo (Create) button
+                if (!submitted) {
+                    try {
+                        const createBtn = page.locator('button[aria-label*="Tạo"], button[aria-label*="Create"], button:has-text("Tạo")').last();
+                        if (await createBtn.isVisible({ timeout: 1000 })) {
+                            await createBtn.click();
+                            submitted = true;
+                            log('Submitted via Create button');
+                        }
+                    } catch (e) {}
+                }
+
+                // Method 3: Enter key
+                if (!submitted) {
+                    try {
+                        await inputEl.press('Enter');
+                        log('Submitted via Enter key');
+                    } catch (e) {
+                        await page.keyboard.press('Enter');
+                    }
+                }
+
+                log('Prompt submitted. Waiting for video generation...');
+                capturedVideoUrl = null; // Reset after submit
+
+            } catch (e) {
+                console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'Could not submit prompt: ' + e.message }));
+                continue;
+            }
+
+            // Wait for video generation
+            let deadline = Date.now() + timeout;
+            let lastPercent = 0;
+            
+            while (Date.now() < deadline) {
+                await sleep(5000);
+
+                // Check for errors / rate limits
+                try {
+                    const errorText = await page.evaluate(() => {
+                        const text = document.body.innerText.toLowerCase();
+                        if (text.includes('rate limit') || text.includes('giới hạn')) return 'RATE_LIMIT';
+                        if (text.includes('error') && text.includes('generation')) return 'GEN_ERROR';
+                        if (text.includes('lỗi') && text.includes('tạo')) return 'GEN_ERROR';
+                        return null;
+                    });
+                    
+                    if (errorText === 'RATE_LIMIT') {
+                        console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'RATE_LIMIT_REACHED' }));
+                        log('Rate limit detected. Aborting.');
+                        await context.close();
+                        process.exit(1);
+                    }
+                } catch (e) {}
+
+                // Check if video is being generated (loading/progress indicators)
+                let isGenerating = false;
+                try {
+                    isGenerating = await page.evaluate(() => {
+                        // Check for spinning/loading indicators
+                        const spinners = document.querySelectorAll('[class*="spinner"], [class*="loading"], [class*="progress"]');
+                        if (spinners.length > 0) return true;
+                        // Check for generation status text
+                        const text = document.body.innerText;
+                        if (text.includes('Đang tạo') || text.includes('Generating') || text.includes('Processing')) return true;
+                        return false;
+                    });
+                } catch (e) {}
+
+                if (isGenerating) {
+                    lastPercent = Math.min(lastPercent + 5, 90);
+                    console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: lastPercent }));
+                    log(`Still generating... ~${lastPercent}%`);
+                    continue;
+                }
+
+                // Strategy 1: UI Download via Context Menu + Network Interception
+                if (!videoSaved) {
+                    try {
+                        const latestTile = page.locator('[data-tile-id]').first();
+                        if (await latestTile.isVisible({ timeout: 1000 })) {
+                            log('Strategy 1: Opening context menu on latest tile...');
+                            
+                            // Setup network interceptor to catch the download URL
+                            let downloadUrl = null;
+                            const downloadHandler = async (response) => {
+                                const url = response.url();
+                                const ct = response.headers()['content-type'] || '';
+                                if (ct.startsWith('video/') || (url.includes('.mp4') && !url.includes('_next/'))) {
+                                    downloadUrl = url;
+                                    log('*** Network intercepted download URL: ' + url.substring(0, 150));
+                                }
+                            };
+                            page.on('response', downloadHandler);
+                            
+                            // Method A: Try right-click on the tile
+                            await latestTile.click({ button: 'right' });
+                            await sleep(2000);
+                            
+                            // Check if context menu appeared by looking for "Tải xuống" text anywhere
+                            let downloadItem = page.locator('text="Tải xuống"').first();
+                            let menuOpened = false;
+                            try {
+                                menuOpened = await downloadItem.isVisible({ timeout: 2000 });
+                            } catch(e) {}
+                            
+                            // Method B: If right-click didn't work, try the 3-dot (more_vert) button
+                            if (!menuOpened) {
+                                log('Right-click menu not found, trying 3-dot button...');
+                                await page.keyboard.press('Escape');
+                                await sleep(500);
+                                // Hover the tile first to make the 3-dot button appear
+                                await latestTile.hover();
+                                await sleep(1000);
+                                const moreBtn = latestTile.locator('button:has(i:text("more_vert")), button[aria-label*="menu"], button[aria-label*="More"]').first();
+                                try {
+                                    if (await moreBtn.isVisible({ timeout: 2000 })) {
+                                        await moreBtn.click();
+                                        await sleep(2000);
+                                        try {
+                                            menuOpened = await downloadItem.isVisible({ timeout: 2000 });
+                                        } catch(e) {}
+                                    }
+                                } catch(e) {}
+                            }
+                            
+                            if (menuOpened) {
+                                log('Context menu visible. Hovering "Tải xuống"...');
+                                await downloadItem.hover();
+                                await sleep(2000);
+                                
+                                // Now look for 720p in the sub-menu
+                                const res720 = page.locator('text="720p"').first();
+                                let found720 = false;
+                                try {
+                                    found720 = await res720.isVisible({ timeout: 3000 });
+                                } catch(e) {}
+                                
+                                if (found720) {
+                                    log('Found 720p option, hovering then clicking...');
+                                    await res720.hover();
+                                    await sleep(500);
+                                    await res720.click();
+                                    log('Clicked 720p! Waiting for download...');
+                                    
+                                    // Wait for either: download event, network intercept, or captured URL
+                                    for (let w = 0; w < 30; w++) {
+                                        if (videoSaved || downloadUrl) break;
+                                        await sleep(1000);
+                                    }
+                                    
+                                    // If global download listener caught it, we're done
+                                    if (videoSaved) {
+                                        log('Video saved by global download listener!');
+                                    }
+                                    // If network intercepted a URL, download it manually
+                                    else if (downloadUrl) {
+                                        log('Downloading from intercepted URL: ' + downloadUrl.substring(0, 150));
+                                        try {
+                                            fs.mkdirSync(path.dirname(shot.output), { recursive: true });
+                                            const vidResp = await page.request.get(downloadUrl);
+                                            if (vidResp.ok()) {
+                                                fs.writeFileSync(shot.output, await vidResp.body());
+                                                if (fs.statSync(shot.output).size > 10000) {
+                                                    videoSaved = true;
+                                                    log('Video downloaded from network URL!');
+                                                }
+                                            }
+                                        } catch(e) {
+                                            log('Network download failed: ' + e.message);
+                                        }
+                                    }
+                                    // Check capturedVideoUrl from the existing response listener
+                                    else if (capturedVideoUrl) {
+                                        log('Downloading from captured CDN URL: ' + capturedVideoUrl.substring(0, 150));
+                                        try {
+                                            fs.mkdirSync(path.dirname(shot.output), { recursive: true });
+                                            const vidResp = await page.request.get(capturedVideoUrl);
+                                            if (vidResp.ok()) {
+                                                fs.writeFileSync(shot.output, await vidResp.body());
+                                                if (fs.statSync(shot.output).size > 10000) {
+                                                    videoSaved = true;
+                                                    log('Video downloaded from CDN URL!');
+                                                }
+                                            }
+                                        } catch(e) {
+                                            log('CDN download failed: ' + e.message);
+                                        }
+                                    } else {
+                                        log('No download detected after clicking 720p.');
+                                    }
+                                } else {
+                                    log('720p option not visible in sub-menu.');
+                                    await page.keyboard.press('Escape');
+                                }
+                            } else {
+                                log('Could not open context menu on tile.');
+                            }
+                            
+                            // Cleanup handler
+                            page.removeListener('response', downloadHandler);
+                        }
+                    } catch (e) {
+                        log('Strategy 1 failed: ' + e.message);
+                        try { await page.keyboard.press('Escape'); } catch(x) {}
+                    }
+                }
+
+                // Strategy 2: Blob extraction (Fallback)
+                if (!videoSaved) {
+                    try {
+                        const videoBase64 = await page.evaluate(async () => {
+                            const videos = document.querySelectorAll('video');
+                            for (const vid of videos) {
+                                if (vid.src && vid.src.startsWith('blob:')) {
+                                    try {
+                                        const resp = await fetch(vid.src);
+                                        const blob = await resp.blob();
+                                        if (blob.size < 10000) continue;
+                                        const reader = new FileReader();
+                                        return await new Promise((resolve) => {
+                                            reader.onload = () => resolve(reader.result.split(',')[1]);
+                                            reader.readAsDataURL(blob);
+                                        });
+                                    } catch (e) {}
+                                }
+                            }
+                            return null;
+                        });
+
+                        if (videoBase64) {
+                            fs.mkdirSync(path.dirname(shot.output), { recursive: true });
+                            fs.writeFileSync(shot.output, Buffer.from(videoBase64, 'base64'));
+                            if (fs.statSync(shot.output).size > 10000) {
+                                videoSaved = true;
+                                log('Strategy 2: Blob video saved!');
+                            }
+                        }
+                    } catch (e) {}
+                }
+
+                if (videoSaved) {
+                    log('Video saved successfully!');
+                    break;
+                }
+            }
+
+            if (!videoSaved) {
+                console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'Timeout waiting for video' }));
+            } else {
+                console.log(JSON.stringify({ status: 'success', shot_id: shot.id, path: shot.output }));
+            }
+            await sleep(3000);
+        }
+
+        // Save cookies
+        try {
+            const cookies = await context.cookies();
+            fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
+        } catch (e) {}
+        await context.close();
+
+    } catch (e) {
+        log(`Error: ${e.message}`);
+        console.error(JSON.stringify({ status: 'error', message: e.message }));
+        try { await context.close(); } catch {}
+        process.exit(1);
+    }
+})();
+
+
+// ── Helper Functions ──
+
+async function _configureSettings(page, targetAR) {
+    try {
+        log('Configuring settings (Mode & Aspect Ratio)...');
+        // Click the settings chip next to the prompt input (usually says "Video", "Image", "Veo", etc.)
+        const settingsChip = page.locator('button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo")').last();
+        if (await settingsChip.isVisible({ timeout: 2000 })) {
+            await settingsChip.click();
+            await sleep(1000);
+            
+            // Now the popup is open. Look for the "Video" mode button.
+            const videoBtn = page.locator('button:has-text("Video"), div[role="button"]:has-text("Video")').filter({ hasText: /^Video$/i }).first();
+            if (await videoBtn.isVisible({ timeout: 1000 })) {
+                await videoBtn.click();
+                await sleep(500);
+            } else {
+                // Try a broader search
+                const fallbackVideoBtn = page.locator('button:has(i:text("videocam")), button:has-text("Video")').first();
+                if (await fallbackVideoBtn.isVisible()) await fallbackVideoBtn.click();
+            }
+            
+            // Now set Aspect Ratio
+            const arMap = { '4:3': '16:9', '3:4': '9:16' };
+            const ar = arMap[targetAR] || targetAR || '9:16';
+            const arBtn = page.locator(`button:has-text("${ar}"), div[role="button"]:has-text("${ar}")`).first();
+            if (await arBtn.isVisible({ timeout: 1000 })) {
+                await arBtn.click();
+                await sleep(500);
+            }
+            
+            // Close the popup
+            await page.keyboard.press('Escape');
+            await sleep(500);
+        }
+    } catch (e) {
+        log('_configureSettings error: ' + e.message);
+        try { await page.keyboard.press('Escape'); } catch(x) {}
+    }
+}
+
+
+async function _uploadRefImages(page, refImages) {
+    log(`Uploading ${refImages.length} reference image(s)...`);
+    
+    for (const imgPath of refImages) {
+        if (!fs.existsSync(imgPath)) {
+            log(`  Ref image not found, skipping: ${imgPath}`);
+            continue;
+        }
+        
+        try {
+            let uploaded = false;
+            // Click the "+" button near the prompt to open upload dialog
+            // Note: Use .last() because .first() might click the "New Project" (Dự án mới) button in the header
+            const addBtn = page.locator('button:has(i:text("add_2"))').last();
+            if (await addBtn.isVisible({ timeout: 2000 })) {
+                await addBtn.click();
+                await sleep(1500);
+                
+                // Look for upload area (the icon with text "upload")
+                const uploadArea = page.locator('i:text-is("upload")').first();
+                if (await uploadArea.isVisible({ timeout: 3000 })) {
+                    // Count existing images in prompt area to know when upload finishes
+                    const prevImgCount = await page.evaluate(() => document.querySelectorAll('img').length);
+
+                    const [fileChooser] = await Promise.all([
+                        page.waitForEvent('filechooser', { timeout: 5000 }),
+                        uploadArea.click(),
+                    ]);
+                    await fileChooser.setFiles(imgPath);
+                    uploaded = true;
+                    log(`  Uploaded ref image via dialog: ${path.basename(imgPath)}`);
+                    
+                    // Wait until the number of images increases (meaning upload finished) or 15s timeout
+                    log('  Waiting for image upload to complete...');
+                    for (let i = 0; i < 30; i++) {
+                        await sleep(500);
+                        const currentImgCount = await page.evaluate(() => document.querySelectorAll('img').length);
+                        if (currentImgCount > prevImgCount) {
+                            log('  Image successfully attached to prompt!');
+                            break;
+                        }
+                    }
+                    await sleep(1000); // Extra buffer after upload
+                } else {
+                    log(`  Upload area not found after clicking +`);
+                    try { await page.keyboard.press('Escape'); } catch(x) {}
+                }
+            } else {
+                log(`  + button for upload not found`);
+            }
+            
+            if (!uploaded) {
+                log(`  Could not upload ref image — skipping`);
+            }
+        } catch (e) {
+            log(`  Failed to upload ref image ${path.basename(imgPath)}: ${e.message}`);
+            try { await page.keyboard.press('Escape'); } catch(x) {}
+        }
+    }
+    await sleep(1000);
+}

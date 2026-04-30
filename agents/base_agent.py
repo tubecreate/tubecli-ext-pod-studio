@@ -97,6 +97,22 @@ class ContentAgent:
                 base_prompt += gallery_injection
                 logger.info(f"[extractor] Injected GALLERY-FIRST rules ({len(gallery_chars)} gallery chars available)")
 
+        # ── Anatomy Safety Injection (for storyboard_breaker) ──
+        # Appended to ALL storyboard prompts (default + skill-overridden)
+        # to prevent AI image generators from creating mutated characters.
+        if self.agent_type == "storyboard_breaker":
+            anatomy_injection = (
+                "\n\n## ANATOMY SAFETY RULES (MANDATORY)\n"
+                "When a shot contains characters/people/creatures, you MUST append this EXACT phrase "
+                "to the END of the `image_prompt`:\n"
+                '", perfect anatomy, highly detailed, no mutations, no extra limbs, no missing limbs, '
+                'exactly two arms, exactly two legs, single head, high quality"\n'
+                "Do NOT add this to scenery-only shots (no characters). "
+                "This is CRITICAL to prevent AI from generating deformed characters with extra heads, "
+                "multiple arms, or missing limbs."
+            )
+            base_prompt += anatomy_injection
+
         full_system = f"{base_prompt}\n\n## Language Requirement\n{lang_prompt}"
 
         messages = [{"role": "system", "content": full_system}]

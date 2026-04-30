@@ -2675,6 +2675,7 @@ async function startRealtimeAutoPilot() {
             const dramaData = await apiFetch(`/dramas/${pendingAutoPilotDramaId}`);
             const meta = JSON.parse(dramaData.metadata || '{}');
             if (selectedProfile) meta.browser_profile_name = selectedProfile;
+            meta.video_engine = _getVideoEngine();
             if (selectedVideoProfiles.length > 0) meta.browser_profile_names_video = selectedVideoProfiles;
             
             const vWrap = document.getElementById('wizVoiceProfileWrap');
@@ -2922,8 +2923,9 @@ async function startRealtimeAutoPilot() {
                         await loadEpisodeVideos().catch(e => {});
                     } else if (pendingVidShots.length > 0) {
                         let browserProfileNames = [];
+                        let dramaMeta = {};
                         try {
-                            const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
+                            dramaMeta = JSON.parse(currentDrama.metadata || '{}');
                             
                             if (dramaMeta.browser_profile_names_video && dramaMeta.browser_profile_names_video.length > 0) {
                                 browserProfileNames = dramaMeta.browser_profile_names_video;
@@ -2946,11 +2948,12 @@ async function startRealtimeAutoPilot() {
                         if (browserProfileNames.length === 0) {
                             toast(`⚠️ No browser profile set — skipping video gen for ${currentEpisode.title}`, "warning");
                         } else {
-                            toast(`🎞 Auto Grok video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, "info");
+                            const engineName = (dramaMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok') === 'veo3' ? 'Veo3' : 'Grok';
+                            toast(`🎞 Auto ${engineName} video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, "info");
                             
                             const genRes = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
                                 method: 'POST',
-                                body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false })
+                                body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false, engine: dramaMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok' })
                             });
                             
                             if (genRes.success) {
@@ -3927,8 +3930,68 @@ async function openGenVideosDialog() {
         document.getElementById('genVidShotCount').textContent = '?? shots';
     }
 
+    _restoreVideoEngine();
     document.getElementById('genVideosModal').style.display = 'flex';
 }
+
+// ── Video Engine Selection Functions ──
+
+function onVideoEngineChange() {
+    const engine = document.getElementById('wizVideoEngine')?.value || 'grok';
+    const label = document.getElementById('wizBrowserLabel');
+    if (label) {
+        label.textContent = engine === 'veo3' 
+            ? '\ud83c\udf10 Browser Profiles (Google login)' 
+            : '\ud83c\udf10 Browser Profiles (Grok Gen)';
+    }
+    localStorage.setItem('cs_video_engine', engine);
+}
+
+function onGenVidEngineChange() {
+    const engine = document.getElementById('genVidEngine')?.value || 'grok';
+    const title = document.getElementById('genVidModalTitle');
+    const label = document.getElementById('genVidProfileLabel');
+    if (title) {
+        title.textContent = engine === 'veo3' 
+            ? '\ud83c\udf9e Generate Videos with Veo3' 
+            : '\ud83c\udf9e Generate Videos with Grok';
+    }
+    if (label) {
+        label.textContent = engine === 'veo3'
+            ? 'Browser Profile (Chrome \u0111\u00e3 login Google)'
+            : 'Browser Profile (Chrome \u0111\u00e3 login Grok)';
+    }
+}
+
+function _getVideoEngine() {
+    // Priority: wizard dropdown > modal dropdown > drama metadata > localStorage > default
+    const wizEl = document.getElementById('wizVideoEngine');
+    if (wizEl && wizEl.value) return wizEl.value;
+    const genEl = document.getElementById('genVidEngine');
+    if (genEl && genEl.value) return genEl.value;
+    return localStorage.getItem('cs_video_engine') || 'grok';
+}
+
+function _restoreVideoEngine() {
+    // Restore engine selection from drama metadata or localStorage
+    let engine = 'grok';
+    if (currentDrama) {
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            if (meta.video_engine) engine = meta.video_engine;
+        } catch(e) {}
+    }
+    if (!engine || engine === 'grok') {
+        engine = localStorage.getItem('cs_video_engine') || 'grok';
+    }
+    const wizEl = document.getElementById('wizVideoEngine');
+    const genEl = document.getElementById('genVidEngine');
+    if (wizEl) wizEl.value = engine;
+    if (genEl) genEl.value = engine;
+    onVideoEngineChange();
+}
+
+
 
 async function startGrokVideoGen() {
     const sel = document.getElementById('genVidProfile');
@@ -3970,7 +4033,7 @@ async function startGrokVideoGen() {
     try {
         const res = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
             method: 'POST',
-            body: JSON.stringify({ profile_names: profilePaths, headless, overwrite })
+            body: JSON.stringify({ profile_names: profilePaths, headless, overwrite, engine: _getVideoEngine() })
         });
 
         if (res.success) {
@@ -3983,7 +4046,7 @@ async function startGrokVideoGen() {
             document.getElementById('vidProgressSection').style.display = 'block';
             document.getElementById('vidProgressBar').style.width = '0%';
             document.getElementById('vidProgressCount').textContent = `0 / ${res.total || 1}`;
-            document.getElementById('vidProgressLabel').textContent = 'Khởi tạo Grok Video...';
+            document.getElementById('vidProgressLabel').textContent = (_getVideoEngine() === 'veo3' ? 'Khởi tạo Veo3 Video...' : 'Khởi tạo Grok Video...');
             // Refresh grid to show cleared state (all skeleton cards in overwrite mode)
             if (overwrite) await loadEpisodeVideos().catch(e => {});
             _startGenVidPolling(res.task_id, res.total);
@@ -4326,19 +4389,30 @@ async function loadEpisodeAudio() {
         const cardClass = hasAudio ? 'audio-shot-card has-audio' : 'audio-shot-card';
         const charCount = narration.length;
         
+        const isLong = charCount > 80;
+        
         return `
             <div class="${cardClass}" id="audioCard_${shot.id}">
                 <div class="audio-shot-num">${shot.storyboard_number || idx + 1}</div>
                 <div class="audio-shot-body">
                     <div class="audio-shot-title">
                         ${esc(shot.title || 'Shot ' + (idx + 1))}
-                        ${hasAudio ? '<span style="color:#22c55e;font-size:11px;">✅</span>' : '<span style="color:var(--text-3);font-size:11px;">⏳</span>'}
+                        ${hasAudio ? '<span style="color:#22c55e;font-size:11px;">\u2705</span>' : '<span style="color:var(--text-3);font-size:11px;">\u23f3</span>'}
                         <span style="font-size:10px;color:var(--text-3);font-weight:400">${charCount} chars</span>
+                        ${isLong ? '<button onclick="toggleAudioText(this)" style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg-3);border:1px solid var(--border);color:var(--text-2);cursor:pointer;margin-left:auto;">\u25bc Xem</button>' : ''}
                     </div>
-                    <div class="audio-shot-text" onclick="this.classList.toggle('expanded')" title="Click to expand">${esc(narration) || '<i style="color:var(--text-3)">No narration text</i>'}</div>
+                    <div class="audio-shot-text" id="audioText_${shot.id}">${esc(narration) || '<i style="color:var(--text-3)">No narration text</i>'}</div>
+                    <div id="audioEdit_${shot.id}" style="display:none;margin-top:8px;">
+                        <textarea id="audioEditTA_${shot.id}" class="input" style="width:100%;min-height:80px;font-size:12px;line-height:1.6;resize:vertical;">${esc(narration)}</textarea>
+                        <div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">
+                            <button class="btn btn-outline" style="font-size:11px;padding:4px 10px;" onclick="cancelEditNarration(${shot.id})">Cancel</button>
+                            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;" onclick="saveNarration(${shot.id})">Save</button>
+                            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;" onclick="saveAndRegenerateTTS(${shot.id}, ${idx})">Save + TTS</button>
+                        </div>
+                    </div>
                     ${hasAudio ? `
                     <div class="mini-player" id="mp_${shot.id}">
-                        <button class="mp-play" onclick="toggleMiniPlayer(${shot.id})">▶</button>
+                        <button class="mp-play" onclick="toggleMiniPlayer(${shot.id})">\u25b6</button>
                         <div class="mp-bar" onclick="seekMiniPlayer(event, ${shot.id})">
                             <div class="mp-progress" id="mpProg_${shot.id}"></div>
                         </div>
@@ -4350,8 +4424,9 @@ async function loadEpisodeAudio() {
                     </div>` : ''}
                 </div>
                 <div class="audio-shot-actions">
-                    <button class="btn btn-sm ${hasAudio ? 'btn-ghost' : 'btn-primary'}" onclick="generateShotAudio(${shot.id}, ${idx})" id="btnGenShot_${shot.id}">
-                        ${hasAudio ? '🔄' : '🎙'}
+                    <button class="btn btn-sm btn-ghost" onclick="toggleEditNarration(${shot.id})" title="Edit text" style="font-size:13px;">\u270f\ufe0f</button>
+                    <button class="btn btn-sm ${hasAudio ? 'btn-ghost' : 'btn-primary'}" onclick="generateShotAudio(${shot.id}, ${idx})" id="btnGenShot_${shot.id}" title="${hasAudio ? 'Regenerate' : 'Generate TTS'}">
+                        ${hasAudio ? '\ud83d\udd04' : '\ud83c\udf99'}
                     </button>
                 </div>
             </div>
@@ -4383,6 +4458,74 @@ function _cleanNarration(text) {
         .trim();
     return clean || text.trim();
 }
+
+
+// ── Audio Card Expand/Edit Functions ──
+
+function toggleAudioText(btn) {
+    if (!btn) return;
+    const body = btn.closest('.audio-shot-body');
+    if (!body) return;
+    const textEl = body.querySelector('.audio-shot-text');
+    if (!textEl) return;
+    textEl.classList.toggle('expanded');
+    btn.textContent = textEl.classList.contains('expanded') ? '\u25b2 Thu' : '\u25bc Xem';
+}
+
+function toggleEditNarration(shotId) {
+    const editDiv = document.getElementById('audioEdit_' + shotId);
+    const textDiv = document.getElementById('audioText_' + shotId);
+    if (!editDiv) return;
+    const isHidden = editDiv.style.display === 'none';
+    editDiv.style.display = isHidden ? 'block' : 'none';
+    if (textDiv) textDiv.style.display = isHidden ? 'none' : '';
+    if (isHidden) {
+        const ta = document.getElementById('audioEditTA_' + shotId);
+        if (ta) ta.focus();
+    }
+}
+
+function cancelEditNarration(shotId) {
+    const editDiv = document.getElementById('audioEdit_' + shotId);
+    const textDiv = document.getElementById('audioText_' + shotId);
+    if (editDiv) editDiv.style.display = 'none';
+    if (textDiv) textDiv.style.display = '';
+}
+
+async function saveNarration(shotId) {
+    const ta = document.getElementById('audioEditTA_' + shotId);
+    if (!ta) return;
+    const newText = ta.value.trim();
+    try {
+        await apiFetch('/storyboards/' + shotId, {
+            method: 'PUT',
+            body: JSON.stringify({ narration_text: newText })
+        });
+        toast('Narration updated', 'success');
+        cancelEditNarration(shotId);
+        await loadEpisodeAudio();
+    } catch (e) {
+        toast('Save failed: ' + e.message, 'error');
+    }
+}
+
+async function saveAndRegenerateTTS(shotId, idx) {
+    const ta = document.getElementById('audioEditTA_' + shotId);
+    if (!ta) return;
+    const newText = ta.value.trim();
+    try {
+        await apiFetch('/storyboards/' + shotId, {
+            method: 'PUT',
+            body: JSON.stringify({ narration_text: newText })
+        });
+        toast('Narration saved, generating TTS...', 'info');
+        cancelEditNarration(shotId);
+        await generateShotAudio(shotId, idx);
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
 
 // ── Mini Player Controls ──
 let _activeMiniPlayer = null;
@@ -7026,7 +7169,12 @@ async function analyzeGalleryImage(manualKey = null) {
     } catch (e) {
         statusEl.style.display = 'none';
         // Show professional API key modal instead of ugly prompt()
-        showGeminiKeyModal(e.message);
+        const errMsg = e.message ? e.message.toLowerCase() : '';
+        if (errMsg.includes('503') || errMsg.includes('429') || errMsg.includes('high demand') || errMsg.includes('too many requests')) {
+            toast('Google AI đang quá tải (High Demand). Vui lòng thử lại sau vài giây.', 'warning');
+        } else {
+            showGeminiKeyModal(e.message);
+        }
     } finally {
         statusEl.style.display = 'none';
     }
@@ -7106,6 +7254,10 @@ async function submitGeminiKey() {
                     body: JSON.stringify({ api_key: key })
                 });
                 toast('🔑 API Key đã được lưu vào Cloud Config', 'success');
+                // Refresh key panel if it's open
+                if (document.getElementById('geminiKeyPanel') && document.getElementById('geminiKeyPanel').style.display !== 'none') {
+                    loadGeminiKeyList();
+                }
             } catch (saveErr) {
                 console.warn('Failed to save API key:', saveErr);
                 // Don't block analysis if save fails
@@ -7126,6 +7278,86 @@ async function submitGeminiKey() {
             </svg>
             Xác nhận & Phân tích
         `;
+    }
+}
+
+// ── Gemini Key Panel Functions ──
+
+function toggleGeminiKeyPanel() {
+    const panel = document.getElementById('geminiKeyPanel');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        loadGeminiKeyList();
+    } else {
+        panel.style.display = 'none';
+    }
+}
+
+async function loadGeminiKeyList() {
+    const listEl = document.getElementById('geminiKeyList');
+    const emptyEl = document.getElementById('geminiKeyEmpty');
+    listEl.innerHTML = '<div style="padding:10px; text-align:center; color:var(--text-3); font-size:12px;">Loading...</div>';
+    emptyEl.style.display = 'none';
+
+    try {
+        const res = await apiFetch('/gallery/list-gemini-keys');
+        const keys = res.keys || [];
+
+        if (keys.length === 0) {
+            listEl.innerHTML = '';
+            emptyEl.style.display = 'block';
+            return;
+        }
+
+        emptyEl.style.display = 'none';
+        let html = '';
+        for (const k of keys) {
+            const lbl = k.label.replace(/'/g, "\\'");
+            const isActive = k.active;
+            const bg = isActive ? 'rgba(34,197,94,0.06)' : 'var(--bg-0)';
+            const bdr = isActive ? 'rgba(34,197,94,0.2)' : 'var(--border)';
+            let badge = '';
+            if (isActive) {
+                badge = '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#22c55e22;color:#22c55e;font-weight:600;">Active</span>';
+            } else {
+                badge = '<button onclick="setActiveGeminiKey(\'' + lbl + '\')" style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bg-2);color:var(--accent);border:1px solid var(--border);cursor:pointer;">Dùng</button>';
+            }
+            const del = '<button onclick="deleteGeminiKey(\'' + lbl + '\')" title="Xóa" style="background:none;border:none;cursor:pointer;color:var(--text-3);padding:2px;font-size:14px;line-height:1;">x</button>';
+            html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:' + bg + ';border:1px solid ' + bdr + ';margin-bottom:4px;">';
+            html += '<div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:var(--text-1);">' + k.label + '</div>';
+            html += '<div style="font-size:11px;color:var(--text-3);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + k.masked_key + '</div></div>';
+            html += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">' + badge + del + '</div></div>';
+        }
+        listEl.innerHTML = html;
+    } catch (e) {
+        listEl.innerHTML = '<div style="padding:10px;text-align:center;color:#ef4444;font-size:12px;">Error loading keys</div>';
+    }
+}
+
+async function setActiveGeminiKey(label) {
+    try {
+        await apiFetch('/gallery/set-active-gemini-key', {
+            method: 'POST',
+            body: JSON.stringify({ label: label })
+        });
+        toast('Switched to key: ' + label, 'success');
+        loadGeminiKeyList();
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+async function deleteGeminiKey(label) {
+    if (!confirm('Delete key "' + label + '"?')) return;
+    try {
+        await apiFetch('/gallery/delete-gemini-key', {
+            method: 'POST',
+            body: JSON.stringify({ label: label })
+        });
+        toast('Deleted key: ' + label, 'success');
+        loadGeminiKeyList();
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
     }
 }
 
