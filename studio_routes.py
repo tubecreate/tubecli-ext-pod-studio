@@ -1009,6 +1009,7 @@ async def _autopilot_runner(drama_id: int):
             sb_prompt = (
                 f"Break this screenplay into storyboard shots.\n"
                 f"CRITICAL: Script has EXACTLY {_ap_count} scenes. Output EXACTLY {_ap_count} shots.\n"
+                f"REMINDER: EVERY shot MUST include `illustrate_layout` describing visual composition with characters.\n"
                 f"Scenes:\n{_ap_h_list}\n\nScript:\n\n{script[:15000]}"
             )
             sb_json_str = await a_storybd.chat_complete(
@@ -2410,6 +2411,8 @@ async def generate_storyboard(episode_id: int, request: Request):
                     f"CRITICAL: This chunk contains EXACTLY {scene_count_in_chunk} scenes. "
                     f"You MUST output EXACTLY {scene_count_in_chunk} shot objects, one per scene heading.\n"
                     f"Scene headings in this chunk:\n{headings_list}\n\n"
+                    f"REMINDER: For EVERY shot, you MUST include the `illustrate_layout` field describing how visual elements are composed with characters (e.g. 'Character on left gesturing at floating data panel on right', 'Split screen: character top, process diagram bottom'). "
+                    f"Even without gallery assets, use Auto-Illustrate to create engaging visual compositions.\n\n"
                     f"Script:\n\n{chunk_text}"
                 )
                 if append_mode and existing_shots and is_first:
