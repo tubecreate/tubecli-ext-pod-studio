@@ -494,6 +494,69 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- Step: Publish -->
+                        <div class="step-panel" id="stepPublish" style="display:none">
+                            <div class="step-toolbar">
+                                <div class="toolbar-left">
+                                    <span class="char-count" id="publishStatus">No publish targets configured</span>
+                                </div>
+                                <div class="toolbar-right" style="display:flex; gap:6px;">
+                                    <button class="btn btn-sm" onclick="generatePublishSEO()" id="btnGenSEO">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        ✨ AI Gen SEO
+                                    </button>
+                                    <button class="btn btn-sm btn-primary" onclick="publishAllTargets()" id="btnPublishAll">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                        🚀 Publish All
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- SEO Preview -->
+                            <div id="publishSEOPreview" style="padding:16px; display:none;">
+                                <div class="card" style="padding:16px; margin-bottom:12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                                        <h3 style="margin:0; font-size:14px; font-weight:600; color:var(--text-0);">📝 SEO Metadata</h3>
+                                        <select id="publishSEOPlatform" class="input" style="width:140px; height:28px; font-size:12px;" onchange="switchPublishSEOPlatform(this.value)">
+                                            <option value="youtube">📺 YouTube</option>
+                                            <option value="facebook">📘 Facebook</option>
+                                        </select>
+                                    </div>
+                                    <div style="display:flex; flex-direction:column; gap:10px;">
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:var(--text-2); margin-bottom:4px; display:block;">Title</label>
+                                            <input id="publishSEOTitle" class="input" placeholder="SEO Title..." style="font-size:13px;">
+                                        </div>
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:var(--text-2); margin-bottom:4px; display:block;">Description</label>
+                                            <textarea id="publishSEODesc" class="input" rows="4" placeholder="SEO Description..." style="font-size:12px;"></textarea>
+                                        </div>
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:var(--text-2); margin-bottom:4px; display:block;">Tags / Hashtags</label>
+                                            <input id="publishSEOTags" class="input" placeholder="tag1, tag2, tag3..." style="font-size:12px;">
+                                        </div>
+                                        <button class="btn btn-sm btn-outline" onclick="savePublishSEO()" style="align-self:flex-end;">💾 Save SEO</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Platform Cards -->
+                            <div id="publishPlatformGrid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; padding:0 16px 16px 16px;"></div>
+                            <!-- Empty state -->
+                            <div class="step-empty" id="publishEmpty">
+                                <div class="empty-visual">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                </div>
+                                <div class="empty-title">Publish to Platforms</div>
+                                <div class="empty-desc">Tự động đăng video lên YouTube, Facebook. Cấu hình upload targets trong project settings hoặc thêm ngay bên dưới.</div>
+                                <div style="display:flex; gap:10px; margin-top:15px;">
+                                    <button class="btn btn-primary" onclick="generatePublishSEO()">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        ✨ Generate SEO
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
                 </div>
             </main>
 
@@ -1341,6 +1404,37 @@
                                 </div>
                                 <!-- hidden native select for form compat -->
                                 <select id="wizBrowserProfileExec" multiple style="display:none"></select>
+                            </label>
+                        </div>
+                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
+                            <label class="field" style="flex:1;">
+                                <span class="field-label">📺 YouTube Channel</span>
+                                <div class="select-wrapper">
+                                    <select id="wizYtChannel" class="input" onfocus="loadWizYtChannels()">
+                                        <option value="">None (không upload)</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                            <label class="field" style="flex:1;">
+                                <span class="field-label">📘 Facebook Page</span>
+                                <div class="select-wrapper">
+                                    <select id="wizFbPage" class="input" onfocus="loadWizFbPages()">
+                                        <option value="">None (không upload)</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                            <label class="field" style="flex:0.6;">
+                                <span class="field-label">🔒 Privacy</span>
+                                <div class="select-wrapper">
+                                    <select id="wizUploadPrivacy" class="input">
+                                        <option value="private" selected>Private</option>
+                                        <option value="unlisted">Unlisted</option>
+                                        <option value="public">Public</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
                             </label>
                         </div>
                         <div class="modal-actions" style="margin-top:16px; flex-direction:column; gap:8px; flex-shrink:0;">

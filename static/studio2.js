@@ -22,11 +22,12 @@ const STEP_REGISTRY = {
     videos:     { id: 'videos',     label: 'AI Video',     icon: '🎞', panelId: 'stepAIVideo' },
     audio:      { id: 'audio',      label: 'Audio TTS',    icon: '🎙', panelId: 'stepAudio' },
     video:      { id: 'video',      label: 'Video',        icon: '🎥', panelId: 'stepVideo' },
+    publish:    { id: 'publish',    label: 'Publish',      icon: '🚀', panelId: 'stepPublish' },
 };
 
 const PIPELINE_TEMPLATES = {
-    drama_scene:  { label: '🎞 Drama Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video)', steps: ['raw', 'rewrite', 'extract', 'storyboard', 'videos', 'audio', 'video'] },
-    drama_full:   { label: '📺 Drama Slideshow',  steps: ['raw', 'rewrite', 'extract', 'storyboard', 'images', 'audio', 'video'] },
+    drama_scene:  { label: '🎞 Drama Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video → Publish)', steps: ['raw', 'rewrite', 'extract', 'storyboard', 'videos', 'audio', 'video', 'publish'] },
+    drama_full:   { label: '📺 Drama Slideshow',  steps: ['raw', 'rewrite', 'extract', 'storyboard', 'images', 'audio', 'video', 'publish'] },
     audio_story:  { label: '🎧 Audio Story',      steps: ['raw', 'rewrite', 'audio', 'video'] },
     content_only: { label: '📝 Content Only',     steps: ['raw', 'rewrite'] },
     custom:       { label: '🎬 Custom',           steps: [] },
@@ -416,6 +417,17 @@ async function _createDramaFromWiz() {
         const opt = voiceSelect.selectedOptions[0];
         metadata.tts_voice = voiceSelect.value;
         metadata.tts_engine = opt?.dataset?.engine || 'edge';
+    }
+
+    // Save upload targets from wizard
+    const wizUploadTargets = [];
+    const wizYtVal = document.getElementById('wizYtChannel')?.value;
+    if (wizYtVal) try { wizUploadTargets.push(JSON.parse(wizYtVal)); } catch(e) {}
+    const wizFbVal = document.getElementById('wizFbPage')?.value;
+    if (wizFbVal) try { wizUploadTargets.push(JSON.parse(wizFbVal)); } catch(e) {}
+    if (wizUploadTargets.length > 0) {
+        metadata.upload_targets = wizUploadTargets;
+        metadata.upload_privacy = document.getElementById('wizUploadPrivacy')?.value || 'private';
     }
 
     // Save last used config to localStorage for next time
@@ -918,6 +930,7 @@ function setStep(step) {
     if (step === 'videos') loadEpisodeVideos();
     if (step === 'audio') loadEpisodeAudio();
     if (step === 'video') loadEpisodeVideo();
+    if (step === 'publish') loadPublishData();
 }
 
 // ── Lazy Tab Loaders ───────────────────────────────────────
@@ -1982,6 +1995,21 @@ function renderStoryboard(shots) {
         const chars = (s.character_names || []).join(', ');
         const dur = s.duration || 12;
 
+        let illustLayout = s.illustrate_layout || '';
+        let assets = s.reference_asset_names || [];
+        let effects = s.reference_effect_names || [];
+        try {
+            if (s.metadata) {
+                const meta = typeof s.metadata === 'string' ? JSON.parse(s.metadata) : s.metadata;
+                if (meta.illustrate_layout) illustLayout = meta.illustrate_layout;
+                if (meta.reference_asset_names) assets = meta.reference_asset_names;
+                if (meta.reference_effect_names) effects = meta.reference_effect_names;
+            }
+        } catch(e) {}
+        
+        const assetsStr = Array.isArray(assets) ? assets.join(', ') : assets;
+        const effectsStr = Array.isArray(effects) ? effects.join(', ') : effects;
+
         return `
             <div class="sb-item" onclick="toggleSbDetail(this)">
                 <div class="sb-num">${num}</div>
@@ -1999,12 +2027,16 @@ function renderStoryboard(shots) {
                         ${s.location ? `<span class="tag tag-outline">📍 ${esc(s.location)}</span>` : ''}
                         <span class="tag tag-outline">⏱ ${dur}s</span>
                         ${chars ? `<span class="tag tag-outline">👤 ${esc(chars)}</span>` : ''}
+                        ${assetsStr ? `<span class="tag tag-outline" style="border-color:#34d399;color:#34d399">📊 ${esc(assetsStr)}</span>` : ''}
+                        ${effectsStr ? `<span class="tag tag-outline" style="border-color:#a78bfa;color:#a78bfa">✨ ${esc(effectsStr)}</span>` : ''}
+                        ${illustLayout ? `<span class="tag tag-outline" style="border-color:#fbbf24;color:#fbbf24">🎨 Layout: ${esc(illustLayout.substring(0,30) + (illustLayout.length>30?'...':''))}</span>` : ''}
                     </div>
                     <div class="sb-detail" style="display:none">
                         ${s.dialogue ? `<div class="sb-field"><span class="sb-field-label">💬 Dialogue</span><div class="sb-field-value">${esc(s.dialogue)}</div></div>` : ''}
                         ${s.description ? `<div class="sb-field"><span class="sb-field-label">📝 Description</span><div class="sb-field-value">${esc(s.description)}</div></div>` : ''}
                         ${s.result ? `<div class="sb-field"><span class="sb-field-label">🎯 Result</span><div class="sb-field-value">${esc(s.result)}</div></div>` : ''}
                         ${s.atmosphere ? `<div class="sb-field"><span class="sb-field-label">🌙 Atmosphere</span><div class="sb-field-value">${esc(s.atmosphere)}</div></div>` : ''}
+                        ${illustLayout ? `<div class="sb-field"><span class="sb-field-label" style="color:#fbbf24">🎨 Illustrate Layout</span><div class="sb-field-value">${esc(illustLayout)}</div></div>` : ''}
                         ${s.image_prompt ? `<div class="sb-field"><span class="sb-field-label">🖼️ Image Prompt</span><div class="sb-field-value mono">${esc(s.image_prompt)}</div></div>` : ''}
                         ${s.video_prompt ? `<div class="sb-field"><span class="sb-field-label">🎬 Video Prompt</span><div class="sb-field-value mono">${esc(s.video_prompt)}</div></div>` : ''}
                         ${s.bgm_prompt ? `<div class="sb-field"><span class="sb-field-label">🎵 BGM</span><div class="sb-field-value">${esc(s.bgm_prompt)}</div></div>` : ''}
@@ -2555,6 +2587,50 @@ window.resumeAutoPilot = function() {
                 vWrap.style.display = 'none';
             }
         }
+
+        // Restore upload targets from drama metadata
+        if (currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const savedTargets = meta.upload_targets || [];
+                const savedPrivacy = meta.upload_privacy || 'private';
+                // Pre-load YT/FB dropdowns and select saved values
+                const ytTarget = savedTargets.find(t => t.provider === 'youtube');
+                const fbTarget = savedTargets.find(t => t.provider === 'facebook');
+                if (ytTarget) {
+                    const sel = document.getElementById('wizYtChannel');
+                    if (sel && !_wizYtLoaded) {
+                        const tempName = ytTarget.channel_name || ytTarget.channel_id || '⏳ Loading...';
+                        sel.innerHTML = `<option value="">None (không upload)</option><option value='${JSON.stringify(ytTarget).replace(/'/g, "&#39;")}' selected>📺 ${tempName}</option>`;
+                    }
+                    loadWizYtChannels().then(() => {
+                        if (sel) {
+                            const targetVal = JSON.stringify(ytTarget);
+                            for (let i = 0; i < sel.options.length; i++) {
+                                if (sel.options[i].value === targetVal) { sel.selectedIndex = i; break; }
+                            }
+                        }
+                    });
+                }
+                if (fbTarget) {
+                    const sel = document.getElementById('wizFbPage');
+                    if (sel && !_wizFbLoaded) {
+                        const tempName = fbTarget.page_name || fbTarget.channel_id || '⏳ Loading...';
+                        sel.innerHTML = `<option value="">None (không upload)</option><option value='${JSON.stringify(fbTarget).replace(/'/g, "&#39;")}' selected>📘 ${tempName}</option>`;
+                    }
+                    loadWizFbPages().then(() => {
+                        if (sel) {
+                            const targetVal = JSON.stringify(fbTarget);
+                            for (let i = 0; i < sel.options.length; i++) {
+                                if (sel.options[i].value === targetVal) { sel.selectedIndex = i; break; }
+                            }
+                        }
+                    });
+                }
+                const privSel = document.getElementById('wizUploadPrivacy');
+                if (privSel) privSel.value = savedPrivacy;
+            } catch(e) {}
+        }
     } else {
         toast("No auto-generated outline exists for this project.", "error");
     }
@@ -2609,6 +2685,18 @@ async function startRealtimeAutoPilot() {
                     meta.tts_engine = opt.getAttribute('data-engine') || 'vibe';
                 }
             }
+            
+            // Save upload targets from Step 3
+            const wizUploadTargets = [];
+            const wizYtVal = document.getElementById('wizYtChannel')?.value;
+            if (wizYtVal) try { wizUploadTargets.push(JSON.parse(wizYtVal)); } catch(e) {}
+            const wizFbVal = document.getElementById('wizFbPage')?.value;
+            if (wizFbVal) try { wizUploadTargets.push(JSON.parse(wizFbVal)); } catch(e) {}
+            if (wizUploadTargets.length > 0) {
+                meta.upload_targets = wizUploadTargets;
+            }
+            const privVal = document.getElementById('wizUploadPrivacy')?.value;
+            if (privVal) meta.upload_privacy = privVal;
             
             await apiFetch(`/dramas/${pendingAutoPilotDramaId}`, {
                 method: 'PUT',
@@ -2803,6 +2891,7 @@ async function startRealtimeAutoPilot() {
                             });
                             
                             if (genRes.success) {
+                                _activeGenImageTaskId = genRes.task_id;
                                 document.getElementById('imagesEmpty').style.display = 'none';
                                 document.getElementById('imgProgressSection').style.display = 'block';
                                 document.getElementById('imgProgressSection').style.border = '';
@@ -2811,6 +2900,7 @@ async function startRealtimeAutoPilot() {
                                 document.getElementById('imgProgressLabel').textContent = 'Generating images...';
                                 
                                 await _waitForImageGenCompletion(genRes.task_id, genRes.total);
+                                _activeGenImageTaskId = null;
                             }
                         }
                     }
@@ -2864,6 +2954,7 @@ async function startRealtimeAutoPilot() {
                             });
                             
                             if (genRes.success) {
+                                _activeGenVideoTaskId = genRes.task_id;
                                 document.getElementById('videosEmpty').style.display = 'none';
                                 document.getElementById('vidProgressSection').style.display = 'block';
                                 document.getElementById('vidProgressSection').style.border = '';
@@ -2872,6 +2963,7 @@ async function startRealtimeAutoPilot() {
                                 document.getElementById('vidProgressLabel').textContent = 'Generating videos...';
                                 
                                 await _waitForVideoGenCompletion(genRes.task_id, genRes.total);
+                                _activeGenVideoTaskId = null;
                             }
                         }
                     }
@@ -2882,13 +2974,27 @@ async function startRealtimeAutoPilot() {
                     if (pipeline.includes('audio')) {
                         await new Promise(r => setTimeout(r, 2000));
                         setStep('audio');
-                        if (currentEpisode.audio_url && !isRetry) {
+                        let audioReady = !!currentEpisode.audio_url;
+                        if (!audioReady) {
+                            try {
+                                const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+                                const shots = sbRes.items || [];
+                                if (shots.length > 0) {
+                                    const withAudio = shots.filter(s => s.tts_audio_url && s.tts_audio_url.trim()).length;
+                                    if (withAudio === shots.length) audioReady = true;
+                                }
+                            } catch(e) {}
+                        }
+
+                        if (audioReady && !isRetry) {
                             toast(`⏭️ Skipping Audio TTS for ${currentEpisode.title}`, "info");
                             document.getElementById('audioStatus').textContent = 'Audio ready';
                             document.getElementById('audioEmpty').style.display = 'none';
-                            document.getElementById('audioPlayerSection').style.display = 'flex';
-                            document.getElementById('audioStepPlayer').src = currentEpisode.audio_url;
-                            document.getElementById('audioStepDownload').href = currentEpisode.audio_url;
+                            if (currentEpisode.audio_url) {
+                                document.getElementById('audioPlayerSection').style.display = 'flex';
+                                document.getElementById('audioStepPlayer').src = currentEpisode.audio_url;
+                                document.getElementById('audioStepDownload').href = currentEpisode.audio_url;
+                            }
                         } else {
                             toast(`🎙️ Generating TTS Audio for ${currentEpisode.title}...`, "info");
                             document.getElementById('audioStatus').textContent = 'Starting TTS...';
@@ -2959,6 +3065,121 @@ async function startRealtimeAutoPilot() {
                         if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     }
                     
+                    // 8. Publish (skip if not in pipeline)
+                    if (pipeline.includes('publish')) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        setStep('publish');
+                        toast(`🚀 Publishing Episode ${epPlan.episode_number || i+1}...`, "info");
+                        
+                        try {
+                            // Refresh episode data
+                            const epData = await apiFetch(`/episodes/${currentEpisode.id}`);
+                            const epMeta = JSON.parse(epData.metadata || '{}');
+                            
+                            // Generate SEO for THIS episode if not exists
+                            if (!epMeta.seo_publish || Object.keys(epMeta.seo_publish).length === 0) {
+                                toast("Generating SEO Metadata for this episode...", "info");
+                                await apiFetch(`/dramas/${currentDrama.id}/generate-seo`, {
+                                    method: 'POST',
+                                    body: JSON.stringify({ episode_id: currentEpisode.id }),
+                                });
+                            }
+                            
+                            // ═══ Pre-publish Validation ═══
+                            toast(`🔍 Validating episode content before publish...`, "info");
+                            const validation = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/validate-before-publish`, { method: 'POST' });
+                            
+                            if (validation.warnings && validation.warnings.length > 0) {
+                                validation.warnings.forEach(w => toast(w, "warning"));
+                            }
+                            
+                            if (!validation.valid) {
+                                // Show all errors
+                                validation.errors.forEach(err => toast(err, "error"));
+                                const s = validation.summary || {};
+                                toast(`📊 Status: ${s.with_video || 0}/${s.total_shots || 0} videos, ${s.with_audio || 0}/${s.total_shots || 0} audio, export: ${s.has_export ? s.export_size_mb + 'MB' : 'MISSING'}`, "error");
+                                toast(`⛔ Publish BLOCKED — episode content is incomplete. Fix errors above first.`, "error");
+                                
+                                // 📲 Telegram: report validation errors
+                                const errList = (validation.errors || []).join('\n');
+                                const tgMsg = `⛔ <b>[Auto-Pilot] Publish BLOCKED</b>\n` +
+                                    `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n\n` +
+                                    `${errList}\n\n` +
+                                    `📊 Video: ${s.with_video || 0}/${s.total_shots || 0} | Audio: ${s.with_audio || 0}/${s.total_shots || 0} | Export: ${s.has_export ? s.export_size_mb + 'MB' : '❌ MISSING'}`;
+                                apiFetch('/notify-telegram', { method: 'POST', body: JSON.stringify({ text: tgMsg }) }).catch(() => {});
+                            } else {
+                                // Validation passed — publish to ALL platforms
+                                const s = validation.summary || {};
+                                toast(`✅ Validation OK: ${s.total_shots} shots, ${s.with_video}/${s.total_shots} videos, ${s.with_audio}/${s.total_shots} audio, export ${s.export_size_mb}MB`, "success");
+                                
+                                const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
+                                const uploadTargets = dramaMeta.upload_targets || [];
+                                
+                                if (uploadTargets.length === 0) {
+                                    toast(`⚠️ No upload targets configured. Skipping publish.`, "warning");
+                                } else {
+                                    const publishResults = [];
+                                    for (let ti = 0; ti < uploadTargets.length; ti++) {
+                                        const targetPlatform = uploadTargets[ti].provider || 'youtube';
+                                        toast(`📤 Publishing to ${targetPlatform} (${ti+1}/${uploadTargets.length})...`, "info");
+                                        try {
+                                            const pubRes = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish`, {
+                                                method: 'POST',
+                                                body: JSON.stringify({ target_index: ti }),
+                                            });
+                                            if (pubRes.success || pubRes.task_id) {
+                                                toast(`✅ Upload started for ${targetPlatform} - Episode ${epPlan.episode_number || i+1}`, "success");
+                                                publishResults.push({ platform: targetPlatform, ok: true });
+                                            } else {
+                                                const errMsg = pubRes.error || pubRes.message || 'Unknown error';
+                                                toast(`⚠️ Publish to ${targetPlatform} failed: ${errMsg}`, "error");
+                                                publishResults.push({ platform: targetPlatform, ok: false, error: errMsg });
+                                            }
+                                        } catch (pubErr) {
+                                            toast(`⚠️ Publish to ${targetPlatform} error: ${pubErr.message}`, "error");
+                                            publishResults.push({ platform: targetPlatform, ok: false, error: pubErr.message });
+                                        }
+                                        if (ti < uploadTargets.length - 1) await new Promise(r => setTimeout(r, 2000));
+                                    }
+                                    
+                                    // 📲 Telegram: report publish results + send video
+                                    const okPlatforms = publishResults.filter(r => r.ok).map(r => r.platform);
+                                    const failPlatforms = publishResults.filter(r => !r.ok);
+                                    let tgText = '';
+                                    if (okPlatforms.length > 0 && failPlatforms.length === 0) {
+                                        tgText = `✅ <b>[Auto-Pilot] Đăng thành công!</b>\n` +
+                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `📤 Platforms: ${okPlatforms.join(', ')}\n` +
+                                            `📊 ${s.total_shots} shots | Export: ${s.export_size_mb}MB`;
+                                    } else if (okPlatforms.length > 0 && failPlatforms.length > 0) {
+                                        const failDetails = failPlatforms.map(f => `  ❌ ${f.platform}: ${f.error}`).join('\n');
+                                        tgText = `⚠️ <b>[Auto-Pilot] Đăng một phần</b>\n` +
+                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `✅ OK: ${okPlatforms.join(', ')}\n` +
+                                            `❌ Lỗi:\n${failDetails}`;
+                                    } else {
+                                        const failDetails = failPlatforms.map(f => `  ❌ ${f.platform}: ${f.error}`).join('\n');
+                                        tgText = `❌ <b>[Auto-Pilot] Đăng thất bại!</b>\n` +
+                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `❌ Lỗi:\n${failDetails}`;
+                                    }
+                                    // Send with video attached if at least one succeeded
+                                    apiFetch('/notify-telegram', {
+                                        method: 'POST',
+                                        body: JSON.stringify({
+                                            text: tgText,
+                                            video_path: okPlatforms.length > 0 ? (s.export_path_full || '') : '',
+                                        }),
+                                    }).catch(() => {});
+                                }
+                            }
+                        } catch (e) {
+                            toast(`⚠️ Publish error: ${e.message}`, "error");
+                        }
+                        
+                        if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                    }
+                    
                     toast(`✅ Finished Auto-Pilot for Episode ${epPlan.episode_number || i+1}`, "success");
                     await new Promise(r => setTimeout(r, 3000)); // wait before next episode
                     
@@ -2966,6 +3187,10 @@ async function startRealtimeAutoPilot() {
                     
                 } catch (err) {
                     if (err.message === "Aborted by user") throw err;
+                    if (err.message.includes("RATE_LIMIT_REACHED")) {
+                        toast("⛔ Auto-Pilot stopped due to Grok Rate Limit.", "error");
+                        throw new Error("Aborted by user"); // Treat as abort
+                    }
                     
                     // Show error recovery modal
                     const choice = await showErrorDialog(`Failed on Episode ${epPlan.episode_number || i+1}: ${err.message}`);
@@ -2995,10 +3220,22 @@ async function startRealtimeAutoPilot() {
         await loadDramas();
     }
 }
+let _activeGenVideoTaskId = null;
+let _activeGenImageTaskId = null;
 
 function abortRealtimeStream() {
     if (realtimeAbortController) {
         realtimeAbortController.abort();
+    }
+    
+    // Kill backend subprocess (browser) via cancel API
+    if (_activeGenVideoTaskId) {
+        apiFetch(`/gen-videos/cancel/${_activeGenVideoTaskId}`, { method: 'POST' }).catch(() => {});
+        _activeGenVideoTaskId = null;
+    }
+    if (_activeGenImageTaskId) {
+        apiFetch(`/gen-images/cancel/${_activeGenImageTaskId}`, { method: 'POST' }).catch(() => {});
+        _activeGenImageTaskId = null;
     }
 }
 
@@ -3481,9 +3718,16 @@ async function _waitForImageGenCompletion(taskId, total) {
                     const p = document.getElementById('imgProgressSection');
                     if (p) p.style.display = 'none';
                 }, 5000);
+
+                if (res.status.includes('RATE_LIMIT_REACHED')) {
+                    throw new Error("RATE_LIMIT_REACHED");
+                }
                 break;
             }
         } catch(e) {
+            if (e.message === 'RATE_LIMIT_REACHED' || e.message === 'Aborted by user') {
+                throw e; // Re-throw critical errors so autopilot stops
+            }
             console.error('Image gen poll error', e);
             break;
         }
@@ -3785,9 +4029,16 @@ async function _waitForVideoGenCompletion(taskId, total) {
                     const p = document.getElementById('vidProgressSection');
                     if (p) p.style.display = 'none';
                 }, 5000);
+
+                if (res.status.includes('RATE_LIMIT_REACHED')) {
+                    throw new Error("RATE_LIMIT_REACHED");
+                }
                 break;
             }
         } catch(e) {
+            if (e.message === 'RATE_LIMIT_REACHED' || e.message === 'Aborted by user') {
+                throw e; // Re-throw critical errors so autopilot stops
+            }
             console.error('Video gen poll error', e);
             break;
         }
@@ -6929,3 +7180,323 @@ async function deleteGalleryItem() {
     }
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+// ── Step 08: Publish to Platforms ─────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// ── Wizard: Load YT Channels & FB Pages for upload target selection ──
+
+let _wizYtLoaded = false, _wizFbLoaded = false;
+
+async function loadWizYtChannels() {
+    if (_wizYtLoaded) return;
+    _wizYtLoaded = true;
+    const sel = document.getElementById('wizYtChannel');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">None (không upload)</option><option value="" disabled>⏳ Loading...</option>';
+    try {
+        const res = await fetch('/api/v1/video_manager/accounts?provider=youtube');
+        const data = await res.json();
+        sel.innerHTML = '<option value="">None (không upload)</option>';
+        if (data.accounts && data.accounts.length > 0) {
+            for (const acc of data.accounts) {
+                try {
+                    const chRes = await fetch(`/api/v1/video_manager/channels?provider=youtube&email=${acc.email || ''}&cred_id=${acc.cred_id || acc.id || ''}`);
+                    const chData = await chRes.json();
+                    (chData.channels || []).forEach(ch => {
+                        const opt = document.createElement('option');
+                        const chName = ch.title || ch.name || ch.id;
+                        opt.value = JSON.stringify({ provider: 'youtube', email: acc.email, cred_id: acc.cred_id || acc.id, channel_id: ch.id, channel_name: chName });
+                        opt.textContent = `📺 ${chName} (${acc.email || ''})`;
+                        sel.appendChild(opt);
+                    });
+                } catch(e) {}
+            }
+        }
+        // Remove the temporary loading option if it exists
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].text.includes('Loading...')) {
+                sel.remove(i);
+                break;
+            }
+        }
+        if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy channel</option>';
+    } catch(e) {
+        sel.innerHTML = '<option value="">None</option><option value="" disabled>⚠️ Lỗi tải channels</option>';
+    }
+}
+
+async function loadWizFbPages() {
+    if (_wizFbLoaded) return;
+    _wizFbLoaded = true;
+    const sel = document.getElementById('wizFbPage');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">None (không upload)</option><option value="" disabled>⏳ Loading...</option>';
+    try {
+        const res = await fetch('/api/v1/video_manager/accounts?provider=facebook');
+        const data = await res.json();
+        sel.innerHTML = '<option value="">None (không upload)</option>';
+        if (data.accounts && data.accounts.length > 0) {
+            for (const acc of data.accounts) {
+                try {
+                    const chRes = await fetch(`/api/v1/video_manager/channels?provider=facebook&cred_id=${acc.cred_id || acc.id || ''}`);
+                    const chData = await chRes.json();
+                    (chData.channels || []).forEach(ch => {
+                        const opt = document.createElement('option');
+                        const chName = ch.title || ch.name || ch.id;
+                        opt.value = JSON.stringify({ provider: 'facebook', cred_id: acc.cred_id || acc.id, channel_id: ch.id, page_name: chName });
+                        opt.textContent = `📘 ${chName}`;
+                        sel.appendChild(opt);
+                    });
+                } catch(e) {}
+            }
+        }
+        // Remove the temporary loading option if it exists
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].text.includes('Loading...')) {
+                sel.remove(i);
+                break;
+            }
+        }
+        if (sel.options.length <= 1) sel.innerHTML += '<option value="" disabled>Không tìm thấy page</option>';
+    } catch(e) {
+        sel.innerHTML = '<option value="">None</option><option value="" disabled>⚠️ Lỗi tải pages</option>';
+    }
+}
+
+// ── Publish Panel: Data Loading ──
+
+let _publishSEOData = {}; // { youtube: {title, description, tags}, facebook: {...} }
+
+async function loadPublishData() {
+    if (!currentDrama || !currentEpisode) return;
+    try {
+        const meta = JSON.parse(currentDrama.metadata || '{}');
+        const targets = meta.upload_targets || [];
+        
+        // Load SEO from EPISODE metadata (per-episode), fallback to drama-level
+        const epMeta = JSON.parse(currentEpisode.metadata || '{}');
+        const seoPublish = epMeta.seo_publish || meta.seo_publish || {};
+        _publishSEOData = seoPublish;
+
+        const grid = document.getElementById('publishPlatformGrid');
+        const emptyEl = document.getElementById('publishEmpty');
+        const seoPreview = document.getElementById('publishSEOPreview');
+        const statusEl = document.getElementById('publishStatus');
+
+        if (targets.length === 0 && Object.keys(seoPublish).length === 0) {
+            emptyEl.style.display = '';
+            grid.innerHTML = '';
+            seoPreview.style.display = 'none';
+            statusEl.textContent = 'No publish targets configured';
+            return;
+        }
+
+        emptyEl.style.display = 'none';
+        seoPreview.style.display = '';
+        statusEl.textContent = `${targets.length} platform(s) configured`;
+
+        // Load publish status
+        let publishStatus = {};
+        try {
+            const psRes = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish-status`);
+            publishStatus = psRes.platforms || {};
+        } catch(e) {}
+
+        // Show SEO fields for first platform
+        const firstPlatform = targets[0]?.provider || 'youtube';
+        switchPublishSEOPlatform(firstPlatform);
+
+        // Render platform cards
+        grid.innerHTML = '';
+        targets.forEach((target, idx) => {
+            const platform = target.provider || 'youtube';
+            const pStatus = publishStatus[platform] || {};
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.style.cssText = 'padding:16px; border:1px solid var(--border);';
+            card.id = `publishCard_${idx}`;
+
+            const icon = platform === 'youtube' ? '📺' : platform === 'facebook' ? '📘' : '🎵';
+            const pName = platform.charAt(0).toUpperCase() + platform.slice(1);
+            const channelId = target.channel_name || target.page_name || target.channel_id || '—';
+            const privacy = meta.upload_privacy || 'private';
+
+            let statusBadge = '';
+            if (pStatus.status === 'done') {
+                statusBadge = `<span style="color:#10b981; font-weight:600;">✅ Published</span>`;
+                if (pStatus.video_url) statusBadge += `<br><a href="${pStatus.video_url}" target="_blank" style="font-size:11px; color:var(--accent);">${pStatus.video_url}</a>`;
+            } else if (pStatus.status === 'uploading') {
+                statusBadge = `<span style="color:#f59e0b;">⏳ Uploading... ${pStatus.progress || 0}%</span>`;
+            } else if (pStatus.status === 'error') {
+                statusBadge = `<span style="color:#ef4444;">❌ Error: ${pStatus.error || 'Unknown'}</span>`;
+            } else {
+                statusBadge = `<span style="color:var(--text-3);">⏸ Ready to publish</span>`;
+            }
+
+            card.innerHTML = `
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                    <span style="font-size:20px;">${icon}</span>
+                    <div>
+                        <div style="font-weight:600; font-size:14px; color:var(--text-0);">${pName}</div>
+                        <div style="font-size:11px; color:var(--text-3);">Channel: ${channelId} · ${privacy}</div>
+                    </div>
+                </div>
+                <div style="padding:8px 0; border-top:1px solid var(--border); font-size:12px;">
+                    ${statusBadge}
+                </div>
+                <div style="display:flex; gap:6px; margin-top:10px;">
+                    <button class="btn btn-sm btn-primary" onclick="publishToTarget(${idx})" ${pStatus.status === 'done' ? 'disabled' : ''}>
+                        🚀 Publish
+                    </button>
+                    ${pStatus.status === 'done' ? `<button class="btn btn-sm btn-outline" onclick="publishToTarget(${idx})" >🔄 Re-publish</button>` : ''}
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+    } catch(e) {
+        console.warn('loadPublishData error:', e);
+    }
+}
+
+function switchPublishSEOPlatform(platform) {
+    const seo = _publishSEOData[platform] || {};
+    document.getElementById('publishSEOTitle').value = seo.title || '';
+    document.getElementById('publishSEODesc').value = seo.description || '';
+    const tags = seo.tags || [];
+    document.getElementById('publishSEOTags').value = Array.isArray(tags) ? tags.join(', ') : tags;
+    document.getElementById('publishSEOPlatform').value = platform;
+}
+
+async function savePublishSEO() {
+    if (!currentDrama || !currentEpisode) return;
+    const platform = document.getElementById('publishSEOPlatform').value;
+    const title = document.getElementById('publishSEOTitle').value.trim();
+    const desc = document.getElementById('publishSEODesc').value.trim();
+    const tagsStr = document.getElementById('publishSEOTags').value.trim();
+    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+    _publishSEOData[platform] = { title, description: desc, tags };
+
+    try {
+        // Save to EPISODE metadata (per-episode SEO)
+        const epMeta = JSON.parse(currentEpisode.metadata || '{}');
+        epMeta.seo_publish = _publishSEOData;
+        await apiFetch(`/episodes/${currentEpisode.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ metadata: epMeta }),
+        });
+        // Update local cache
+        currentEpisode.metadata = JSON.stringify(epMeta);
+        toast('SEO saved!', 'success');
+    } catch(e) {
+        toast('Save SEO failed: ' + e.message, 'error');
+    }
+}
+
+async function generatePublishSEO() {
+    if (!currentDrama || !currentEpisode) {
+        toast('Chọn episode trước', 'error');
+        return;
+    }
+    const btn = document.getElementById('btnGenSEO');
+    const old = btn.innerHTML;
+    btn.innerHTML = '⏳ Generating...';
+    btn.disabled = true;
+    try {
+        const res = await apiFetch(`/dramas/${currentDrama.id}/generate-seo`, {
+            method: 'POST',
+            body: JSON.stringify({ episode_id: currentEpisode.id }),
+        });
+        if (res.seo_publish) {
+            _publishSEOData = res.seo_publish;
+            // Refresh episode metadata (SEO is now per-episode)
+            const epRes = await apiFetch(`/episodes/${currentEpisode.id}`);
+            currentEpisode = epRes;
+            switchPublishSEOPlatform(document.getElementById('publishSEOPlatform').value);
+            document.getElementById('publishSEOPreview').style.display = '';
+            toast('SEO generated!', 'success');
+        }
+    } catch(e) {
+        toast('SEO generation failed: ' + e.message, 'error');
+    } finally {
+        btn.innerHTML = old;
+        btn.disabled = false;
+    }
+}
+
+async function publishToTarget(targetIdx) {
+    if (!currentDrama || !currentEpisode) return;
+    const meta = JSON.parse(currentDrama.metadata || '{}');
+    const targets = meta.upload_targets || [];
+    const target = targets[targetIdx];
+    if (!target) { toast('Invalid target', 'error'); return; }
+
+    const card = document.getElementById(`publishCard_${targetIdx}`);
+    const btn = card?.querySelector('.btn-primary');
+    if (btn) { btn.innerHTML = '⏳ Publishing...'; btn.disabled = true; }
+
+    try {
+        const res = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish`, {
+            method: 'POST',
+            body: JSON.stringify({ target_index: targetIdx }),
+        });
+        if (res.task_id) {
+            toast(`Upload started for ${target.provider}`, 'info');
+            _pollPublishStatus(res.task_id, targetIdx);
+        } else if (res.error) {
+            toast(res.error, 'error');
+            if (btn) { btn.innerHTML = '🚀 Publish'; btn.disabled = false; }
+        }
+    } catch(e) {
+        toast('Publish failed: ' + e.message, 'error');
+        if (btn) { btn.innerHTML = '🚀 Publish'; btn.disabled = false; }
+    }
+}
+
+async function publishAllTargets() {
+    if (!currentDrama) return;
+    const meta = JSON.parse(currentDrama.metadata || '{}');
+    const targets = meta.upload_targets || [];
+    for (let i = 0; i < targets.length; i++) {
+        await publishToTarget(i);
+        if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2000));
+    }
+}
+
+function _pollPublishStatus(taskId, targetIdx) {
+    const card = document.getElementById(`publishCard_${targetIdx}`);
+    const interval = setInterval(async () => {
+        try {
+            const res = await fetch(`/api/v1/video_manager/upload/tasks/${taskId}`);
+            const data = await res.json();
+            const task = data.task || {};
+            const statusDiv = card?.querySelector('div[style*="border-top"]');
+            if (statusDiv) {
+                if (task.status === 'done') {
+                    statusDiv.innerHTML = `<span style="color:#10b981; font-weight:600;">✅ Published</span>` +
+                        (task.video_url ? `<br><a href="${task.video_url}" target="_blank" style="font-size:11px; color:var(--accent);">${task.video_url}</a>` : '');
+                    clearInterval(interval);
+                    toast('Published!', 'success');
+                } else if (task.status === 'error' || task.status === 'cancelled') {
+                    statusDiv.innerHTML = `<span style="color:#ef4444;">❌ ${task.error_message || 'Failed'}</span>`;
+                    clearInterval(interval);
+                    const btn = card?.querySelector('.btn-primary');
+                    if (btn) { btn.innerHTML = '🚀 Retry'; btn.disabled = false; }
+                } else {
+                    statusDiv.innerHTML = `<span style="color:#f59e0b;">⏳ Uploading... ${task.progress_pct || 0}%</span>`;
+                }
+            }
+        } catch(e) {
+            clearInterval(interval);
+        }
+    }, 3000);
+}
+            }
+        } catch(e) {
+            clearInterval(interval);
+        }
+    }, 3000);
+}

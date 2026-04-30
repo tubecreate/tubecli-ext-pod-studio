@@ -130,6 +130,8 @@ async def batch_generate(
     headless: bool = False,
     overwrite: bool = False,
     progress_callback=None,
+    cancel_event: asyncio.Event = None,
+    process_registry: list = None,
 ) -> list:
     """
     Generate videos for a batch of storyboard shots using multiple browser profiles concurrently.
@@ -251,8 +253,24 @@ async def batch_generate(
                 env=env,
             )
 
+            # Register process so cancel endpoint can kill it
+            if process_registry is not None:
+                process_registry.append(proc)
+
             while True:
-                line = await proc.stdout.readline()
+                # Check cancel before reading
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"Cancel event set — killing subprocess for profile {profile}")
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    continue  # no output yet, loop back and check cancel again
                 if not line:
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
@@ -283,7 +301,9 @@ async def batch_generate(
                                     except Exception:
                                         pass
                         elif "status" in res and "message" in res:
+                            # Global error (e.g. RATE_LIMIT_REACHED, crash)
                             logger.error(f"Global Node error from {profile}: {res}")
+                            global_results.append(res)  # propagate to caller
                     except json.JSONDecodeError:
                         pass
 

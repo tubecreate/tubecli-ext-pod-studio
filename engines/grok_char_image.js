@@ -125,7 +125,8 @@ function downloadFile(url, dest) {
         context = await chromium.launchPersistentContext(profileDir, {
             channel: 'chrome',
             headless,
-            args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+            args: ['--no-sandbox', '--test-type', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+            ignoreDefaultArgs: ['--enable-automation'],
             viewport: headless ? { width: 1280, height: 800 } : null,
         });
 
@@ -345,6 +346,22 @@ function downloadFile(url, dest) {
                 try {
                     const errLoc = page.locator('text=/unable to finish replying|try again later|thử lại|No response/i').first();
                     const errVisible = await errLoc.isVisible({ timeout: 500 }).catch(()=>false);
+
+                    const rateLimitDetected = await page.evaluate(() => {
+                        const text = document.body.innerText.toLowerCase();
+                        // Only match actual rate limit error messages, NOT sidebar "Upgrade to SuperGrok" ad
+                        return text.includes("you've reached your limit") ||
+                               text.includes("you've reached your current limit") ||
+                               text.includes('rate limit reached') ||
+                               text.includes("reached your limit for today") ||
+                               text.includes("check back soon");
+                    }).catch(()=>false);
+
+                    if (rateLimitDetected) {
+                        console.log(JSON.stringify({ status: 'error', message: 'RATE_LIMIT_REACHED' }));
+                        log('Rate limit reached detected. NOT retrying — exiting gracefully.');
+                        break;
+                    }
 
                     if (errVisible) {
                         log('Grok internal error detected. NOT retrying — exiting gracefully.');

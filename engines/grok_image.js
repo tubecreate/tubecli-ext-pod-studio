@@ -75,7 +75,8 @@ async function sleep(ms) {
     const context = await plugin.launchPersistentContext(storageDir, {
         channel: 'chrome',
         headless,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+        args: ['--no-sandbox', '--test-type', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+        ignoreDefaultArgs: ['--enable-automation'],
         no_viewport: !headless,
         viewport: headless ? { width: 1280, height: 800 } : null,
     });
@@ -201,6 +202,23 @@ async function sleep(ms) {
                         const errVisible = await errLoc.isVisible({ timeout: 500 }).catch(()=>false);
                         const retryBtn = page.locator('button:has-text("Retry"), button:has-text("Thử lại")').first();
                         const btnVisible = await retryBtn.isVisible({ timeout: 500 }).catch(()=>false);
+
+                        const rateLimitDetected = await page.evaluate(() => {
+                            const text = document.body.innerText.toLowerCase();
+                            // Only match actual rate limit error messages, NOT sidebar "Upgrade to SuperGrok" ad
+                            return text.includes("you've reached your limit") ||
+                                   text.includes("you've reached your current limit") ||
+                                   text.includes('rate limit reached') ||
+                                   text.includes("reached your limit for today") ||
+                                   text.includes("check back soon");
+                        }).catch(()=>false);
+
+                        if (rateLimitDetected) {
+                            console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'RATE_LIMIT_REACHED' }));
+                            log('Rate limit reached detected. Aborting immediately.');
+                            await context.close();
+                            process.exit(1);
+                        }
 
                         if (errVisible || btnVisible) {
                             log(`Grok internal error detected. Waiting 5s before retry... (${shotRetries+1}/2)`);

@@ -867,3 +867,5 @@ class Database:
             ).fetchall()
             item["category_ids"] = [r["category_id"] for r in cats]
         return results
+            item["category_ids"] = [r["category_id"] for r in cats]
+        return results

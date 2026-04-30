@@ -73,7 +73,8 @@ async function sleep(ms) {
     const context = await plugin.launchPersistentContext(storageDir, {
         channel: 'chrome',
         headless,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--window-size=1280,900'],
+        args: ['--no-sandbox', '--test-type', '--disable-blink-features=AutomationControlled', '--window-size=1280,900'],
+        ignoreDefaultArgs: ['--enable-automation'],
         viewport: { width: 1280, height: 800 },
     });
 
@@ -428,6 +429,23 @@ async function sleep(ms) {
                             }
                             return false;
                         }).catch(()=>false);
+
+                        const rateLimitDetected = await page.evaluate(() => {
+                            const text = document.body.innerText.toLowerCase();
+                            // Only match actual rate limit error messages, NOT sidebar "Upgrade to SuperGrok" ad
+                            return text.includes("you've reached your limit") ||
+                                   text.includes("you've reached your current limit") ||
+                                   text.includes('rate limit reached') ||
+                                   text.includes("reached your limit for today") ||
+                                   text.includes("check back soon");
+                        }).catch(()=>false);
+
+                        if (rateLimitDetected) {
+                            console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'RATE_LIMIT_REACHED' }));
+                            log('Rate limit reached detected. Aborting immediately.');
+                            await context.close();
+                            process.exit(1);
+                        }
 
                         if (errVisible || btnVisible || blockDetected) {
                             log(`Grok internal error or block detected. Retrying video... (${shotRetries+1}/3)`);

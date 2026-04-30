@@ -16,6 +16,78 @@ logger = logging.getLogger("ContentStudio.Routes")
 
 router = APIRouter()
 
+
+def _get_telegram_config():
+    """Read telegram bot_token and chat_id from global_settings.json."""
+    try:
+        from tubecli.config import DATA_DIR
+        settings_path = DATA_DIR / "global_settings.json"
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            token = data.get("telegram_bot_token", "")
+            chat_id = data.get("telegram_chat_id", "")
+            if token and chat_id:
+                return token, chat_id
+    except Exception as e:
+        logger.warning(f"Could not read telegram config: {e}")
+    return None, None
+
+
+async def _send_telegram(text: str, video_path: str = None):
+    """Send a Telegram message (and optionally a video file) using global settings."""
+    token, chat_id = _get_telegram_config()
+    if not token or not chat_id:
+        logger.debug("Telegram not configured, skipping notification.")
+        return False
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Send text message
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            )
+
+            # Send video file if provided
+            if video_path and os.path.isfile(video_path):
+                file_size = os.path.getsize(video_path)
+                # Telegram limit: 50MB for bots
+                if file_size <= 50 * 1024 * 1024:
+                    with open(video_path, "rb") as vf:
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendVideo",
+                            data={"chat_id": chat_id, "caption": f"📎 {os.path.basename(video_path)}"},
+                            files={"video": (os.path.basename(video_path), vf, "video/mp4")},
+                            timeout=120.0,
+                        )
+                else:
+                    size_mb = round(file_size / 1_048_576, 1)
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": f"⚠️ Video quá lớn ({size_mb}MB), không thể gửi qua Telegram (giới hạn 50MB)."},
+                    )
+        return True
+    except Exception as e:
+        logger.error(f"Telegram notification failed: {e}")
+        return False
+
+
+@router.post("/api/v1/studio/notify-telegram")
+async def notify_telegram(request: Request):
+    """Send a notification to Telegram. Supports text and optional video attachment."""
+    data = await request.json()
+    text = data.get("text", "")
+    video_path = data.get("video_path", "")
+
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    success = await _send_telegram(text, video_path)
+    return {"success": success}
+
+
 # Ensure extension dir is in path
 _ext_dir = os.path.dirname(os.path.abspath(__file__))
 if _ext_dir not in sys.path:
@@ -947,6 +1019,95 @@ async def _autopilot_runner(drama_id: int):
                         _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
             except Exception as e:
                 logger.error(f"Autopilot Storyboard error: {e}")
+
+        # ── 6. Flow: Publish to Platforms ──
+        pipeline = meta.get("pipeline", [])
+        if "publish" in pipeline:
+            upload_targets = meta.get("upload_targets", [])
+            if upload_targets:
+                meta["autopilot_status"] = f"publishing to platforms"
+                meta["autopilot_progress"] = 92
+                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+
+                try:
+                    # Step 8b: Publish each episode to each platform
+                    eps = _db().list_episodes(drama_id)
+                    for ep in eps:
+                        ep_id = ep["id"]
+                        video_path = _find_episode_video(drama_id, ep_id)
+                        if not video_path:
+                            logger.warning(f"Autopilot: No video found for ep {ep_id}, skipping publish")
+                            continue
+
+                        # Step 8a: Generate SEO for THIS episode if not done yet
+                        ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+                        if "seo_publish" not in ep_meta or not ep_meta["seo_publish"]:
+                            content_summary = ep.get("script_content", "") or ep.get("content", "")
+                            if not content_summary:
+                                outline = meta.get("series_outline", {})
+                                content_summary = outline.get("overview", drama.get("title", "")) if isinstance(outline, dict) else str(outline)[:3000]
+
+                            ep_seo_publish = {}
+                            language = drama.get("language", "vi")
+                            ep_title = ep.get("title", "") or drama.get("title", "")
+                            platforms_set = set(t.get("provider", "youtube") for t in upload_targets)
+                            for plat in platforms_set:
+                                try:
+                                    seo_result = await _generate_seo_for_platform(
+                                        str(content_summary)[:3000], ep_title, language, plat
+                                    )
+                                    ep_seo_publish[plat] = seo_result
+                                    logger.info(f"Autopilot: Generated SEO for {plat} (ep {ep_id})")
+                                except Exception as se:
+                                    logger.warning(f"Autopilot SEO for {plat} (ep {ep_id}) failed: {se}")
+                                    ep_seo_publish[plat] = {"title": ep_title, "description": "", "tags": []}
+                            ep_meta["seo_publish"] = ep_seo_publish
+                            _db().update_episode(ep_id, {"metadata": json.dumps(ep_meta, ensure_ascii=False)})
+
+                        privacy = meta.get("upload_privacy", "private")
+                        for target in upload_targets:
+                            platform = target.get("provider", "youtube")
+                            seo = ep_meta.get("seo_publish", {}).get(platform, {})
+                            if not seo:
+                                seo = meta.get("seo_publish", {}).get(platform, {})
+                            upload_title = seo.get("title", drama.get("title", ""))
+                            upload_desc = seo.get("description", "")
+                            upload_tags = seo.get("tags", [])
+                            category_id = seo.get("category_id", "22")
+
+                            try:
+                                import httpx
+                                async with httpx.AsyncClient(base_url="http://127.0.0.1:5295") as client:
+                                    payload = {
+                                        "provider": platform,
+                                        "email": target.get("email", ""),
+                                        "cred_id": target.get("cred_id", ""),
+                                        "token_id": target.get("cred_id", ""),
+                                        "channel_id": target.get("channel_id", ""),
+                                        "file_path": video_path,
+                                        "title": upload_title,
+                                        "description": upload_desc,
+                                        "tags": upload_tags,
+                                        "category_id": category_id,
+                                        "privacy": privacy,
+                                    }
+                                    resp = await client.post("/api/v1/video_manager/upload", json=payload, timeout=30.0)
+                                    result = resp.json()
+                                    if result.get("success"):
+                                        task_id = result.get("task_id", "")
+                                        if "publish_tasks" not in ep_meta:
+                                            ep_meta["publish_tasks"] = {}
+                                        ep_meta["publish_tasks"][platform] = task_id
+                                        _db().update_episode(ep_id, {"metadata": json.dumps(ep_meta)})
+                                        logger.info(f"Autopilot: Published ep {ep_id} to {platform}, task={task_id}")
+                                    else:
+                                        logger.warning(f"Autopilot: Upload to {platform} returned error: {result}")
+                            except Exception as ue:
+                                logger.error(f"Autopilot: Publish ep {ep_id} to {platform} failed: {ue}")
+
+                except Exception as pub_err:
+                    logger.error(f"Autopilot Publish step error: {pub_err}")
+                    # Non-fatal: continue to completion
 
         # Completed
         meta["autopilot_status"] = "completed"
@@ -2583,6 +2744,13 @@ async def start_gen_images(episode_id: int, request: Request, background_tasks: 
         "errors": [],
     }
 
+    # Setup cancel infrastructure
+    import asyncio as _asyncio
+    cancel_event = _asyncio.Event()
+    process_list = []
+    _gen_cancel_events[task_id] = cancel_event
+    _gen_processes[task_id] = process_list
+
     async def _runner():
         _image_tasks[task_id]["status"] = "running"
         try:
@@ -2611,7 +2779,34 @@ async def start_gen_images(episode_id: int, request: Request, background_tasks: 
                 headless=headless,
                 overwrite=overwrite,
                 progress_callback=on_progress,
+                cancel_event=cancel_event,
+                process_registry=process_list,
             )
+
+            if any(r.get("message") == "RATE_LIMIT_REACHED" for r in results):
+                logger.error("Rate limit reached during image generation. Aborting task.")
+                _image_tasks[task_id]["status"] = "error: RATE_LIMIT_REACHED"
+                
+                # Send telegram notification
+                try:
+                    import httpx
+                    from tubecli.config import DATA_DIR
+                    settings_path = DATA_DIR / "global_settings.json"
+                    if settings_path.exists():
+                        with open(settings_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        token = data.get("telegram_bot_token")
+                        chat_id = data.get("telegram_chat_id")
+                        if token and chat_id:
+                            httpx.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "⛔ [Auto-Pilot] Dừng khẩn cấp: Đã đạt giới hạn Grok Rate Limit (Hết lượt render Image)."},
+                                timeout=10
+                            )
+                except Exception as e:
+                    logger.error(f"Telegram notify failed: {e}")
+                
+                return
 
             _image_tasks[task_id]["status"] = "completed"
             _image_tasks[task_id]["done"] = _image_tasks[task_id]["total"]
@@ -2635,6 +2830,57 @@ async def get_gen_images_status(task_id: str):
 
 _video_tasks: dict = {}
 _tts_tasks: dict = {}
+# Store cancel events and subprocess refs for killing on abort
+_gen_cancel_events: dict = {}  # task_id -> asyncio.Event
+_gen_processes: dict = {}  # task_id -> list of asyncio.subprocess.Process
+
+
+@router.post("/api/v1/studio/gen-videos/cancel/{task_id}")
+async def cancel_gen_videos(task_id: str):
+    """Cancel an in-progress video generation task and kill browser processes."""
+    task = _video_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    # Set cancel event so engine loop stops
+    cancel_event = _gen_cancel_events.get(task_id)
+    if cancel_event:
+        cancel_event.set()
+    
+    # Kill all subprocess (Node.js browsers)
+    procs = _gen_processes.get(task_id, [])
+    for proc in procs:
+        try:
+            proc.kill()
+            logger.info(f"Killed gen-video subprocess PID {proc.pid} for task {task_id}")
+        except Exception as e:
+            logger.warning(f"Failed to kill subprocess: {e}")
+    
+    task["status"] = "error: cancelled by user"
+    return {"success": True, "message": "Cancellation requested"}
+
+
+@router.post("/api/v1/studio/gen-images/cancel/{task_id}")
+async def cancel_gen_images(task_id: str):
+    """Cancel an in-progress image generation task and kill browser processes."""
+    task = _image_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    cancel_event = _gen_cancel_events.get(task_id)
+    if cancel_event:
+        cancel_event.set()
+    
+    procs = _gen_processes.get(task_id, [])
+    for proc in procs:
+        try:
+            proc.kill()
+            logger.info(f"Killed gen-image subprocess PID {proc.pid} for task {task_id}")
+        except Exception as e:
+            logger.warning(f"Failed to kill subprocess: {e}")
+    
+    task["status"] = "error: cancelled by user"
+    return {"success": True, "message": "Cancellation requested"}
 
 
 def _generate_fallback_slide(shot, episode_id, aspect_ratio="16:9", engines_dir=None):
@@ -3055,6 +3301,13 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
         "shot_progress": {s["id"]: {"percent": 0, "status": "pending"} for s in pending},
     }
 
+    # Setup cancel infrastructure
+    import asyncio as _asyncio
+    cancel_event = _asyncio.Event()
+    process_list = []
+    _gen_cancel_events[task_id] = cancel_event
+    _gen_processes[task_id] = process_list
+
     async def _runner():
         _video_tasks[task_id]["status"] = "running"
         try:
@@ -3161,11 +3414,43 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 headless=headless,
                 overwrite=overwrite,
                 progress_callback=on_progress,
+                cancel_event=cancel_event,
+                process_registry=process_list,
             )
+
+            if any(r.get("message") == "RATE_LIMIT_REACHED" for r in results):
+                logger.error("Rate limit reached during video generation. Aborting task.")
+                _video_tasks[task_id]["status"] = "error: RATE_LIMIT_REACHED"
+                
+                # Send telegram notification
+                try:
+                    import httpx, json
+                    from tubecli.config import DATA_DIR
+                    settings_path = DATA_DIR / "global_settings.json"
+                    if settings_path.exists():
+                        with open(settings_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        token = data.get("telegram_bot_token")
+                        chat_id = data.get("telegram_chat_id")
+                        if token and chat_id:
+                            httpx.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": "⛔ [Auto-Pilot] Dừng khẩn cấp: Đã đạt giới hạn Grok Rate Limit (Hết lượt render Video/Image)."},
+                                timeout=10
+                            )
+                except Exception as e:
+                    logger.error(f"Telegram notify failed: {e}")
+                
+                return
 
             # ── Retry loop: up to 3 retries with progressively simplified prompts ──
             MAX_RETRIES = 3
             for attempt in range(1, MAX_RETRIES + 1):
+                # Check cancel before retry
+                if cancel_event.is_set():
+                    _video_tasks[task_id]["status"] = "error: cancelled by user"
+                    return
+
                 failed_ids = set(_video_tasks[task_id].get("errors", []))
                 failed_shots = [s for s in shots if s["id"] in failed_ids]
 
@@ -3194,8 +3479,34 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                     headless=headless,
                     overwrite=True,
                     progress_callback=on_progress,
+                    cancel_event=cancel_event,
+                    process_registry=process_list,
                 )
                 results.extend(retry_results)
+
+                if any(r.get("message") == "RATE_LIMIT_REACHED" for r in retry_results):
+                    logger.error("Rate limit reached during video generation retry. Aborting task.")
+                    _video_tasks[task_id]["status"] = "error: RATE_LIMIT_REACHED"
+
+                    try:
+                        import httpx, json
+                        from tubecli.config import DATA_DIR
+                        settings_path = DATA_DIR / "global_settings.json"
+                        if settings_path.exists():
+                            with open(settings_path, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            token = data.get("telegram_bot_token")
+                            chat_id = data.get("telegram_chat_id")
+                            if token and chat_id:
+                                httpx.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": chat_id, "text": "⛔ [Auto-Pilot] Dừng khẩn cấp: Đã đạt giới hạn Grok Rate Limit (Hết lượt render Video/Image)."},
+                                    timeout=10
+                                )
+                    except Exception as e:
+                        logger.error(f"Telegram notify failed: {e}")
+
+                    return
 
             # ── After all retries: skip remaining failures (NO fallback text slides) ──
             still_failed_ids = set(_video_tasks[task_id].get("errors", []))
@@ -4183,8 +4494,8 @@ async def _process_single_job(job: dict):
 def _get_pipeline_steps(template_key: str) -> list:
     """Map template key to pipeline steps."""
     templates = {
-        "drama_scene": ["raw", "rewrite", "extract", "storyboard", "videos", "audio", "video"],
-        "drama_full": ["raw", "rewrite", "extract", "storyboard", "images", "audio", "video"],
+        "drama_scene": ["raw", "rewrite", "extract", "storyboard", "videos", "audio", "video", "publish"],
+        "drama_full": ["raw", "rewrite", "extract", "storyboard", "images", "audio", "video", "publish"],
         "audio_story": ["raw", "rewrite", "audio", "video"],
         "content_only": ["raw", "rewrite"],
     }
@@ -4212,10 +4523,384 @@ async def _generate_seo_metadata(content: str, title: str, language: str) -> dic
     except Exception:
         return {"title": title, "description": content[:300], "tags": []}
 
+# ═══════════════════════════════════════════════════════════════
+# ── Step 08: Publish to Platforms ─────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+
+async def _generate_seo_for_platform(content: str, title: str, language: str, platform: str) -> dict:
+    """Generate SEO metadata for a specific platform using the SEO agent."""
+    s = _settings()
+    base_url, api_key, model, temp = s.get_ai_client_params()
+    if not api_key:
+        return {"title": title, "description": "", "tags": []}
+
+    from agents.seo_agent import SEOAgent
+    agent = SEOAgent()
+    user_msg = (
+        f"Source Title: {title}\n"
+        f"Language: {language}\n"
+        f"Platform: {platform}\n"
+        f"Content Summary:\n{content[:3000]}"
+    )
+
+    full_response = []
+    async for chunk in agent.chat_stream(user_msg, language, base_url, api_key, model, 0.7):
+        full_response.append(chunk)
+
+    full_text = "".join(full_response)
+    try:
+        return _repair_json(full_text)
+    except Exception:
+        return {"title": title, "description": content[:300], "tags": []}
+
+
+@router.post("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/validate-before-publish")
+async def validate_before_publish(drama_id: int, episode_id: int):
+    """Validate that an episode is fully ready for publishing.
+    Checks: storyboard images, AI videos, TTS audio, and final exported video."""
+    db = _db()
+    drama = db.get_drama(drama_id)
+    if not drama:
+        raise HTTPException(404, "Drama not found")
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    shots = db.list_storyboards(episode_id)
+    total = len(shots)
+    if total == 0:
+        return {"valid": False, "errors": ["No storyboard shots found for this episode."], "warnings": [], "summary": {}}
+
+    errors = []
+    warnings = []
+    missing_image = []
+    missing_video = []
+    missing_audio = []
+    short_audio = []
+
+    for sb in shots:
+        num = sb.get("storyboard_number", "?")
+
+        # Check composed image
+        img = sb.get("composed_image", "") or sb.get("first_frame_image", "")
+        if not img or not img.strip():
+            missing_image.append(num)
+
+        # Check AI video
+        vid = sb.get("video_url", "")
+        if not vid or not vid.strip():
+            missing_video.append(num)
+
+        # Check TTS audio
+        audio = sb.get("tts_audio_url", "")
+        if not audio or not audio.strip():
+            missing_audio.append(num)
+        else:
+            # Validate audio file exists and has reasonable size
+            audio_file = ""
+            if audio.startswith("/api/"):
+                # It's a relative URL like /api/v1/tts/audio/filename.mp3
+                filename = audio.split("/")[-1]
+                ext_dir = os.path.dirname(os.path.abspath(__file__))
+                # Check common audio dirs
+                for audio_dir in [
+                    os.path.join(ext_dir, "..", "tts_vibevoice", "data", "audio"),
+                    os.path.join(ext_dir, "data", "audio"),
+                ]:
+                    candidate = os.path.join(audio_dir, filename)
+                    if os.path.isfile(candidate):
+                        audio_file = candidate
+                        break
+            elif os.path.isfile(audio):
+                audio_file = audio
+
+            if audio_file:
+                fsize = os.path.getsize(audio_file)
+                if fsize < 1000:  # Less than 1KB = likely corrupted/empty
+                    short_audio.append({"shot": num, "size_bytes": fsize, "file": os.path.basename(audio_file)})
+
+    # Build error messages
+    if missing_image:
+        warnings.append(f"⚠️ {len(missing_image)}/{total} shots missing images: #{', #'.join(str(n) for n in missing_image)}")
+
+    if missing_video:
+        errors.append(f"❌ {len(missing_video)}/{total} shots missing AI video: #{', #'.join(str(n) for n in missing_video)}")
+
+    if missing_audio:
+        errors.append(f"❌ {len(missing_audio)}/{total} shots missing TTS audio: #{', #'.join(str(n) for n in missing_audio)}")
+
+    if short_audio:
+        details = ", ".join([f"#{s['shot']}({s['size_bytes']}B)" for s in short_audio])
+        errors.append(f"❌ {len(short_audio)} audio files appear corrupted (too small): {details}")
+
+    # Check final exported video
+    video_path = _find_episode_video(drama_id, episode_id)
+    has_export = False
+    export_size = 0
+    if video_path and os.path.isfile(video_path):
+        export_size = os.path.getsize(video_path)
+        if export_size > 100_000:  # At least 100KB
+            has_export = True
+        else:
+            errors.append(f"❌ Exported video file is too small ({export_size} bytes), likely corrupted: {os.path.basename(video_path)}")
+    else:
+        errors.append("❌ No exported video found. Run FFmpeg export (Step 7) first.")
+
+    summary = {
+        "total_shots": total,
+        "with_image": total - len(missing_image),
+        "with_video": total - len(missing_video),
+        "with_audio": total - len(missing_audio),
+        "corrupted_audio": len(short_audio),
+        "has_export": has_export,
+        "export_size_mb": round(export_size / 1_048_576, 2) if export_size else 0,
+        "export_path": os.path.basename(video_path) if video_path else "",
+        "export_path_full": video_path if video_path else "",
+    }
+
+    is_valid = len(errors) == 0
+    return {"valid": is_valid, "errors": errors, "warnings": warnings, "summary": summary}
+
+def _find_episode_video(drama_id: int, episode_id: int) -> str:
+    """Find the final exported video file for an episode."""
+    import glob
+    db = _db()
+    drama = db.get_drama(drama_id)
+    ep = db.get_episode(episode_id)
+    if not drama or not ep:
+        return ""
+
+    # Check episode video_url first
+    video_url = ep.get("video_url", "")
+    if video_url and os.path.isfile(video_url):
+        return video_url
+
+    # Check common export paths
+    drama_title = drama.get("title", f"drama_{drama_id}")
+    ep_num = ep.get("episode_number", 1)
+
+    # Search in data/content_studio/exports/
+    ext_dir = os.path.dirname(os.path.abspath(__file__))
+    export_dir = os.path.join(ext_dir, "data", "exports")
+    
+    # Safely construct episode title pattern
+    ep_title_clean = ep.get('title', '').replace(' ', '*').replace(':', '*')
+    
+    if os.path.isdir(export_dir):
+        patterns = [
+            os.path.join(export_dir, f"episode_{episode_id}_pipeline_export.mp4"),
+            os.path.join(export_dir, f"*{drama_id}*ep{ep_num}*.mp4")
+        ]
+        if ep_title_clean:
+            patterns.append(os.path.join(export_dir, f"*{ep_title_clean}*.mp4"))
+            
+        for pat in patterns:
+            files = glob.glob(pat)
+            if files:
+                return max(files, key=os.path.getmtime)
+
+    # Search in output directory
+    output_dir = os.path.join(os.path.dirname(ext_dir), "..", "output")
+    if os.path.isdir(output_dir):
+        patterns = [
+            os.path.join(output_dir, "**", f"episode_{episode_id}_pipeline_export.mp4"),
+            os.path.join(output_dir, "**", f"*{drama_id}*ep{ep_num}*.mp4")
+        ]
+        if ep_title_clean:
+            patterns.append(os.path.join(output_dir, "**", f"*{ep_title_clean}*.mp4"))
+            
+        for pat in patterns:
+            files = glob.glob(pat, recursive=True)
+            if files:
+                return max(files, key=os.path.getmtime)
+
+    return ""
+
+
+@router.post("/api/v1/studio/dramas/{drama_id}/generate-seo")
+async def generate_seo_for_publish(drama_id: int, request: Request):
+    """Generate SEO metadata for all configured upload targets (per-platform).
+    SEO is stored per-episode so each episode has unique title/description/tags."""
+    data = await request.json()
+    episode_id = data.get("episode_id")
+
+    drama = _db().get_drama(drama_id)
+    if not drama:
+        raise HTTPException(404, "Drama not found")
+
+    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    targets = meta.get("upload_targets", [])
+    language = drama.get("language", "vi")
+    title = drama.get("title", "")
+
+    # Get content summary from episode
+    ep = None
+    content_summary = ""
+    ep_title = title
+    if episode_id:
+        ep = _db().get_episode(episode_id)
+        if ep:
+            content_summary = ep.get("script_content", "") or ep.get("content", "")
+            if not content_summary:
+                # Try to build content from storyboards
+                storyboards = _db().list_storyboards(episode_id)
+                if storyboards:
+                    content_summary = " ".join(
+                        filter(None, [sb.get("narration_text", "").strip() or sb.get("description", "").strip() for sb in storyboards])
+                    )
+            
+            # Combine drama title and episode title for better context
+            ep_name = ep.get("title", "")
+            if ep_name and ep_name.lower() != title.lower():
+                ep_title = f"{title} - {ep_name}"
+
+    if not content_summary:
+        content_summary = meta.get("series_outline", {}).get("overview", title)
+    if isinstance(content_summary, dict):
+        content_summary = json.dumps(content_summary, ensure_ascii=False)
+
+    # Determine platforms to generate SEO for
+    platforms = set()
+    for t in targets:
+        platforms.add(t.get("provider", "youtube"))
+    if not platforms:
+        platforms = {"youtube"}  # Default
+
+    seo_publish = {}
+    for platform in platforms:
+        try:
+            seo_result = await _generate_seo_for_platform(
+                content_summary[:3000], ep_title, language, platform
+            )
+            seo_publish[platform] = seo_result
+            logger.info(f"Generated SEO for {platform} (ep {episode_id}): {seo_result.get('title', '')[:50]}")
+        except Exception as e:
+            logger.warning(f"SEO generation failed for {platform}: {e}")
+            seo_publish[platform] = {"title": ep_title, "description": "", "tags": []}
+
+    # Save to EPISODE metadata (per-episode SEO)
+    if ep and episode_id:
+        ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+        ep_meta["seo_publish"] = seo_publish
+        _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta, ensure_ascii=False)})
+    else:
+        # Fallback: save to drama if no episode specified
+        meta["seo_publish"] = seo_publish
+        _db().update_drama(drama_id, {"metadata": json.dumps(meta, ensure_ascii=False)})
+
+    return {"success": True, "seo_publish": seo_publish}
+
+
+@router.post("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/publish")
+async def publish_episode(drama_id: int, episode_id: int, request: Request):
+    """Publish an episode's final video to a specific platform target."""
+    data = await request.json()
+    target_index = data.get("target_index", 0)
+
+    drama = _db().get_drama(drama_id)
+    if not drama:
+        raise HTTPException(404, "Drama not found")
+
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    targets = meta.get("upload_targets", [])
+    if target_index >= len(targets):
+        raise HTTPException(400, "Invalid target_index")
+
+    target = targets[target_index]
+    platform = target.get("provider", "youtube")
+    privacy = meta.get("upload_privacy", "private")
+
+    # Find the video file
+    video_path = _find_episode_video(drama_id, episode_id)
+    if not video_path or not os.path.isfile(video_path):
+        raise HTTPException(400, f"No exported video found for episode {episode_id}. Export video in Step 7 first.")
+
+    # Get SEO for this platform (per-episode, fallback to drama-level)
+    ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+    seo = ep_meta.get("seo_publish", {}).get(platform, {})
+    if not seo:
+        seo = meta.get("seo_publish", {}).get(platform, {})
+    upload_title = seo.get("title", drama.get("title", f"Episode {ep.get('episode_number', 1)}"))
+    upload_desc = seo.get("description", "")
+    upload_tags = seo.get("tags", [])
+    category_id = seo.get("category_id", "22")
+
+    # Call Video Manager upload API internally
+    import httpx
+    try:
+        async with httpx.AsyncClient(base_url="http://127.0.0.1:5295") as client:
+            payload = {
+                "provider": platform,
+                "email": target.get("email", ""),
+                "cred_id": target.get("cred_id", ""),
+                "token_id": target.get("cred_id", ""),
+                "channel_id": target.get("channel_id", ""),
+                "file_path": video_path,
+                "title": upload_title,
+                "description": upload_desc,
+                "tags": upload_tags,
+                "category_id": category_id,
+                "privacy": privacy,
+            }
+            resp = await client.post("/api/v1/video_manager/upload", json=payload, timeout=30.0)
+            result = resp.json()
+
+            if result.get("success") and result.get("task_id"):
+                # Save task_id to episode metadata for status tracking
+                ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+                if "publish_tasks" not in ep_meta:
+                    ep_meta["publish_tasks"] = {}
+                ep_meta["publish_tasks"][platform] = result["task_id"]
+                _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta)})
+
+                return {"success": True, "task_id": result["task_id"], "platform": platform}
+            else:
+                return {"success": False, "error": result.get("detail", "Upload failed")}
+    except Exception as e:
+        logger.error(f"Publish to {platform} failed: {e}")
+        raise HTTPException(500, f"Publish failed: {str(e)}")
+
+
+@router.get("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/publish-status")
+async def get_publish_status(drama_id: int, episode_id: int):
+    """Get publish status for all platforms."""
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+    publish_tasks = ep_meta.get("publish_tasks", {})
+
+    platforms = {}
+    for platform, task_id in publish_tasks.items():
+        try:
+            import httpx
+            async with httpx.AsyncClient(base_url="http://127.0.0.1:5295") as client:
+                resp = await client.get(f"/api/v1/video_manager/upload/tasks/{task_id}", timeout=10.0)
+                data = resp.json()
+                task = data.get("task", {})
+                platforms[platform] = {
+                    "task_id": task_id,
+                    "status": task.get("status", "unknown"),
+                    "progress": task.get("progress_pct", 0),
+                    "video_url": task.get("video_url", ""),
+                    "video_id": task.get("video_id", ""),
+                    "error": task.get("error_message", ""),
+                }
+        except Exception as e:
+            platforms[platform] = {"task_id": task_id, "status": "unknown", "error": str(e)}
+
+    return {"success": True, "platforms": platforms}
+
 
 # ═══════════════════════════════════════════════════════════════
 # ── Channel Watcher API ───────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
+
 
 _channel_watcher_running = False
 

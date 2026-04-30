@@ -24,7 +24,8 @@ const cookiesPath = path.join(profileDir, 'cookies.json');
     
     const context = await chromium.launchPersistentContext(profileDir, {
         headless: false,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+        args: ['--no-sandbox', '--test-type', '--disable-blink-features=AutomationControlled', '--start-maximized'],
+        ignoreDefaultArgs: ['--enable-automation'],
         viewport: null,
     });
 
