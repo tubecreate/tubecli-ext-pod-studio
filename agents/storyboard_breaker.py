@@ -39,7 +39,7 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
       "character_names": ["Character Name 1", "Character Name 2"],
       "reference_asset_names": ["Exact Asset Name from visual_assets list"],
       "reference_effect_names": ["Exact Effect Name from visual_effects list"],
-      "illustrate_layout": "How the visual asset/effect is composed with the character in the scene. E.g. 'Character stands to the left, pointing at a large floating pie chart on the right side of frame' or 'Infographic displayed on a digital screen behind the character'. Leave empty if no asset/effect in this shot."
+      "illustrate_layout": "ALWAYS fill this when the shot has any visual element beyond just a talking character. Describe HOW the visual is composed with the character. E.g. 'Character stands to the left, pointing at a large floating pie chart on the right' or 'Holographic data panel floating above character's hand' or 'Split screen: character on left, process flowchart on right'. Even when no gallery asset is targeted, describe the Auto-Illustrate visual layout here."
     }
   ]
 }
