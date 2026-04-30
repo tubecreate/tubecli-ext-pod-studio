@@ -3893,7 +3893,8 @@ async function openGenVideosDialog() {
 
     await _loadBrowserProfilesIntoSelect('genVidProfile');
 
-    const sel = document.getElementById('genVidProfile');
+    // Initialize chip UI for Gen Videos dialog
+    _genVidChipSelected = [];
     let savedProfiles = [];
     if (currentDrama) {
         try { 
@@ -3911,15 +3912,9 @@ async function openGenVideosDialog() {
         }
     }
     
-    if (savedProfiles.length > 0) {
-        for (let i = 0; i < sel.options.length; i++) {
-            if (savedProfiles.includes(sel.options[i].value)) {
-                sel.options[i].selected = true;
-            } else {
-                sel.options[i].selected = false;
-            }
-        }
-    }
+    _genVidChipSelected = savedProfiles.filter(s => s && _browserProfilesCache.some(p => p.name === s));
+    _syncGenVidChipsToSelect();
+    _renderGenVidChips();
 
     try {
         const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
@@ -3932,6 +3927,111 @@ async function openGenVideosDialog() {
 
     _restoreVideoEngine();
     document.getElementById('genVideosModal').style.display = 'flex';
+}
+
+// ── Gen Videos Chip-based Profile Selector ──
+let _genVidChipSelected = [];
+
+function _renderGenVidChips() {
+    const container = document.getElementById('genVidChipSelect');
+    const emptyLabel = document.getElementById('genVidChipEmpty');
+    const menu = document.getElementById('genVidChipMenu');
+    if (!container || !menu) return;
+
+    // Remove old chips
+    container.querySelectorAll('.gv-chip-item').forEach(el => el.remove());
+
+    // Show/hide empty label
+    if (emptyLabel) emptyLabel.style.display = _genVidChipSelected.length === 0 ? '' : 'none';
+
+    // Insert chips before the add-btn wrapper
+    const addBtnWrap = container.querySelector('div[style*="position:relative"]');
+    _genVidChipSelected.forEach(name => {
+        const profile = _browserProfilesCache.find(p => p.name === name);
+        const chip = document.createElement('span');
+        chip.className = 'gv-chip-item';
+        chip.style.cssText = `
+            display:inline-flex; align-items:center; gap:6px;
+            padding:4px 10px 4px 8px; border-radius:20px;
+            background:linear-gradient(135deg, rgba(99,102,241,.15), rgba(139,92,246,.15));
+            border:1px solid rgba(99,102,241,.3);
+            color:var(--text-1); font-size:12px; font-weight:500;
+            transition:all .2s; cursor:default; animation:chipFadeIn .2s ease;
+        `;
+        const statusDot = profile && profile.has_cookies ? '🟢' : '🔵';
+        const googleIcon = profile && profile.google_account ? ' 👤' : '';
+        chip.innerHTML = `<span style="font-size:10px;">${statusDot}</span>${_escChip(name)}${googleIcon}<span class="gv-chip-remove" style="cursor:pointer; opacity:.6; font-size:14px; margin-left:2px; transition:opacity .2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='.6'" title="Remove">✕</span>`;
+        chip.querySelector('.gv-chip-remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            _genVidChipSelected = _genVidChipSelected.filter(n => n !== name);
+            _syncGenVidChipsToSelect();
+            _renderGenVidChips();
+        });
+        container.insertBefore(chip, addBtnWrap);
+    });
+
+    // Render dropdown menu options
+    menu.innerHTML = '';
+    _browserProfilesCache.forEach(p => {
+        const isSelected = _genVidChipSelected.includes(p.name);
+        const opt = document.createElement('div');
+        opt.style.cssText = `
+            display:flex; align-items:center; gap:8px; padding:8px 12px;
+            cursor:pointer; font-size:13px; transition:background .15s;
+            ${isSelected ? 'background:rgba(99,102,241,.12);' : ''}
+        `;
+        opt.onmouseover = () => { if (!isSelected) opt.style.background = 'rgba(255,255,255,.05)'; };
+        opt.onmouseout = () => { if (!isSelected) opt.style.background = 'transparent'; };
+        const statusDot = p.has_cookies ? '🟢' : '⚪';
+        const googleTag = p.google_account ? ' <span style="opacity:.5; font-size:11px;">👤</span>' : '';
+        opt.innerHTML = `
+            <span style="font-size:11px;">${statusDot}</span>
+            <span style="flex:1; color:var(--text-1);">${_escChip(p.name)}${googleTag}</span>
+            <span style="color:var(--primary); font-size:16px; opacity:${isSelected ? '1' : '0'}; transition:opacity .15s;">✓</span>
+        `;
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (isSelected) {
+                _genVidChipSelected = _genVidChipSelected.filter(n => n !== p.name);
+            } else {
+                _genVidChipSelected.push(p.name);
+            }
+            _syncGenVidChipsToSelect();
+            _renderGenVidChips();
+        });
+        menu.appendChild(opt);
+    });
+}
+
+function _syncGenVidChipsToSelect() {
+    const sel = document.getElementById('genVidProfile');
+    if (!sel) return;
+    for (let i = 0; i < sel.options.length; i++) {
+        sel.options[i].selected = _genVidChipSelected.includes(sel.options[i].value);
+    }
+    if (_genVidChipSelected.length > 0) {
+        localStorage.setItem('cs_last_browser_profile_video', _genVidChipSelected.join(','));
+    }
+}
+
+function toggleGenVidChipMenu(event) {
+    if (event) event.stopPropagation();
+    const menu = document.getElementById('genVidChipMenu');
+    if (!menu) return;
+    const isOpen = menu.style.display !== 'none';
+    menu.style.display = isOpen ? 'none' : 'block';
+
+    if (!isOpen) {
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!menu.contains(e.target) && e.target.id !== 'genVidAddBtn') {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 10);
+    }
 }
 
 // ── Video Engine Selection Functions ──
@@ -3961,10 +4061,20 @@ function onGenVidEngineChange() {
             ? 'Browser Profile (Chrome \u0111\u00e3 login Google)'
             : 'Browser Profile (Chrome \u0111\u00e3 login Grok)';
     }
+    // Sync to wizard dropdown and localStorage so they stay consistent
+    const wizEl = document.getElementById('wizVideoEngine');
+    if (wizEl) wizEl.value = engine;
+    localStorage.setItem('cs_video_engine', engine);
 }
 
 function _getVideoEngine() {
-    // Priority: wizard dropdown > modal dropdown > drama metadata > localStorage > default
+    // If Gen Videos modal is open, always use its dropdown (user is actively choosing)
+    const genModal = document.getElementById('genVideosModal');
+    if (genModal && genModal.style.display !== 'none') {
+        const genEl = document.getElementById('genVidEngine');
+        if (genEl && genEl.value) return genEl.value;
+    }
+    // Otherwise: wizard dropdown > localStorage > default
     const wizEl = document.getElementById('wizVideoEngine');
     if (wizEl && wizEl.value) return wizEl.value;
     const genEl = document.getElementById('genVidEngine');

@@ -1597,9 +1597,31 @@
                     </label>
                     <label class="field">
                         <span class="field-label" id="genVidProfileLabel">Browser Profile (Chrome đã login)</span>
-                        <select id="genVidProfile" class="input" multiple size="4" style="height: 100px;">
+                        <select id="genVidProfile" class="input" multiple size="4" style="display:none;">
                             <option value="">Đang load profiles...</option>
                         </select>
+                        <!-- Chip-based profile selector -->
+                        <div id="genVidChipSelect" style="
+                            display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+                            min-height:44px; padding:8px 10px;
+                            background:var(--bg-2); border:1px solid var(--border); border-radius:8px;
+                            cursor:pointer; position:relative; transition:border-color .2s;
+                        " onclick="toggleGenVidChipMenu(event)">
+                            <span id="genVidChipEmpty" style="color:var(--text-3); font-size:12px; pointer-events:none;">Click để chọn profile...</span>
+                            <div style="position:relative; margin-left:auto;">
+                                <button type="button" id="genVidAddBtn" class="btn btn-sm" style="
+                                    padding:2px 8px; min-height:0; font-size:18px; line-height:1;
+                                    border-radius:6px; background:var(--primary); color:#fff; border:none;
+                                    cursor:pointer; box-shadow:0 2px 6px rgba(99,102,241,.3);
+                                " onclick="event.stopPropagation(); toggleGenVidChipMenu(event);">+</button>
+                                <div id="genVidChipMenu" style="
+                                    display:none; position:absolute; top:calc(100% + 6px); right:0;
+                                    min-width:220px; max-height:200px; overflow-y:auto;
+                                    background:var(--bg-1); border:1px solid var(--border); border-radius:8px;
+                                    box-shadow:0 8px 24px rgba(0,0,0,.35); z-index:100; padding:4px 0;
+                                "></div>
+                            </div>
+                        </div>
                     </label>
                     <div class="field-row" style="display:flex; gap:12px; margin-top:4px;">
                         <label class="field" style="flex:1;">
