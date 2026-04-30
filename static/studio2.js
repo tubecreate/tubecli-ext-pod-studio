@@ -7494,9 +7494,3 @@ function _pollPublishStatus(taskId, targetIdx) {
         }
     }, 3000);
 }
-            }
-        } catch(e) {
-            clearInterval(interval);
-        }
-    }, 3000);
-}

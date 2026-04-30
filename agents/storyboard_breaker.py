@@ -36,7 +36,10 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
       "sound_effect": "Key ambient/action sounds. 20-60 chars.",
       "narration_text": "CRITICAL TTS VOICEOVER TEXT — see Narration Rules below.",
       "duration": 12,
-      "character_names": ["Character Name 1", "Character Name 2"]
+      "character_names": ["Character Name 1", "Character Name 2"],
+      "reference_asset_names": ["Exact Asset Name from visual_assets list"],
+      "reference_effect_names": ["Exact Effect Name from visual_effects list"],
+      "illustrate_layout": "How the visual asset/effect is composed with the character in the scene. E.g. 'Character stands to the left, pointing at a large floating pie chart on the right side of frame' or 'Infographic displayed on a digital screen behind the character'. Leave empty if no asset/effect in this shot."
     }
   ]
 }
@@ -83,18 +86,29 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
 11. If the shot does not feature any characters, or no characters in the Context fit the scene, leave `character_names` EMPTY (`[]`). Do not force characters into empty/environmental shots.
 12. DURATION CAP: Each shot MUST have `duration` <= 15 seconds. If a scene contains more than ~15 seconds of narration text (roughly 40-50 words), you MUST split that scene into multiple shots with suffixed titles (e.g. "Nightmare Awakening (Part 1)", "Nightmare Awakening (Part 2)"). Distribute the narration_text evenly across the sub-shots. Each sub-shot inherits the same characters, location, and atmosphere.
 13. Output ONLY the JSON, no other text.
-"""
 
+### Gallery Asset & Effect Targeting
+- The Context may include `visual_assets` (charts, infographics, diagrams) and `visual_effects` (holograms, overlays, thought bubbles).
+- When a scene discusses data, statistics, or visual content that matches a gallery asset, add the EXACT asset name to `reference_asset_names`.
+- When a scene calls for visual effects (holographic displays, thought bubbles, etc.) that match a gallery effect, add the EXACT effect name to `reference_effect_names`.
+- `illustrate_layout` describes HOW the asset/effect is composed with the character in the scene. Be specific about spatial arrangement.
 
-class StoryboardBreakerAgent(ContentAgent):
-    def __init__(self):
-        super().__init__("storyboard_breaker", STORYBOARD_SYSTEM_PROMPT)
-    - **CRITICAL**: Do NOT just randomly pick the first characters from the Context list! 
-    - Carefully evaluate the action and description of the scene. If the scene specifies a generic role (e.g., "a businessman", "an angry child"), search the Context `characters` list for the BEST matching character based on their name, role, and personality. 
-    - ONLY include the exact name of the best matching character(s) in `character_names`.
-11. If the shot does not feature any characters, or no characters in the Context fit the scene, leave `character_names` EMPTY (`[]`). Do not force characters into empty/environmental shots.
-12. DURATION CAP: Each shot MUST have `duration` <= 15 seconds. If a scene contains more than ~15 seconds of narration text (roughly 40-50 words), you MUST split that scene into multiple shots with suffixed titles (e.g. "Nightmare Awakening (Part 1)", "Nightmare Awakening (Part 2)"). Distribute the narration_text evenly across the sub-shots. Each sub-shot inherits the same characters, location, and atmosphere.
-13. Output ONLY the JSON, no other text.
+### Important
+- You MAY combine character + asset + effect in the same shot (e.g., character pointing at a holographic chart)
+- If no matching asset/effect fits a scene, leave `reference_asset_names` and `reference_effect_names` as empty arrays `[]`
+- Do NOT invent asset/effect names — only use EXACT names from the provided lists
+
+### Auto-Illustrate (when no gallery asset matches)
+When the script discusses data, statistics, comparisons, processes, or abstract concepts BUT no matching asset exists in `visual_assets`:
+- You MUST still create an engaging visual — do NOT just show a character talking to camera
+- Compose an **illustrative overlay** directly in `image_prompt` and `video_prompt`:
+  - Statistics/numbers → describe a floating holographic display or glowing data panel next to the character showing the key numbers
+  - Comparisons → describe a split-screen or side-by-side visual comparison
+  - Steps/process → describe numbered floating cards or a glowing flowchart beside the character
+  - Key concepts → describe a thought bubble, popup card, or highlighted text overlay near the character
+- Example: Script says "65% thu nhập cho thiết yếu" but no chart in gallery → write prompt: "Character gesturing toward a floating translucent holographic pie chart glowing with blue-cyan light, showing 65% segment highlighted, modern sci-fi data visualization style"
+- This ensures every educational/data-driven scene has visual depth, not just a talking head
+- Also fill `illustrate_layout` with a description like "Character on left, floating holographic pie chart on right showing 65% highlight"
 """
 
 
