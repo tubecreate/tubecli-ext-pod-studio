@@ -472,6 +472,19 @@ class Database:
                 ),
             )
             sb_id = cur.lastrowid
+            # Save metadata (reference_asset_names, reference_effect_names, illustrate_layout)
+            sb_meta = {}
+            if sb.get("reference_asset_names"):
+                sb_meta["reference_asset_names"] = sb["reference_asset_names"]
+            if sb.get("reference_effect_names"):
+                sb_meta["reference_effect_names"] = sb["reference_effect_names"]
+            if sb.get("illustrate_layout"):
+                sb_meta["illustrate_layout"] = sb["illustrate_layout"]
+            if sb_meta:
+                self.conn.execute(
+                    "UPDATE storyboards SET metadata = ? WHERE id = ?",
+                    (json.dumps(sb_meta), sb_id)
+                )
             # Link characters
             for char_id in sb.get("character_ids", []):
                 try:

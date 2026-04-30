@@ -16,6 +16,11 @@ logger = logging.getLogger("ContentStudio.Routes")
 
 router = APIRouter()
 
+# Gallery item type classification for injection logic
+CHARACTER_TYPES = {"individual", "duo", "crowd", "group", "couple", "family"}
+ASSET_TYPES = {"chart", "diagram", "infographic", "table", "screenshot", "object", "screen"}
+EFFECT_TYPES = {"holographic", "thought_bubble", "overlay", "transition", "particle", "glow", "data_panel"}
+
 
 def _get_telegram_config():
     """Read telegram bot_token and chat_id from global_settings.json."""
@@ -2312,24 +2317,32 @@ async def generate_storyboard(episode_id: int, request: Request):
     if drama_metadata.get("narration_source") == "prose" and raw_content.strip():
         context["raw_prose_content"] = raw_content[:12000]
 
-    # Inject gallery items into context for Commercial/Advertisement format
+    # Inject gallery items into context — split by type for AI targeting
     gallery_cat_id = drama_metadata.get("gallery_category_id")
     if gallery_cat_id:
         try:
             gallery_items = _db().list_gallery_items(gallery_cat_id)
             if gallery_items:
-                context["gallery_assets"] = [
-                    {
+                visual_assets = []  # charts, infographics, diagrams, etc.
+                visual_effects = []  # holograms, overlays, thought bubbles, etc.
+                for gi in gallery_items:
+                    gi_type = gi.get("char_type", "individual")
+                    entry = {
                         "name": gi.get("name", ""),
-                        "type": gi.get("char_type", "individual"),
-                        "role": gi.get("role_type", ""),
+                        "type": gi_type,
                         "appearance": gi.get("appearance", ""),
                         "tags": gi.get("tags", ""),
-                        "has_reference_image": bool(gi.get("image_url", "")),
                     }
-                    for gi in gallery_items
-                ]
-                logger.info(f"Storyboard context: injected {len(gallery_items)} gallery assets from category {gallery_cat_id}")
+                    if gi_type in ASSET_TYPES:
+                        visual_assets.append(entry)
+                    elif gi_type in EFFECT_TYPES:
+                        visual_effects.append(entry)
+                    # CHARACTER_TYPES are already in context["characters"]
+                if visual_assets:
+                    context["visual_assets"] = visual_assets
+                if visual_effects:
+                    context["visual_effects"] = visual_effects
+                logger.info(f"Storyboard context: {len(visual_assets)} assets, {len(visual_effects)} effects from gallery {gallery_cat_id}")
         except Exception as e:
             logger.warning(f"Failed to load gallery items for storyboard context: {e}")
 
