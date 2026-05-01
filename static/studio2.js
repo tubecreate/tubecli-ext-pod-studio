@@ -2959,17 +2959,51 @@ async function startRealtimeAutoPilot() {
                     
                     // 4. Extract (skip if not in pipeline)
                     if (pipeline.includes('extract')) {
-                    setStep('extract');
-                    
-                    // Check if extract was already completed for THIS episode
-                    let hasExtractData = epMeta.extract_completed;
-                    
-                    if (hasExtractData && !isRetry) {
-                        toast(`Skipping Extract for ${currentEpisode.title} (already completed)`, "info");
-                    } else {
-                        // Always extract to discover new characters in each episode
-                        await doExtract();
-                    }
+                        setStep('extract');
+                        
+                        // Check if extract was already completed for THIS episode
+                        let hasExtractData = epMeta.extract_completed;
+                        
+                        // Check if any characters or scenes are missing images
+                        // Default to true so if API fails, we run extract instead of skipping
+                        let missingImages = true;
+                        if (hasExtractData) {
+                            try {
+                                missingImages = false;
+                                // Scenes are stored per drama, not per episode
+                                const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                                if (sceneRes && sceneRes.items) {
+                                    for (const sc of sceneRes.items) {
+                                        if (!sc.image_url) {
+                                            missingImages = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!missingImages) {
+                                    const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
+                                    if (charRes && charRes.items) {
+                                        for (const ch of charRes.items) {
+                                            if (!ch.image_url) {
+                                                missingImages = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch(e) {
+                                console.warn('[AutoPilot] Could not check missing images, will run extract:', e);
+                                missingImages = true;
+                            }
+                        }
+                        
+                        if (hasExtractData && !missingImages && !isRetry) {
+                            toast(`Skipping Extract for ${currentEpisode.title} (already completed & all images ready)`, "info");
+                        } else {
+                            const reason = !hasExtractData ? 'not extracted yet' : missingImages ? 'missing images' : 'retry';
+                            toast(`Running Extract for ${currentEpisode.title} (${reason})...`, "info");
+                            await doExtract();
+                        }
                     }
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     
