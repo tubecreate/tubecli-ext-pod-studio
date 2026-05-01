@@ -837,35 +837,86 @@ async function sleep(ms) {
 async function _configureSettings(page, targetAR) {
     try {
         log('Configuring settings (Mode & Aspect Ratio)...');
-        // Click the settings chip next to the prompt input (usually says "Video", "Image", "Veo", etc.)
-        const settingsChip = page.locator('button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo")').last();
-        if (await settingsChip.isVisible({ timeout: 2000 })) {
-            await settingsChip.click();
-            await sleep(1000);
+        
+        let settingsClicked = false;
+        
+        // Method 1: Find the settings chip relative to the submit button (arrow_forward)
+        settingsClicked = await page.evaluate(() => {
+            const submitBtn = Array.from(document.querySelectorAll('button')).reverse().find(b => {
+                const i = b.querySelector('i');
+                return (i && i.textContent.includes('arrow_forward')) || b.getAttribute('type') === 'submit';
+            });
+            if (submitBtn && submitBtn.parentElement) {
+                // The settings pill is usually the previous sibling button
+                const parent = submitBtn.parentElement;
+                const buttons = Array.from(parent.querySelectorAll('button'));
+                const submitIdx = buttons.indexOf(submitBtn);
+                if (submitIdx > 0) {
+                    buttons[submitIdx - 1].click();
+                    return true;
+                }
+            }
+            return false;
+        });
+        
+        // Method 2: Fallback text selectors
+        if (!settingsClicked) {
+            const settingsChip = page.locator('button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo"), button:has-text("Imagen"), button:has-text("1x"), button:has-text("5s")').last();
+            if (await settingsChip.isVisible({ timeout: 2000 })) {
+                await settingsChip.click();
+                settingsClicked = true;
+            }
+        }
+        
+        if (settingsClicked) {
+            await sleep(1500);
             
             // Now the popup is open. Look for the "Video" mode button.
-            const videoBtn = page.locator('button:has-text("Video"), div[role="button"]:has-text("Video")').filter({ hasText: /^Video$/i }).first();
-            if (await videoBtn.isVisible({ timeout: 1000 })) {
-                await videoBtn.click();
-                await sleep(500);
-            } else {
-                // Try a broader search
-                const fallbackVideoBtn = page.locator('button:has(i:text("videocam")), button:has-text("Video")').first();
-                if (await fallbackVideoBtn.isVisible()) await fallbackVideoBtn.click();
+            let videoModeClicked = await page.evaluate(() => {
+                const els = document.querySelectorAll('button, div[role="button"], span');
+                for (const el of els) {
+                    const text = el.textContent.trim().toLowerCase();
+                    // Click the one that exactly says 'video'
+                    if (text === 'video') {
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+            
+            if (!videoModeClicked) {
+                const videoBtn = page.locator('text="Video"').first();
+                try { if (await videoBtn.isVisible({ timeout: 1000 })) await videoBtn.click(); } catch(e) {}
             }
+            await sleep(1000);
             
             // Now set Aspect Ratio
             const arMap = { '4:3': '16:9', '3:4': '9:16' };
             const ar = arMap[targetAR] || targetAR || '9:16';
-            const arBtn = page.locator(`button:has-text("${ar}"), div[role="button"]:has-text("${ar}")`).first();
-            if (await arBtn.isVisible({ timeout: 1000 })) {
-                await arBtn.click();
-                await sleep(500);
+            
+            let arClicked = await page.evaluate((ratio) => {
+                const els = document.querySelectorAll('button, div[role="button"], span');
+                for (const el of els) {
+                    if (el.textContent.trim() === ratio) {
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            }, ar);
+            
+            if (!arClicked) {
+                const arBtn = page.locator(`text="${ar}"`).first();
+                try { if (await arBtn.isVisible({ timeout: 1000 })) await arBtn.click(); } catch(e) {}
             }
+            await sleep(500);
             
             // Close the popup
             await page.keyboard.press('Escape');
             await sleep(500);
+        } else {
+            log('Could not find settings chip to click.');
         }
     } catch (e) {
         log('_configureSettings error: ' + e.message);
