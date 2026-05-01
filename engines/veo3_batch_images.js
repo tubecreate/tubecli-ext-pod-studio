@@ -260,6 +260,14 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                     failCount++; continue;
                 }
 
+                let prevTileId = null;
+                try {
+                    prevTileId = await page.evaluate(() => {
+                        const t = document.querySelector('[data-tile-id]');
+                        return t ? t.getAttribute('data-tile-id') : null;
+                    });
+                } catch(e) {}
+
                 // Type prompt
                 await inputEl.click(); await sleep(300);
                 await inputEl.fill(''); await sleep(200);
@@ -275,11 +283,12 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                 } catch(e) { await page.keyboard.press('Enter'); }
 
                 log('Prompt submitted. Waiting for generation...');
+                await sleep(3500); // Give UI time to spawn the new loading tile
 
                 // Wait for generation + download
                 const jobDeadline = Date.now() + perJobTimeout;
                 while (Date.now() < jobDeadline && !currentSaved) {
-                    await sleep(5000);
+                    await sleep(3500);
 
                     // Check rate limit
                     try {
@@ -304,6 +313,20 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                         });
                     } catch(e) {}
                     if (generating) { log('Generating...'); continue; }
+
+                    // Check if tile has actually changed
+                    let currentTileId = null;
+                    try {
+                        currentTileId = await page.evaluate(() => {
+                            const t = document.querySelector('[data-tile-id]');
+                            return t ? t.getAttribute('data-tile-id') : null;
+                        });
+                    } catch(e) {}
+
+                    if (prevTileId && currentTileId === prevTileId) {
+                        log('New image has not appeared yet. Still waiting...');
+                        continue;
+                    }
 
                     // Strategy 1: Right-click → Tải xuống → 1K
                     if (!currentSaved) {
