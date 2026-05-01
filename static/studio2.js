@@ -590,7 +590,7 @@ async function wizGenerateOutline() {
                 if (pSteps.includes('videos')) {
                     const bpLabel = document.querySelector('label.field span.field-label:not(#wizVoiceProfileWrap span)');
                     if (bpLabel && bpLabel.textContent.includes('Browser')) {
-                        bpLabel.textContent = '🌐 Browser Profile (Grok AI Gen)';
+                        bpLabel.textContent = _getVideoEngine() === 'veo3' ? '🌐 Browser Profile (Veo3 AI Gen)' : '🌐 Browser Profile (Grok AI Gen)';
                     }
                 }
                 const targetLan = document.getElementById('wizLanguage') ? document.getElementById('wizLanguage').value : null;
@@ -1695,7 +1695,7 @@ async function _confirmCharGenProfile() {
         try {
             const res = await apiFetch(`/scenes/${sceneId}/generate-ref`, {
                 method: 'POST',
-                body: JSON.stringify({ profile_name: profile }),
+                body: JSON.stringify({ profile_name: profile, engine: _getVideoEngine() }),
             });
             
             if (res.task_id) {
@@ -1728,7 +1728,7 @@ async function _confirmCharGenProfile() {
     try {
         const res = await apiFetch(`/characters/${charId}/generate-ref`, {
             method: 'POST',
-            body: JSON.stringify({ profile_name: profile }),
+            body: JSON.stringify({ profile_name: profile, engine: _getVideoEngine() }),
         });
         
         if (res.task_id) {
@@ -2523,6 +2523,21 @@ window.resumeAutoPilot = function() {
             _renderBrowserChips();
         });
 
+        // Restore video engine dropdown from drama metadata
+        if (currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                if (meta.video_engine) {
+                    const wizEngEl = document.getElementById('wizVideoEngine');
+                    if (wizEngEl) {
+                        wizEngEl.value = meta.video_engine;
+                        onVideoEngineChange();
+                    }
+                    localStorage.setItem('cs_video_engine', meta.video_engine);
+                }
+            } catch(e) {}
+        }
+
         // Restore preset dropdown if drama was created from a queue job
         if (currentDrama) {
             try {
@@ -2554,7 +2569,7 @@ window.resumeAutoPilot = function() {
                 if (pSteps.includes('videos')) {
                     const bpLabel = document.querySelector('label.field span.field-label:not(#wizVoiceProfileWrap span)');
                     if (bpLabel && bpLabel.textContent.includes('Browser')) {
-                        bpLabel.textContent = '🌐 Browser Profile (Grok AI Gen)';
+                        bpLabel.textContent = _getVideoEngine() === 'veo3' ? '🌐 Browser Profile (Veo3 AI Gen)' : '🌐 Browser Profile (Grok AI Gen)';
                     }
                 }
                 const targetLan = (typeof currentDrama !== 'undefined' && currentDrama && currentDrama.language) 

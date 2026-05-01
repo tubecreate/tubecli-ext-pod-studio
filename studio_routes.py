@@ -806,19 +806,23 @@ async def _autopilot_runner(drama_id: int):
             _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
             
             try:
-                # Get browser profile and aspect ratio from drama metadata
+                # Get browser profile, aspect ratio, and engine from drama metadata
                 char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 char_aspect_ratio = meta.get("aspect_ratio", "16:9")
+                image_engine = meta.get("video_engine", "grok")  # Use same engine as video
                 all_chars = _db().list_characters(drama_id)
                 chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
                 
-                logger.info(f"Autopilot char gen: ep {ep_num}, total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}, aspect_ratio={char_aspect_ratio}")
+                logger.info(f"Autopilot char gen: ep {ep_num}, total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}, engine={image_engine}")
                 
                 if chars_needing_images:
-                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} NEW characters")
+                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} NEW characters (engine={image_engine})")
                     
                     from pathlib import Path
-                    grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    if image_engine == 'veo3':
+                        gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
+                    else:
+                        gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
                     top_dir = Path(_ext_dir).parents[2]
                     browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
                     
@@ -846,13 +850,15 @@ async def _autopilot_runner(drama_id: int):
                         out_path = os.path.join(ref_dir, out_file)
                         
                         cmd = [
-                            "node", grok_script,
+                            "node", gen_script,
                             "--profile", char_profile,
                             "--prompt", char_prompt,
                             "--output", out_path,
                             "--profiles-dir", profiles_dir,
                             "--timeout", "120"
                         ]
+                        if image_engine == 'veo3':
+                            cmd.extend(["--aspect-ratio", char_aspect_ratio])
                         env = os.environ.copy()
                         env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
                         
@@ -909,16 +915,20 @@ async def _autopilot_runner(drama_id: int):
                 scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
                 scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+                scene_engine = meta.get("video_engine", "grok")
                 all_scenes = _db().list_scenes(drama_id)
                 scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not s.get("image_url", "").strip()]
                 
-                logger.info(f"Autopilot scene gen: ep {ep_num}, total scenes={len(all_scenes)}, needing images={len(scenes_needing_images)}, profile={scene_profile}")
+                logger.info(f"Autopilot scene gen: ep {ep_num}, total scenes={len(all_scenes)}, needing images={len(scenes_needing_images)}, profile={scene_profile}, engine={scene_engine}")
                 
                 if scenes_needing_images:
-                    logger.info(f"Autopilot: generating ref images for {len(scenes_needing_images)} NEW scenes")
+                    logger.info(f"Autopilot: generating ref images for {len(scenes_needing_images)} NEW scenes (engine={scene_engine})")
                     
                     from pathlib import Path
-                    grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    if scene_engine == 'veo3':
+                        gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
+                    else:
+                        gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
                     top_dir = Path(_ext_dir).parents[2]
                     browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
                     
@@ -946,13 +956,15 @@ async def _autopilot_runner(drama_id: int):
                         out_path = os.path.join(ref_dir, out_file)
                         
                         cmd = [
-                            "node", grok_script,
+                            "node", gen_script,
                             "--profile", scene_profile,
                             "--prompt", scene_prompt,
                             "--output", out_path,
                             "--profiles-dir", profiles_dir,
                             "--timeout", "120"
                         ]
+                        if scene_engine == 'veo3':
+                            cmd.extend(["--aspect-ratio", scene_aspect_ratio])
                         env = os.environ.copy()
                         env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
                         
@@ -1262,9 +1274,10 @@ _gen_tasks = {}
 
 @router.post("/api/v1/studio/characters/{char_id}/generate-ref")
 async def generate_character_ref(char_id: int, request: Request, background_tasks: BackgroundTasks):
-    """Generate a character reference image using Grok Imagine."""
+    """Generate a character reference image using Grok Imagine or Veo3."""
     data = await request.json()
     profile_name = data.get("profile_name", "")
+    engine = data.get("engine", "grok")  # 'grok' or 'veo3'
     
     if not profile_name:
         raise HTTPException(400, "Browser profile required")
@@ -1302,16 +1315,18 @@ async def generate_character_ref(char_id: int, request: Request, background_task
     output_path = os.path.join(ref_dir, filename)
     
     task_id = f"chargen_{char_id}_{timestamp}"
-    _gen_tasks[task_id] = {"status": "running", "char_id": char_id, "name": name}
+    _gen_tasks[task_id] = {"status": "running", "char_id": char_id, "name": name, "engine": engine}
     
     async def _run_generation():
         import asyncio
         try:
-            grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+            # Select script based on engine
+            if engine == 'veo3':
+                gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
+            else:
+                gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
             from pathlib import Path
-            # _ext_dir = .../tubecli/data/extensions_external/content_studio
-            # parents: content_studio → extensions_external → data → tubecli(top)
-            top_dir = Path(_ext_dir).parents[2]  # .../tubecli
+            top_dir = Path(_ext_dir).parents[2]
             browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
             
             try:
@@ -1321,13 +1336,15 @@ async def generate_character_ref(char_id: int, request: Request, background_task
                 profiles_dir = str(top_dir / "data" / "browser_profiles")
             
             cmd = [
-                "node", grok_script,
+                "node", gen_script,
                 "--profile", profile_name,
                 "--prompt", prompt,
                 "--output", output_path,
                 "--profiles-dir", profiles_dir,
                 "--timeout", "120"
             ]
+            if engine == 'veo3':
+                cmd.extend(["--aspect-ratio", char_aspect_ratio])
             
             env = os.environ.copy()
             env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
@@ -1387,9 +1404,10 @@ async def generate_character_ref(char_id: int, request: Request, background_task
 
 @router.post("/api/v1/studio/scenes/{scene_id}/generate-ref")
 async def generate_scene_ref(scene_id: int, request: Request, background_tasks: BackgroundTasks):
-    """Generate a scene reference image using Grok Imagine — same flow as character ref gen."""
+    """Generate a scene reference image using Grok Imagine or Veo3."""
     data = await request.json()
     profile_name = data.get("profile_name", "")
+    engine = data.get("engine", "grok")  # 'grok' or 'veo3'
     
     if not profile_name:
         raise HTTPException(400, "Browser profile required")
@@ -1427,12 +1445,16 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
     output_path = os.path.join(ref_dir, filename)
     
     task_id = f"scenegen_{scene_id}_{timestamp}"
-    _gen_tasks[task_id] = {"status": "running", "scene_id": scene_id, "location": location}
+    _gen_tasks[task_id] = {"status": "running", "scene_id": scene_id, "location": location, "engine": engine}
     
     async def _run_generation():
         import asyncio
         try:
-            grok_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+            # Select script based on engine
+            if engine == 'veo3':
+                gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
+            else:
+                gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
             from pathlib import Path
             top_dir = Path(_ext_dir).parents[2]
             browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
@@ -1444,13 +1466,15 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
                 profiles_dir = str(top_dir / "data" / "browser_profiles")
             
             cmd = [
-                "node", grok_script,
+                "node", gen_script,
                 "--profile", profile_name,
                 "--prompt", prompt,
                 "--output", output_path,
                 "--profiles-dir", profiles_dir,
                 "--timeout", "120"
             ]
+            if engine == 'veo3':
+                cmd.extend(["--aspect-ratio", scene_aspect_ratio])
             
             env = os.environ.copy()
             env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
