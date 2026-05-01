@@ -838,30 +838,42 @@ async function _configureSettings(page, targetAR) {
     try {
         log('Configuring settings (Mode & Aspect Ratio)...');
         
+        // Wait for prompt area to load
+        try {
+            const taLocator = page.locator('textarea, div[contenteditable="true"]').last();
+            await taLocator.waitFor({ state: 'visible', timeout: 8000 });
+        } catch(e) {
+            log('Wait for textarea timeout in settings config');
+        }
+        await sleep(1000); // Let UI settle
+        
         let settingsClicked = false;
         
-        // Method 1: Find the settings chip relative to the submit button (arrow_forward)
+        // Method 1: Find the textarea, go to its parent container, and click the second-to-last button
         settingsClicked = await page.evaluate(() => {
-            const submitBtn = Array.from(document.querySelectorAll('button')).reverse().find(b => {
-                const i = b.querySelector('i');
-                return (i && i.textContent.includes('arrow_forward')) || b.getAttribute('type') === 'submit';
-            });
-            if (submitBtn && submitBtn.parentElement) {
-                // The settings pill is usually the previous sibling button
-                const parent = submitBtn.parentElement;
-                const buttons = Array.from(parent.querySelectorAll('button'));
-                const submitIdx = buttons.indexOf(submitBtn);
-                if (submitIdx > 0) {
-                    buttons[submitIdx - 1].click();
-                    return true;
+            const ta = document.querySelector('textarea, div[contenteditable="true"]');
+            if (ta) {
+                let container = ta.parentElement;
+                // Walk up until we find a container with at least 2 buttons
+                for (let i = 0; i < 5 && container; i++) {
+                    const buttons = Array.from(container.querySelectorAll('button'));
+                    if (buttons.length >= 2) {
+                        // Usually: [+] [Settings Pill] [Submit]
+                        // The settings pill is always the one right before the submit button (which is the last one)
+                        buttons[buttons.length - 2].click();
+                        return true;
+                    }
+                    container = container.parentElement;
                 }
             }
             return false;
         });
         
-        // Method 2: Fallback text selectors
+        // Method 2: Fallback text selectors + Radix menu selector
         if (!settingsClicked) {
-            const settingsChip = page.locator('button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo"), button:has-text("Imagen"), button:has-text("1x"), button:has-text("5s")').last();
+            log('Method 1 failed, trying fallback text selectors...');
+            // The button has aria-haspopup="menu". We take the last one on the page which is usually the one next to prompt.
+            const settingsChip = page.locator('button[aria-haspopup="menu"], button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo"), button:has-text("Imagen"), button:has-text("1x"), button:has-text("5s")').last();
             if (await settingsChip.isVisible({ timeout: 2000 })) {
                 await settingsChip.click();
                 settingsClicked = true;
@@ -873,7 +885,7 @@ async function _configureSettings(page, targetAR) {
             
             // Now the popup is open. Look for the "Video" mode button.
             let videoModeClicked = await page.evaluate(() => {
-                const els = document.querySelectorAll('button, div[role="button"], span');
+                const els = document.querySelectorAll('button, div[role="button"], span, div[role="menuitem"]');
                 for (const el of els) {
                     const text = el.textContent.trim().toLowerCase();
                     // Click the one that exactly says 'video'
@@ -896,7 +908,7 @@ async function _configureSettings(page, targetAR) {
             const ar = arMap[targetAR] || targetAR || '9:16';
             
             let arClicked = await page.evaluate((ratio) => {
-                const els = document.querySelectorAll('button, div[role="button"], span');
+                const els = document.querySelectorAll('button, div[role="button"], span, div[role="menuitem"]');
                 for (const el of els) {
                     if (el.textContent.trim() === ratio) {
                         el.click();
