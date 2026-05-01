@@ -200,7 +200,7 @@ class ContentAgent:
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 8192,
+            "max_tokens": 16384,
             "stream": True,
         }
 
@@ -242,6 +242,10 @@ class ContentAgent:
                             chunk = json.loads(data)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
+                            reasoning = delta.get("reasoning_content", "")
+                            
+                            if reasoning:
+                                yield "\x00REASONING\x00"
                             if content:
                                 yield content
                         except json.JSONDecodeError:
@@ -263,5 +267,6 @@ class ContentAgent:
         async for chunk in self.chat_stream(
             user_message, language, base_url, api_key, model, temperature, context
         ):
-            result.append(chunk)
+            if chunk != "\x00REASONING\x00":
+                result.append(chunk)
         return "".join(result)

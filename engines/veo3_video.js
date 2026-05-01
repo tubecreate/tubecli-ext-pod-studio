@@ -387,12 +387,16 @@ async function sleep(ms) {
                 continue;
             }
 
-            // Wait for video generation
+            // Wait for video generation (with retry on failure)
             let deadline = Date.now() + timeout;
             let lastPercent = 0;
+            let retryAttempts = 0;
+            const MAX_RETRY_CLICKS = 2;
+            let promptModified = false;
             
             while (Date.now() < deadline) {
                 await sleep(5000);
+
 
                 // Check for errors / rate limits
                 try {
@@ -509,6 +513,205 @@ async function sleep(ms) {
                                     }
                                     
                                     // If global download listener caught it, we're done
+                if (!videoSaved) {
+                    // ── Check for generation error ("Không thành công" / "unusual activity") ──
+                    let tileHasError = false;
+                    try {
+                        tileHasError = await page.evaluate(() => {
+                            const body = document.body.innerText;
+                            if (body.includes('Không thành công') || body.includes('unusual activity') ||
+                                body.includes('could not be generated') || body.includes('không thể tạo')) {
+                                return true;
+                            }
+                            // Check for error icon on the latest tile
+                            const tiles = document.querySelectorAll('[data-tile-id]');
+                            for (const tile of tiles) {
+                                const tileText = tile.innerText || '';
+                                if (tileText.includes('Không thành công') || tileText.includes('error') ||
+                                    tile.querySelector('i[class*="error"], i[class*="warning"]')) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        });
+                    } catch (e) {}
+    
+                    if (tileHasError && retryAttempts < MAX_RETRY_CLICKS) {
+                        retryAttempts++;
+                        log(`⚠️ Generation error detected! Clicking retry (attempt ${retryAttempts}/${MAX_RETRY_CLICKS})...`);
+                        console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: `Retry ${retryAttempts}/${MAX_RETRY_CLICKS}` }));
+                        
+                        // Wait for the retry button to fully render
+                        await sleep(3000);
+                        let retryClicked = false;
+                        
+                        // The 3 error action buttons are direct children of one container div:
+                        //   <div class="sc-adc89304-5">
+                        //     <button><i class="google-symbols">refresh</i><span>Thử lại</span></button>
+                        //     <button><i class="google-symbols">undo</i><span>Sử dụng lại câu lệnh</span></button>
+                        //     <button><i class="google-symbols">delete_forever</i><span>Xoá</span></button>
+                        //   </div>
+                        // We identify this group by matching all 3 icon names, then click "refresh".
+                        
+                        // Method 1: DOM evaluate — find the button group by icon fingerprint
+                        try {
+                            retryClicked = await page.evaluate(() => {
+                                const allDivs = document.querySelectorAll('div');
+                                for (const div of allDivs) {
+                                    const buttons = div.querySelectorAll(':scope > button');
+                                    if (buttons.length !== 3) continue;
+                                    
+                                    const iconTexts = [];
+                                    let refreshBtn = null;
+                                    for (const btn of buttons) {
+                                        const icon = btn.querySelector('i');
+                                        const iconText = icon ? icon.textContent.trim() : '';
+                                        iconTexts.push(iconText);
+                                        if (iconText === 'refresh') refreshBtn = btn;
+                                    }
+                                    
+                                    // Verify this is the error action group
+                                    if (iconTexts.includes('refresh') && 
+                                        iconTexts.includes('undo') && 
+                                        iconTexts.includes('delete_forever') &&
+                                        refreshBtn) {
+                                        refreshBtn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            });
+                            if (retryClicked) log('✅ Clicked "refresh" button in error action group (refresh+undo+delete_forever)');
+                        } catch (e) { log('Method 1 failed: ' + e.message); }
+                        
+                        // Method 2: Playwright locator fallback — click the <i>refresh</i> button
+                        //           but only if it's a sibling of <i>undo</i> and <i>delete_forever</i>
+                        if (!retryClicked) {
+                            try {
+                                // Find all buttons with refresh icon
+                                const refreshBtns = page.locator('button:has(i:text-is("refresh"))');
+                                const count = await refreshBtns.count();
+                                for (let b = 0; b < count; b++) {
+                                    const btn = refreshBtns.nth(b);
+                                    // Check if sibling buttons have undo + delete_forever icons
+                                    const parentDiv = btn.locator('xpath=..');
+                                    const siblingUndo = parentDiv.locator('button:has(i:text-is("undo"))');
+                                    const siblingDelete = parentDiv.locator('button:has(i:text-is("delete_forever"))');
+                                    if (await siblingUndo.count() > 0 && await siblingDelete.count() > 0) {
+                                        await btn.click();
+                                        retryClicked = true;
+                                        log('✅ Clicked "refresh" button via Playwright sibling check');
+                                        break;
+                                    }
+                                }
+                            } catch (e) { log('Method 2 failed: ' + e.message); }
+                        }
+                        
+                        if (retryClicked) {
+                            // Reset progress and wait for regeneration
+                            lastPercent = 0;
+                            await sleep(10000); // Wait 10s for regeneration to start
+                            deadline = Date.now() + timeout; // Reset timeout
+                            continue;
+                        } else {
+                            log('Could not find retry button - all methods failed');
+                        }
+                    }
+                    
+                    // ── If all retries exhausted and still error → modify prompt and regenerate ──
+                    if (tileHasError && retryAttempts >= MAX_RETRY_CLICKS && !promptModified) {
+                        log(`❌ All ${MAX_RETRY_CLICKS} retries failed. Modifying prompt and regenerating...`);
+                        console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: 'Modifying prompt and retrying...' }));
+                        promptModified = true;
+                        
+                        // Close any error dialogs
+                        try { await page.keyboard.press('Escape'); } catch(e) {}
+                        await sleep(1000);
+                        
+                        // Find the prompt input and modify it
+                        try {
+                            const inputSelectors = [
+                                'textarea[placeholder*="tạo"]',
+                                'textarea[placeholder*="create"]',
+                                'textarea[placeholder*="muốn"]',
+                                'textarea',
+                                'div[contenteditable="true"]',
+                            ];
+                            let retryInput = null;
+                            for (const sel of inputSelectors) {
+                                try {
+                                    const el = page.locator(sel).last();
+                                    if (await el.isVisible({ timeout: 1500 })) {
+                                        retryInput = el;
+                                        break;
+                                    }
+                                } catch (e) {}
+                            }
+                            
+                            if (retryInput) {
+                                await retryInput.click();
+                                await sleep(500);
+                                
+                                // Simplify/rephrase the prompt to avoid content filters
+                                let newPrompt = shot.prompt.replace(/\n+/g, ' ').trim();
+                                // Remove potentially problematic words/phrases
+                                newPrompt = newPrompt
+                                    .replace(/blood|gore|violence|weapon|gun|knife|死|殺|暴力/gi, '')
+                                    .replace(/\s{2,}/g, ' ')
+                                    .trim();
+                                // Add safety prefix
+                                newPrompt = `A cinematic scene: ${newPrompt}`;
+                                const aspectRatio = shot.aspect_ratio || '9:16';
+                                if (!newPrompt.includes('aspect ratio')) {
+                                    const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
+                                    newPrompt += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
+                                }
+                                
+                                await retryInput.fill('');
+                                await sleep(200);
+                                try {
+                                    await retryInput.fill(newPrompt);
+                                } catch(e) {
+                                    await page.keyboard.type(newPrompt, { delay: 5 });
+                                }
+                                await sleep(1000);
+                                
+                                // Submit
+                                let submitted = false;
+                                try {
+                                    const submitBtn = page.locator('button:has(i:text("arrow_forward"))').last();
+                                    if (await submitBtn.isVisible({ timeout: 2000 })) {
+                                        await submitBtn.click();
+                                        submitted = true;
+                                    }
+                                } catch (e) {}
+                                if (!submitted) {
+                                    try {
+                                        const createBtn = page.locator('button[aria-label*="Tạo"], button[aria-label*="Create"], button:has-text("Tạo")').last();
+                                        if (await createBtn.isVisible({ timeout: 1000 })) {
+                                            await createBtn.click();
+                                            submitted = true;
+                                        }
+                                    } catch (e) {}
+                                }
+                                if (!submitted) {
+                                    await page.keyboard.press('Enter');
+                                }
+                                
+                                log('Modified prompt submitted! Waiting for regeneration...');
+                                capturedVideoUrl = null;
+                                videoSaved = false;
+                                lastPercent = 0;
+                                retryAttempts = 0; // Reset retry counter for the new prompt
+                                deadline = Date.now() + timeout; // Reset timeout
+                                await sleep(10000);
+                                continue;
+                            }
+                        } catch (e) {
+                            log('Prompt modification failed: ' + e.message);
+                        }
+                    }
+                }
                                     if (videoSaved) {
                                         log('Video saved by global download listener!');
                                     }
@@ -605,7 +808,8 @@ async function sleep(ms) {
             }
 
             if (!videoSaved) {
-                console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'Timeout waiting for video' }));
+                const retryInfo = retryAttempts > 0 ? ` (after ${retryAttempts} retries${promptModified ? ' + prompt modification' : ''})` : '';
+                console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: `Timeout waiting for video${retryInfo}` }));
             } else {
                 console.log(JSON.stringify({ status: 'success', shot_id: shot.id, path: shot.output }));
             }

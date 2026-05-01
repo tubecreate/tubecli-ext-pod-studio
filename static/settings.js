@@ -39,7 +39,11 @@ function populateForm() {
 
     // Cloud
     if (ai.cloud_provider) document.getElementById('cloudProvider').value = ai.cloud_provider;
-    if (ai.cloud_model) document.getElementById('cloudModel').value = ai.cloud_model;
+    if (ai.cloud_model) {
+        const select = document.getElementById('cloudModel');
+        select.innerHTML = `<option value="${ai.cloud_model}">${ai.cloud_model}</option>`;
+        select.value = ai.cloud_model;
+    }
     loadCloudModels(true);
 
     // Ollama

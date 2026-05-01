@@ -850,6 +850,16 @@ function showEditor() {
     document.getElementById('editorChip').textContent = `Episode ${currentEpisode?.episode_number || '?'}`;
     document.getElementById('metaChars').textContent = `${(currentDrama?.characters || []).length} characters`;
     document.getElementById('metaScenes').textContent = `${(currentDrama?.scenes || []).length} scenes`;
+    // ── Refresh header counters from actual DB ──
+    if (currentDrama) {
+        Promise.all([
+            apiFetch(`/dramas/${currentDrama.id}/characters`),
+            apiFetch(`/dramas/${currentDrama.id}/scenes`)
+        ]).then(([charRes, sceneRes]) => {
+            document.getElementById('metaChars').textContent = `${(charRes.items || []).length} characters`;
+            document.getElementById('metaScenes').textContent = `${(sceneRes.items || []).length} scenes`;
+        }).catch(() => {});
+    }
 
     // Populate textarea
     const rawEl = document.getElementById('rawTextarea');
@@ -1198,6 +1208,24 @@ async function doExtract() {
                         const cEl = document.getElementById('exProgressChars');
                         if (cEl) cEl.textContent = exCharCount;
                     }
+                    if (parsed.event === 'progress_reasoning') {
+                        const loadEl = document.getElementById('extractLoading');
+                        if (loadEl) {
+                            const lt = loadEl.querySelector('.loading-text');
+                            if (lt) lt.textContent = `Thinking / Reasoning...`;
+                        }
+                    }
+                    // ── Live render characters/scenes as they are saved ──
+                    if (parsed.event === 'chars_saved' || parsed.event === 'scenes_saved') {
+                        try {
+                            const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
+                            const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                            renderExtractResults({ characters: charRes.items || [], scenes: sceneRes.items || [] });
+                            // Update header counters
+                            document.getElementById('metaChars').textContent = `${(charRes.items || []).length} characters`;
+                            document.getElementById('metaScenes').textContent = `${(sceneRes.items || []).length} scenes`;
+                        } catch(e) {}
+                    }
                     if (parsed.event === 'complete') {
                         extractedData = parsed;
                     }
@@ -1247,10 +1275,17 @@ async function doExtract() {
             toast("Extraction aborted by user.", "info");
             throw e;
         }
+        clearInterval(exTimer);
         const loadEl = document.getElementById('extractLoading');
         if (loadEl) loadEl.remove();
         document.getElementById('extractEmpty').style.display = '';
-        toast(`Extraction failed: ${e.message}`, 'error');
+        
+        // Better error message for network errors
+        let errMsg = e.message || 'Unknown error';
+        if (errMsg.toLowerCase().includes('network') || errMsg.toLowerCase().includes('failed to fetch')) {
+            errMsg = `AI stream interrupted after ~${exCharCount.toLocaleString()} chars received. This usually means the AI response was too long and got cut off. Try again — the retry should succeed.`;
+        }
+        toast(`Extraction failed: ${errMsg}`, 'error', 10000);
         throw e;
     } finally {
         isStreaming = false;
@@ -1482,8 +1517,56 @@ async function generateCharRefAI(charId) {
         toast(`Please fill in the Appearance field for "${char.name}" first (click Edit)`, 'error');
         return;
     }
-    // Show the profile picker modal — profile selection happens there
-    await _openCharGenProfileModal(charId);
+    // Auto-detect profile: wizard chips > drama metadata > localStorage
+    const autoProfile = _getAutoProfile();
+    if (autoProfile) {
+        // Skip modal — use saved profile directly
+        const engine = _getVideoEngine();
+        const btn = document.getElementById(`btnGenChar${charId}`);
+        if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
+        try {
+            const res = await apiFetch(`/characters/${charId}/generate-ref`, {
+                method: 'POST',
+                body: JSON.stringify({ profile_name: autoProfile, engine }),
+            });
+            if (res.task_id) {
+                const engineLabel = engine === 'veo3' ? 'Veo3' : 'Grok';
+                toast(`🎨 [${engineLabel}] Đang tạo ảnh nhân vật "${char.name}"...`, 'info');
+                _pollCharGenStatus(res.task_id, charId, btn);
+            }
+        } catch(e) {
+            toast('AI Generate failed: ' + e.message + ' — Hãy chọn lại profile', 'error');
+            if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+            // Fallback: show profile picker on error
+            _charGenPendingCharId = charId;
+            await _openCharGenProfileModal(charId);
+        }
+    } else {
+        // No profile found — show profile picker modal
+        await _openCharGenProfileModal(charId);
+    }
+}
+
+// Auto-detect the best available browser profile
+function _getAutoProfile() {
+    // 1. Wizard chip selector (step 3)
+    if (typeof _chipSelectedProfiles !== 'undefined' && _chipSelectedProfiles.length > 0) {
+        return _chipSelectedProfiles[0];
+    }
+    // 2. Drama metadata
+    if (typeof currentDrama !== 'undefined' && currentDrama) {
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            if (meta.browser_profile_name) return meta.browser_profile_name;
+            if (meta.browser_profile_names_video && meta.browser_profile_names_video.length > 0) {
+                return meta.browser_profile_names_video[0];
+            }
+        } catch(e) {}
+    }
+    // 3. localStorage
+    const ls = localStorage.getItem('cs_last_browser_profile');
+    if (ls) return ls;
+    return null;
 }
 
 // ── Profile Picker Modal Helpers ───────────────────────────
@@ -1660,11 +1743,37 @@ async function generateSceneRefAI(sceneId) {
         toast(`Scene has no location description`, 'error');
         return;
     }
-    // Reuse the same profile picker modal as character gen
-    _sceneGenPendingSceneId = sceneId;
-    await _openCharGenProfileModal(null); // open modal, we override confirm
-    // Override the confirm action to call scene gen instead of char gen
-    _charGenPendingCharId = null; // clear char pending
+    // Auto-detect profile: wizard chips > drama metadata > localStorage
+    const autoProfile = _getAutoProfile();
+    if (autoProfile) {
+        // Skip modal — use saved profile directly
+        const engine = _getVideoEngine();
+        const btn = document.getElementById(`btnGenScene${sceneId}`);
+        if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
+        try {
+            const res = await apiFetch(`/scenes/${sceneId}/generate-ref`, {
+                method: 'POST',
+                body: JSON.stringify({ profile_name: autoProfile, engine }),
+            });
+            if (res.task_id) {
+                const engineLabel = engine === 'veo3' ? 'Veo3' : 'Grok';
+                toast(`🎨 [${engineLabel}] Đang tạo ảnh cảnh "${scene.location}"...`, 'info');
+                _pollSceneGenStatus(res.task_id, sceneId, btn);
+            }
+        } catch(e) {
+            toast('AI Generate failed: ' + e.message + ' — Hãy chọn lại profile', 'error');
+            if (btn) { btn.disabled = false; btn.innerHTML = '🎨 AI Gen'; }
+            // Fallback: show profile picker on error
+            _sceneGenPendingSceneId = sceneId;
+            _charGenPendingCharId = null;
+            await _openCharGenProfileModal(null);
+        }
+    } else {
+        // No profile found — show profile picker modal
+        _sceneGenPendingSceneId = sceneId;
+        await _openCharGenProfileModal(null);
+        _charGenPendingCharId = null;
+    }
 }
 
 let _sceneGenPendingSceneId = null;
@@ -1887,6 +1996,13 @@ async function doBreakdown(append = false) {
                         if (loadEl) {
                             const lt = loadEl.querySelector('.loading-text');
                             if (lt) lt.textContent = parsed.message;
+                        }
+                    }
+                    if (parsed.event === 'progress_reasoning') {
+                        const loadEl = document.getElementById('sbLoading');
+                        if (loadEl) {
+                            const lt = loadEl.querySelector('.loading-text');
+                            if (lt) lt.textContent = `Thinking / Reasoning...`;
                         }
                     }
                     if (parsed.event === 'progress' && parsed.content) {
@@ -2681,45 +2797,49 @@ async function startRealtimeAutoPilot() {
         }
     }
     
-    if (selectedProfile || selectedVoice) {
-        if (selectedProfile) localStorage.setItem('cs_last_browser_profile', selectedProfile);
-        if (selectedVoice) localStorage.setItem('cs_last_voice_profile', selectedVoice);
+    // Always persist video_engine + profile to drama metadata
+    try {
+        const dramaData = await apiFetch(`/dramas/${pendingAutoPilotDramaId}`);
+        const meta = JSON.parse(dramaData.metadata || '{}');
         
-        // Persist to drama metadata so auto-pilot execution functions find them
-        try {
-            const dramaData = await apiFetch(`/dramas/${pendingAutoPilotDramaId}`);
-            const meta = JSON.parse(dramaData.metadata || '{}');
-            if (selectedProfile) meta.browser_profile_name = selectedProfile;
-            meta.video_engine = _getVideoEngine();
-            if (selectedVideoProfiles.length > 0) meta.browser_profile_names_video = selectedVideoProfiles;
-            
-            const vWrap = document.getElementById('wizVoiceProfileWrap');
-            if (selectedVoice && vWrap && vWrap.style.display !== 'none') {
-                meta.voice_preset = selectedVoice;
-                if (wizVoiceSel.selectedIndex >= 0) {
-                    const opt = wizVoiceSel.options[wizVoiceSel.selectedIndex];
-                    meta.tts_engine = opt.getAttribute('data-engine') || 'vibe';
-                }
+        // Always save video engine
+        meta.video_engine = _getVideoEngine();
+        
+        if (selectedProfile) {
+            meta.browser_profile_name = selectedProfile;
+            localStorage.setItem('cs_last_browser_profile', selectedProfile);
+        }
+        if (selectedVoice) {
+            localStorage.setItem('cs_last_voice_profile', selectedVoice);
+        }
+        if (selectedVideoProfiles.length > 0) meta.browser_profile_names_video = selectedVideoProfiles;
+        
+        const vWrap = document.getElementById('wizVoiceProfileWrap');
+        if (selectedVoice && vWrap && vWrap.style.display !== 'none') {
+            meta.voice_preset = selectedVoice;
+            if (wizVoiceSel.selectedIndex >= 0) {
+                const opt = wizVoiceSel.options[wizVoiceSel.selectedIndex];
+                meta.tts_engine = opt.getAttribute('data-engine') || 'vibe';
             }
-            
-            // Save upload targets from Step 3
-            const wizUploadTargets = [];
-            const wizYtVal = document.getElementById('wizYtChannel')?.value;
-            if (wizYtVal) try { wizUploadTargets.push(JSON.parse(wizYtVal)); } catch(e) {}
-            const wizFbVal = document.getElementById('wizFbPage')?.value;
-            if (wizFbVal) try { wizUploadTargets.push(JSON.parse(wizFbVal)); } catch(e) {}
-            if (wizUploadTargets.length > 0) {
-                meta.upload_targets = wizUploadTargets;
-            }
-            const privVal = document.getElementById('wizUploadPrivacy')?.value;
-            if (privVal) meta.upload_privacy = privVal;
-            
-            await apiFetch(`/dramas/${pendingAutoPilotDramaId}`, {
-                method: 'PUT',
-                body: JSON.stringify({ metadata: JSON.stringify(meta) })
-            });
-        } catch(e) { console.warn('Could not save profile to drama metadata', e); }
-    }
+        }
+        
+        // Save upload targets from Step 3
+        const wizUploadTargets = [];
+        const wizYtVal = document.getElementById('wizYtChannel')?.value;
+        if (wizYtVal) try { wizUploadTargets.push(JSON.parse(wizYtVal)); } catch(e) {}
+        const wizFbVal = document.getElementById('wizFbPage')?.value;
+        if (wizFbVal) try { wizUploadTargets.push(JSON.parse(wizFbVal)); } catch(e) {}
+        if (wizUploadTargets.length > 0) {
+            meta.upload_targets = wizUploadTargets;
+        }
+        const privVal = document.getElementById('wizUploadPrivacy')?.value;
+        if (privVal) meta.upload_privacy = privVal;
+        
+        await apiFetch(`/dramas/${pendingAutoPilotDramaId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ metadata: JSON.stringify(meta) })
+        });
+    } catch(e) { console.warn('Could not save metadata', e); }
     
     isAutoPilotRunning = true;
     
@@ -2785,6 +2905,7 @@ async function startRealtimeAutoPilot() {
             const epPlan = outline.episodes[i];
             let success = false;
             let isRetry = false;
+            let retryCount = 0;
             
             while (!success) {
                 if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
@@ -3207,20 +3328,38 @@ async function startRealtimeAutoPilot() {
                     if (err.message === "Aborted by user") throw err;
                     if (err.message.includes("RATE_LIMIT_REACHED")) {
                         toast("⛔ Auto-Pilot stopped due to Grok Rate Limit.", "error");
-                        throw new Error("Aborted by user"); // Treat as abort
+                        throw new Error("Aborted by user");
                     }
                     
-                    // Show error recovery modal
-                    const choice = await showErrorDialog(`Failed on Episode ${epPlan.episode_number || i+1}: ${err.message}`);
-                    if (choice === 'cancel') {
-                        throw new Error("Aborted by user");
-                    } else if (choice === 'skip') {
-                        toast("Skipping to next episode...", "info");
-                        break; // Exit the while loop and proceed to next episode (i++)
-                    } else if (choice === 'retry') {
-                        toast("Retrying episode...", "info");
+                    retryCount++;
+                    const MAX_AUTO_RETRIES = 2;
+                    
+                    if (retryCount <= MAX_AUTO_RETRIES) {
+                        // Auto-retry silently
+                        toast(`⚠️ Episode ${epPlan.episode_number || i+1} lỗi: ${err.message}. Tự động thử lại lần ${retryCount}/${MAX_AUTO_RETRIES}...`, "warning");
                         isRetry = true;
+                        await new Promise(r => setTimeout(r, 5000)); // Wait 5s before retry
                         // success remains false, so while loop repeats
+                    } else {
+                        // All retries exhausted — notify Telegram and stop
+                        const tgErrMsg = `❌ <b>[Auto-Pilot] Dừng lại!</b>\n` +
+                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                            `⚠️ Lỗi sau ${MAX_AUTO_RETRIES} lần thử lại:\n${err.message}\n\n` +
+                            `🕐 ${new Date().toLocaleString('vi-VN')}`;
+                        apiFetch('/notify-telegram', { method: 'POST', body: JSON.stringify({ text: tgErrMsg }) }).catch(() => {});
+                        
+                        // Show error recovery modal as last resort
+                        const choice = await showErrorDialog(`Episode ${epPlan.episode_number || i+1} failed after ${MAX_AUTO_RETRIES} retries: ${err.message}`);
+                        if (choice === 'cancel') {
+                            throw new Error("Aborted by user");
+                        } else if (choice === 'skip') {
+                            toast("Skipping to next episode...", "info");
+                            break;
+                        } else if (choice === 'retry') {
+                            toast("Retrying episode (reset counter)...", "info");
+                            retryCount = 0;
+                            isRetry = true;
+                        }
                     }
                 }
             } // end while(!success)
@@ -3319,6 +3458,9 @@ async function _runAgentStreamAction(agentType, message, targetTextareaId, count
                 if (data === '[DONE]') break;
                 try {
                     const parsed = JSON.parse(data);
+                    if (parsed.reasoning) {
+                        document.getElementById(countId).textContent = `Reasoning / Thinking...`;
+                    }
                     if (parsed.content) {
                         fullText += parsed.content;
                         area.value = fullText;
@@ -4089,12 +4231,22 @@ function _getVideoEngine() {
         const genEl = document.getElementById('genVidEngine');
         if (genEl && genEl.value) return genEl.value;
     }
-    // Otherwise: wizard dropdown > localStorage > default
-    const wizEl = document.getElementById('wizVideoEngine');
-    if (wizEl && wizEl.value) return wizEl.value;
-    const genEl = document.getElementById('genVidEngine');
-    if (genEl && genEl.value) return genEl.value;
-    return localStorage.getItem('cs_video_engine') || 'grok';
+    // If wizard is visible (user is actively configuring), use its dropdown
+    const wizStep3 = document.getElementById('wizStep3');
+    if (wizStep3 && wizStep3.style.display !== 'none') {
+        const wizEl = document.getElementById('wizVideoEngine');
+        if (wizEl && wizEl.value) return wizEl.value;
+    }
+    // Otherwise: drama metadata > localStorage > wizard dropdown > default
+    if (typeof currentDrama !== 'undefined' && currentDrama) {
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            if (meta.video_engine) return meta.video_engine;
+        } catch(e) {}
+    }
+    const lsEngine = localStorage.getItem('cs_video_engine');
+    if (lsEngine) return lsEngine;
+    return 'grok';
 }
 
 function _restoreVideoEngine() {

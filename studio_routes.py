@@ -806,32 +806,167 @@ async def _autopilot_runner(drama_id: int):
             _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
             
             try:
+                # Re-read drama metadata from DB to get latest engine setting saved by wizard
+                _fresh_drama = _db().get_drama(drama_id)
+                if _fresh_drama:
+                    _fresh_meta = json.loads(_fresh_drama.get("metadata", "{}") or "{}")
+                    # Merge fresh settings into current meta (keep autopilot_status etc.)
+                    for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video"):
+                        if _fk in _fresh_meta:
+                            meta[_fk] = _fresh_meta[_fk]
+                
                 # Get browser profile, aspect ratio, and engine from drama metadata
                 char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 char_aspect_ratio = meta.get("aspect_ratio", "16:9")
                 image_engine = meta.get("video_engine", "grok")  # Use same engine as video
+                logger.info(f"Autopilot image engine from metadata: '{image_engine}'")
                 all_chars = _db().list_characters(drama_id)
-                chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
+                def _has_real_image(url):
+                    """Check if image_url is a real file on disk or a valid gallery API reference."""
+                    if not url or not url.strip():
+                        return False
+                    u = url.strip()
+                    # Gallery API references and web URLs count as existing images
+                    if u.startswith('/api/') or u.startswith('http://') or u.startswith('https://'):
+                        return True
+                    return os.path.isfile(u)
                 
-                logger.info(f"Autopilot char gen: ep {ep_num}, total chars={len(all_chars)}, needing images={len(chars_needing_images)}, profile={char_profile}, engine={image_engine}")
+                chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
                 
-                if chars_needing_images:
-                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} NEW characters (engine={image_engine})")
+                # Also collect scenes needing images for batch mode
+                scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+                all_scenes = _db().list_scenes(drama_id)
+                scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
+                total_images_needed = len(chars_needing_images) + len(scenes_needing_images)
+                
+                logger.info(f"Autopilot image gen: ep {ep_num}, all_chars={len(all_chars)}, chars_need={len(chars_needing_images)}, all_scenes={len(all_scenes)}, scenes_need={len(scenes_needing_images)}, engine={image_engine}")
+                # Debug: why chars filtered out?
+                if all_chars and not chars_needing_images:
+                    for c in all_chars[:3]:
+                        logger.info(f"  DEBUG char '{c.get('name')}': appearance={bool(c.get('appearance','').strip())}, image_url={bool(c.get('image_url','').strip())}")
+                if all_scenes and not scenes_needing_images:
+                    for s in all_scenes[:3]:
+                        logger.info(f"  DEBUG scene '{s.get('location','')[:30]}': location={bool(s.get('location','').strip())}, image_url={bool(s.get('image_url','').strip())}")
+                
+                if total_images_needed > 0 and image_engine == 'veo3':
+                    # ─── VEO3 BATCH MODE: 1 browser, 1 project, all images ───
+                    logger.info(f"Autopilot: BATCH generating {total_images_needed} images via Veo3")
+                    meta["autopilot_status"] = f"running {idx+1}/{total} - batch gen {total_images_needed} images (Veo3)"
+                    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
                     
                     from pathlib import Path
-                    if image_engine == 'veo3':
-                        gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
-                    else:
-                        gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
                     top_dir = Path(_ext_dir).parents[2]
                     browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
-                    
                     try:
                         from tubecli.config import DATA_DIR
                         profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
                     except:
                         profiles_dir = str(top_dir / "data" / "browser_profiles")
                     
+                    ref_dir = _get_ref_dir()
+                    from datetime import datetime as _dt
+                    char_style = _get_char_style(drama) if drama else "Realistic"
+                    
+                    # Build batch jobs: chars + scenes
+                    batch_jobs = []
+                    char_job_map = {}  # job_id -> char_obj
+                    scene_job_map = {}  # job_id -> scene_obj
+                    
+                    for char_obj in chars_needing_images:
+                        cid = char_obj["id"]
+                        cname = char_obj.get("name", "Unknown")
+                        cappearance = char_obj.get("appearance", "")
+                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio)
+                        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                        out_path = os.path.join(ref_dir, f"char_{cid}_ai_{ts}.png")
+                        job_id = f"char_{cid}"
+                        batch_jobs.append({"id": job_id, "prompt": char_prompt, "output": out_path})
+                        char_job_map[job_id] = char_obj
+                    
+                    for scene_obj in scenes_needing_images:
+                        sid = scene_obj["id"]
+                        slocation = scene_obj.get("location", "Unknown")
+                        stime = scene_obj.get("time", "")
+                        sdesc = scene_obj.get("description", "")
+                        scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, char_aspect_ratio)
+                        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                        out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
+                        job_id = f"scene_{sid}"
+                        batch_jobs.append({"id": job_id, "prompt": scene_prompt, "output": out_path})
+                        scene_job_map[job_id] = scene_obj
+                    
+                    # Write jobs file
+                    jobs_file = os.path.join(ref_dir, "_batch_jobs.json")
+                    with open(jobs_file, "w", encoding="utf-8") as f:
+                        json.dump(batch_jobs, f, ensure_ascii=False)
+                    
+                    cmd = [
+                        "node", batch_script,
+                        "--profile", char_profile,
+                        "--jobs", jobs_file,
+                        "--profiles-dir", profiles_dir,
+                        "--aspect-ratio", char_aspect_ratio,
+                        "--timeout", "120"
+                    ]
+                    env = os.environ.copy()
+                    env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                    
+                    try:
+                        batch_timeout = 150 * total_images_needed
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=browser_ext_dir,
+                            env=env,
+                        )
+                        stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=batch_timeout)
+                        stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
+                        
+                        # Process results
+                        for line in stdout_text.splitlines():
+                            line = line.strip()
+                            if not line.startswith("{"): continue
+                            try:
+                                result = json.loads(line)
+                                rid = result.get("id", "")
+                                if result.get("status") == "success":
+                                    rpath = result.get("path", "")
+                                    if rid in char_job_map and os.path.exists(rpath):
+                                        co = char_job_map[rid]
+                                        try: refs = json.loads(co.get("reference_images") or "[]")
+                                        except: refs = []
+                                        refs.append(rpath)
+                                        _db().update_character(co["id"], {"reference_images": json.dumps(refs), "image_url": rpath})
+                                        logger.info(f"  ✓ Batch char: {co.get('name')}")
+                                    elif rid in scene_job_map and os.path.exists(rpath):
+                                        so = scene_job_map[rid]
+                                        _db().update_scene(so["id"], {"image_url": rpath})
+                                        logger.info(f"  ✓ Batch scene: {so.get('location', '')[:30]}")
+                                elif result.get("status") == "error" and rid:
+                                    logger.warning(f"  ✗ Batch {rid}: {result.get('message')}")
+                                elif result.get("status") == "batch_done":
+                                    logger.info(f"  Batch done: {result.get('success')}/{result.get('total')} OK")
+                            except: pass
+                    except Exception as be:
+                        logger.error(f"Batch image gen error: {be}")
+                    finally:
+                        try: os.remove(jobs_file)
+                        except: pass
+                
+                elif chars_needing_images and image_engine != 'veo3':
+                    # ─── GROK PER-IMAGE MODE (legacy) ───
+                    logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} chars (grok)")
+                    from pathlib import Path
+                    gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    top_dir = Path(_ext_dir).parents[2]
+                    browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+                    try:
+                        from tubecli.config import DATA_DIR
+                        profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+                    except:
+                        profiles_dir = str(top_dir / "data" / "browser_profiles")
                     ref_dir = _get_ref_dir()
                     from datetime import datetime as _dt
                     
@@ -839,41 +974,19 @@ async def _autopilot_runner(drama_id: int):
                         cid = char_obj["id"]
                         cname = char_obj.get("name", "Unknown")
                         cappearance = char_obj.get("appearance", "")
-                        
                         meta["autopilot_status"] = f"running {idx+1}/{total} - char ref {ci+1}/{len(chars_needing_images)}: {cname}"
                         _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
-                        
                         char_style = _get_char_style(drama) if drama else "Realistic"
                         char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio)
                         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-                        out_file = f"char_{cid}_ai_{ts}.png"
-                        out_path = os.path.join(ref_dir, out_file)
-                        
-                        cmd = [
-                            "node", gen_script,
-                            "--profile", char_profile,
-                            "--prompt", char_prompt,
-                            "--output", out_path,
-                            "--profiles-dir", profiles_dir,
-                            "--timeout", "120"
-                        ]
-                        if image_engine == 'veo3':
-                            cmd.extend(["--aspect-ratio", char_aspect_ratio])
+                        out_path = os.path.join(ref_dir, f"char_{cid}_ai_{ts}.png")
+                        cmd = ["node", gen_script, "--profile", char_profile, "--prompt", char_prompt, "--output", out_path, "--profiles-dir", profiles_dir, "--timeout", "120"]
                         env = os.environ.copy()
                         env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
-                        
                         try:
-                            proc = await asyncio.create_subprocess_exec(
-                                *cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                cwd=browser_ext_dir,
-                                env=env,
-                            )
+                            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=browser_ext_dir, env=env)
                             stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
                             stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
-                            
-                            # Check result
                             img_ok = False
                             if stdout_text:
                                 for line in reversed(stdout_text.splitlines()):
@@ -881,129 +994,142 @@ async def _autopilot_runner(drama_id: int):
                                         try:
                                             result = json.loads(line.strip())
                                             if result.get("status") == "success" and os.path.exists(out_path):
-                                                try:
-                                                    refs = json.loads(char_obj.get("reference_images") or "[]")
-                                                except:
-                                                    refs = []
+                                                try: refs = json.loads(char_obj.get("reference_images") or "[]")
+                                                except: refs = []
                                                 refs.append(out_path)
-                                                _db().update_character(cid, {
-                                                    "reference_images": json.dumps(refs),
-                                                    "image_url": out_path
-                                                })
+                                                _db().update_character(cid, {"reference_images": json.dumps(refs), "image_url": out_path})
                                                 img_ok = True
                                                 logger.info(f"  ✓ Generated ref image for {cname}")
                                                 break
-                                        except:
-                                            pass
+                                        except: pass
                             if not img_ok:
-                                logger.warning(f"  ✗ Image gen failed for {cname} — skipping (no retry). Prompt may be blocked.")
+                                logger.warning(f"  ✗ Image gen failed for {cname} — skipping")
                         except Exception as ce:
-                            logger.warning(f"  ✗ Failed to generate ref for {cname}: {ce} — skipping (no retry)")
+                            logger.warning(f"  ✗ Failed ref for {cname}: {ce} — skipping")
                             continue
                 else:
                     logger.info(f"Autopilot: no NEW characters need image generation for ep {ep_num}")
             except Exception as e:
                 import traceback
                 logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
-                # Non-fatal: continue to storyboard step
 
-            # 4c. Flow: Generate AI reference images for scenes without images
-            meta["autopilot_status"] = f"running {idx+1}/{total} - generating scene images"
+            # 4c. Flow: Check for remaining scenes without images (handles batch failures)
+            meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
             _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
             
             try:
+                scene_engine = meta.get("video_engine", "grok")
                 scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
                 scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
-                scene_engine = meta.get("video_engine", "grok")
+                
+                # Re-check scenes from DB (batch may have partially completed)
                 all_scenes = _db().list_scenes(drama_id)
-                scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not s.get("image_url", "").strip()]
+                remaining_scenes = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
                 
-                logger.info(f"Autopilot scene gen: ep {ep_num}, total scenes={len(all_scenes)}, needing images={len(scenes_needing_images)}, profile={scene_profile}, engine={scene_engine}")
-                
-                if scenes_needing_images:
-                    logger.info(f"Autopilot: generating ref images for {len(scenes_needing_images)} NEW scenes (engine={scene_engine})")
+                if remaining_scenes:
+                    logger.info(f"Autopilot: {len(remaining_scenes)} scenes still need images after batch (engine={scene_engine})")
+                    meta["autopilot_status"] = f"running {idx+1}/{total} - gen remaining {len(remaining_scenes)} scene images"
+                    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
                     
                     from pathlib import Path
-                    if scene_engine == 'veo3':
-                        gen_script = os.path.join(_ext_dir, "engines", "veo3_char_image.js")
-                    else:
-                        gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
                     top_dir = Path(_ext_dir).parents[2]
                     browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
-                    
                     try:
                         from tubecli.config import DATA_DIR
                         profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
                     except:
                         profiles_dir = str(top_dir / "data" / "browser_profiles")
-                    
                     ref_dir = _get_ref_dir()
                     from datetime import datetime as _dt
                     
-                    for si, scene_obj in enumerate(scenes_needing_images):
-                        sid = scene_obj["id"]
-                        slocation = scene_obj.get("location", "Unknown")
-                        stime = scene_obj.get("time", "")
-                        sdesc = scene_obj.get("description", "")
+                    if scene_engine == 'veo3':
+                        # Retry remaining scenes via batch
+                        batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
+                        retry_jobs = []
+                        retry_scene_map = {}
+                        for scene_obj in remaining_scenes:
+                            sid = scene_obj["id"]
+                            slocation = scene_obj.get("location", "Unknown")
+                            stime = scene_obj.get("time", "")
+                            sdesc = scene_obj.get("description", "")
+                            scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
+                            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                            out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
+                            job_id = f"scene_{sid}"
+                            retry_jobs.append({"id": job_id, "prompt": scene_prompt, "output": out_path})
+                            retry_scene_map[job_id] = scene_obj
                         
-                        meta["autopilot_status"] = f"running {idx+1}/{total} - scene ref {si+1}/{len(scenes_needing_images)}: {slocation[:30]}"
-                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                        jobs_file = os.path.join(ref_dir, "_batch_retry_jobs.json")
+                        with open(jobs_file, "w", encoding="utf-8") as f:
+                            json.dump(retry_jobs, f, ensure_ascii=False)
                         
-                        scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
-                        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-                        out_file = f"scene_{sid}_ai_{ts}.png"
-                        out_path = os.path.join(ref_dir, out_file)
-                        
-                        cmd = [
-                            "node", gen_script,
-                            "--profile", scene_profile,
-                            "--prompt", scene_prompt,
-                            "--output", out_path,
-                            "--profiles-dir", profiles_dir,
-                            "--timeout", "120"
-                        ]
-                        if scene_engine == 'veo3':
-                            cmd.extend(["--aspect-ratio", scene_aspect_ratio])
+                        cmd = ["node", batch_script, "--profile", scene_profile, "--jobs", jobs_file, "--profiles-dir", profiles_dir, "--aspect-ratio", scene_aspect_ratio, "--timeout", "120"]
                         env = os.environ.copy()
                         env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
-                        
                         try:
-                            proc = await asyncio.create_subprocess_exec(
-                                *cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                cwd=browser_ext_dir,
-                                env=env,
-                            )
-                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
+                            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=browser_ext_dir, env=env)
+                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150 * len(retry_jobs))
                             stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
-                            
-                            # Check result
-                            img_ok = False
-                            if stdout_text:
-                                for line in reversed(stdout_text.splitlines()):
-                                    if line.strip().startswith("{"):
-                                        try:
-                                            result = json.loads(line.strip())
-                                            if result.get("status") == "success" and os.path.exists(out_path):
-                                                _db().update_scene(sid, {"image_url": out_path})
-                                                img_ok = True
-                                                logger.info(f"  ✓ Generated ref image for scene '{slocation}'")
-                                                break
-                                        except:
-                                            pass
-                            if not img_ok:
-                                logger.warning(f"  ✗ Image gen failed for scene '{slocation}' — skipping (no retry)")
-                        except Exception as ce:
-                            logger.warning(f"  ✗ Failed to generate ref for scene '{slocation}': {ce} — skipping (no retry)")
-                            continue
+                            for line in stdout_text.splitlines():
+                                line = line.strip()
+                                if not line.startswith("{"): continue
+                                try:
+                                    result = json.loads(line)
+                                    rid = result.get("id", "")
+                                    if result.get("status") == "success" and rid in retry_scene_map:
+                                        rpath = result.get("path", "")
+                                        if os.path.exists(rpath):
+                                            _db().update_scene(retry_scene_map[rid]["id"], {"image_url": rpath})
+                                            logger.info(f"  ✓ Retry scene: {retry_scene_map[rid].get('location', '')[:30]}")
+                                except: pass
+                        except Exception as be:
+                            logger.error(f"Retry batch error: {be}")
+                        finally:
+                            try: os.remove(jobs_file)
+                            except: pass
+                    else:
+                        # Grok per-image mode
+                        gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                        for si, scene_obj in enumerate(remaining_scenes):
+                            sid = scene_obj["id"]
+                            slocation = scene_obj.get("location", "Unknown")
+                            stime = scene_obj.get("time", "")
+                            sdesc = scene_obj.get("description", "")
+                            meta["autopilot_status"] = f"running {idx+1}/{total} - scene ref {si+1}/{len(remaining_scenes)}: {slocation[:30]}"
+                            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                            scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
+                            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                            out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
+                            cmd = ["node", gen_script, "--profile", scene_profile, "--prompt", scene_prompt, "--output", out_path, "--profiles-dir", profiles_dir, "--timeout", "120"]
+                            env = os.environ.copy()
+                            env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                            try:
+                                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=browser_ext_dir, env=env)
+                                stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
+                                stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
+                                img_ok = False
+                                if stdout_text:
+                                    for line in reversed(stdout_text.splitlines()):
+                                        if line.strip().startswith("{"):
+                                            try:
+                                                result = json.loads(line.strip())
+                                                if result.get("status") == "success" and os.path.exists(out_path):
+                                                    _db().update_scene(sid, {"image_url": out_path})
+                                                    img_ok = True
+                                                    logger.info(f"  ✓ Scene image: {slocation[:30]}")
+                                                    break
+                                            except: pass
+                                if not img_ok:
+                                    logger.warning(f"  ✗ Scene gen failed: {slocation[:30]}")
+                            except Exception as ce:
+                                logger.warning(f"  ✗ Failed scene: {slocation[:30]}: {ce}")
+                                continue
                 else:
-                    logger.info(f"Autopilot: no NEW scenes need image generation for ep {ep_num}")
+                    logger.info(f"Autopilot: all scenes have images ✓")
             except Exception as e:
                 import traceback
                 logger.error(f"Autopilot scene image gen error: {e}\n{traceback.format_exc()}")
-                # Non-fatal: continue to storyboard step
 
             # 5. Flow: Storyboard Breaker
             import re as _re_ap
@@ -1749,8 +1875,11 @@ async def agent_chat(request: Request):
         async for chunk in agent.chat_stream(
             message, language, base_url, api_key, model, agent_temp, context
         ):
-            full_response.append(chunk)
-            yield f"data: {json.dumps({'content': chunk})}\n\n"
+            if chunk == "\x00REASONING\x00":
+                yield f"data: {json.dumps({'reasoning': True})}\n\n"
+            else:
+                full_response.append(chunk)
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
 
         # Auto-save script if agent is script_rewriter and episode_id provided
         if agent_type == "script_rewriter" and episode_id:
@@ -1864,12 +1993,13 @@ async def extract_characters_scenes(episode_id: int, request: Request):
     agent = _get_agent("extractor")
 
     async def generate():
+      try:
         yield f"data: {json.dumps({'event': 'status', 'message': 'Analyzing script...'})}\n\n"
 
         # Build extraction message based on content format
         content_format = context.get("content_format", "Drama / Narrative")
         is_drama = "Drama" in content_format or "Phim" in content_format or "Narrative" in content_format
-        
+
         if is_drama:
             extract_msg = (
                 "Extract ALL characters and scenes from this script. "
@@ -1888,38 +2018,71 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                 "- For EACH unique visual actor, create a character entry with detailed appearance.\n"
                 "- If character/scene already exists in context, skip it."
             )
-        
-        full_response = []
-        async for chunk in agent.chat_stream(
-            f"{extract_msg}\n\nScript:\n{script[:15000]}",
-            language, base_url, api_key, model, agent_temp, context
-        ):
-            full_response.append(chunk)
-            yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
 
-        full_text = "".join(full_response)
+        # ── AI Extraction with auto-retry ──
+        MAX_EXTRACT_RETRIES = 2
+        full_text = ""
+        extracted = None
 
-        # Parse JSON from AI response (with auto-repair)
-        try:
-            extracted = _repair_json(full_text)
-        except (ValueError, json.JSONDecodeError) as parse_err:
-            snippet = full_text[:150] + ("..." if len(full_text) > 150 else "")
-            yield f"data: {json.dumps({'event': 'error', 'message': f'JSON parse error: {parse_err}. Raw: {snippet}'})}\n\n"
+        for _attempt in range(MAX_EXTRACT_RETRIES + 1):
+            full_response = []
+            try:
+                if _attempt > 0:
+                    yield f"data: {json.dumps({'event': 'status', 'message': f'🔄 Thử lại lần {_attempt}/{MAX_EXTRACT_RETRIES}...'})}\n\n"
+                    import asyncio as _aio_retry
+                    await _aio_retry.sleep(3)
+
+                async for chunk in agent.chat_stream(
+                    f"{extract_msg}\n\nScript:\n{script[:15000]}",
+                    language, base_url, api_key, model, agent_temp, context
+                ):
+                    if chunk == "\x00REASONING\x00":
+                        yield f"data: {json.dumps({'event': 'progress_reasoning'})}\n\n"
+                    elif chunk.startswith("❌"):
+                        # AI agent returned an error — treat as API failure
+                        raise Exception(chunk)
+                    else:
+                        full_response.append(chunk)
+                        yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
+
+                full_text = "".join(full_response)
+
+                try:
+                    extracted = _repair_json(full_text)
+                    break  # Success
+                except (ValueError, json.JSONDecodeError) as parse_err:
+                    if _attempt < MAX_EXTRACT_RETRIES:
+                        logger.warning(f"[Extract] Parse failed attempt {_attempt+1}: {parse_err}")
+                        yield f"data: {json.dumps({'event': 'status', 'message': '⚠️ Lỗi parse JSON, thử lại...'})}\n\n"
+                        continue
+                    snippet = full_text[:150] + ("..." if len(full_text) > 150 else "")
+                    yield f"data: {json.dumps({'event': 'error', 'message': f'JSON parse error: {parse_err}. Raw: {snippet}'})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+            except Exception as api_err:
+                logger.error(f"[Extract] AI streaming error attempt {_attempt+1}: {api_err}")
+                if _attempt < MAX_EXTRACT_RETRIES:
+                    yield f"data: {json.dumps({'event': 'status', 'message': f'⚠️ Lỗi kết nối AI (lần {_attempt+1}), tự động thử lại...'})}\n\n"
+                    continue
+                yield f"data: {json.dumps({'event': 'error', 'message': f'Lỗi kết nối AI sau {MAX_EXTRACT_RETRIES+1} lần thử: {api_err}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+        if not extracted:
+            yield f"data: {json.dumps({'event': 'error', 'message': 'Không thể trích xuất dữ liệu từ AI'})}\n\n"
             yield "data: [DONE]\n\n"
             return
 
         # Save to DB with deduplication
         characters = extracted.get("characters", [])
         scenes = extracted.get("scenes", [])
-
         saved_chars = []
         saved_scenes = []
 
         if characters:
             yield f"data: {json.dumps({'event': 'status', 'message': f'Matching {len(characters)} characters against gallery...'})}\n\n"
 
-            # ── Backend Deterministic Gallery Matching ──
-            # Load gallery items if available
             _gallery_items_full = []
             _gallery_cat_id = drama_meta.get("gallery_category_id")
             if _gallery_cat_id:
@@ -1932,12 +2095,9 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                 _used_gallery_ids = set()
 
                 def _score_match(char_data, gallery_item):
-                    """Score how well a gallery item matches an extracted character."""
                     score = 0
-                    # Gender match (STRICT — most important)
                     c_gender = (char_data.get("gender", "") or "").lower().strip()
                     g_gender = (gallery_item.get("gender", "") or "").lower().strip()
-                    # Infer gender from appearance if not explicit
                     if not c_gender:
                         app = (char_data.get("appearance", "") or "").lower()
                         if any(w in app for w in ["cô gái", "female", "woman", "girl", "nữ", "she", "her", "phụ nữ"]):
@@ -1946,56 +2106,39 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                             c_gender = "male"
                     if c_gender and g_gender:
                         if c_gender == g_gender:
-                            score += 40  # Big bonus for gender match
+                            score += 40
                         else:
-                            return -100  # HARD REJECT gender mismatch
-
-                    # Name similarity
+                            return -100
                     c_name = (char_data.get("name", "") or "").lower()
                     g_name = (gallery_item.get("name", "") or "").lower()
                     if c_name and g_name:
                         if g_name in c_name or c_name in g_name:
-                            score += 30  # Strong name match
+                            score += 30
                         else:
-                            # Check word overlap
-                            c_words = set(c_name.split())
-                            g_words = set(g_name.split())
-                            overlap = c_words & g_words
+                            overlap = set(c_name.split()) & set(g_name.split())
                             if overlap:
                                 score += 15 * len(overlap)
-
-                    # Tags match
                     g_tags = set(t.strip().lower() for t in (gallery_item.get("tags", "") or "").split(",") if t.strip())
                     if g_tags:
                         c_text = f"{c_name} {char_data.get('appearance', '')} {char_data.get('personality', '')}".lower()
                         tag_hits = sum(1 for t in g_tags if t in c_text)
                         score += tag_hits * 10
-
-                    # Role type match
                     g_role = (gallery_item.get("role_type", "") or "").lower()
                     c_role = (char_data.get("role", "") or "").lower()
                     if g_role and c_role and (g_role in c_role or c_role in g_role):
                         score += 10
-
-                    # Age range match
                     g_age = (gallery_item.get("age_range", "") or "").lower()
                     c_app = (char_data.get("appearance", "") or "").lower()
                     if g_age and g_age in c_app:
                         score += 10
-
                     return score
 
                 for char in characters:
-                    # Skip if AI already set a valid gallery_item_id and it's in our gallery
                     ai_gid = char.get("gallery_item_id")
                     if ai_gid and any(gi["id"] == ai_gid for gi in _gallery_items_full) and ai_gid not in _used_gallery_ids:
                         _used_gallery_ids.add(ai_gid)
-                        logger.info(f"Character '{char.get('name')}' — kept AI match gallery_item_id={ai_gid}")
                         continue
-
-                    # Backend scoring: find best unused gallery match
-                    best_gi = None
-                    best_score = 0
+                    best_gi, best_score = None, 0
                     for gi in _gallery_items_full:
                         if gi["id"] in _used_gallery_ids:
                             continue
@@ -2003,21 +2146,17 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                         if s > best_score:
                             best_score = s
                             best_gi = gi
-
                     if best_gi and best_score >= 20:
                         char["gallery_item_id"] = best_gi["id"]
                         char["suitability_score"] = best_score
                         _used_gallery_ids.add(best_gi["id"])
-                        logger.info(f"Character '{char.get('name')}' → matched gallery '{best_gi['name']}' (score={best_score})")
                     else:
                         char["gallery_item_id"] = None
                         char["suitability_score"] = None
-                        logger.info(f"Character '{char.get('name')}' → no gallery match (best_score={best_score})")
 
                 match_count = sum(1 for c in characters if c.get("gallery_item_id"))
                 yield f"data: {json.dumps({'event': 'status', 'message': f'Gallery matched: {match_count}/{len(characters)} characters'})}\n\n"
 
-            # Enrich matched characters with gallery attributes
             for char in characters:
                 gid = char.get("gallery_item_id")
                 if gid:
@@ -2038,12 +2177,14 @@ async def extract_characters_scenes(episode_id: int, request: Request):
 
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(characters)} characters...'})}\n\n"
             saved_chars = _db().save_characters_dedup(drama_id, episode_id, characters)
+            yield f"data: {json.dumps({'event': 'chars_saved', 'count': len(saved_chars)})}\n\n"
 
         if scenes:
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(scenes)} scenes...'})}\n\n"
             saved_scenes = _db().save_scenes_dedup(drama_id, episode_id, scenes)
+            yield f"data: {json.dumps({'event': 'scenes_saved', 'count': len(saved_scenes)})}\n\n"
 
-        # Mark extract as completed in metadata
+
         try:
             ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
             ep_meta["extract_completed"] = True
@@ -2052,202 +2193,215 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         except:
             pass
 
-        # --- Auto-generate AI reference images for new characters ---
-        # Re-fetch from DB to get fresh data (saved_chars may have stale image_url from dedup)
+        def _has_real_image(url):
+            if not url or not url.strip():
+                return False
+            u = url.strip()
+            # Gallery references and web URLs are considered valid images
+            if u.startswith('/api/') or u.startswith('http://') or u.startswith('https://'):
+                return True
+            return os.path.isfile(u)
+
+        # --- Auto-generate AI reference images for new characters and scenes ---
         all_drama_chars = _db().list_characters(drama_id)
-        chars_for_gen = [c for c in all_drama_chars if c.get("appearance", "").strip() and not c.get("image_url", "").strip()]
-        if chars_for_gen:
+        chars_for_gen = [c for c in all_drama_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
+        
+        all_drama_scenes = _db().list_scenes(drama_id)
+        scenes_for_gen = [sc for sc in all_drama_scenes if sc.get("location", "").strip() and not _has_real_image(sc.get("image_url", ""))]
+        
+        total_images_needed = len(chars_for_gen) + len(scenes_for_gen)
+        
+        if total_images_needed > 0:
             drama_obj = _db().get_drama(drama_id)
             char_style = _get_char_style(drama_obj) if drama_obj else "Realistic"
+            scene_visual_style = _get_visual_style(drama_obj) if drama_obj else "Realistic"
+            
+            _img_meta = {}
             try:
-                drama_meta_img = json.loads(drama_obj.get("metadata", "{}") or "{}")
-                # Priority: request body override > drama metadata (browser_profile_name / browser_profile)
-                profile_name_img = (
-                    _req_profile_name
-                    or drama_meta_img.get("browser_profile_name")
-                    or drama_meta_img.get("browser_profile")
-                    or ""
-                )
-                logger.info(f"[extract] browser profile resolved: req='{_req_profile_name}' meta='{drama_meta_img.get('browser_profile_name')}' → using='{profile_name_img}'")
-                # If we got profile from request and drama metadata was missing it, persist it
-                if _req_profile_name and not drama_meta_img.get("browser_profile_name"):
-                    drama_meta_img["browser_profile_name"] = _req_profile_name
-                    _db().conn.execute(
-                        "UPDATE dramas SET metadata = ? WHERE id = ?",
-                        (json.dumps(drama_meta_img), drama_id)
-                    )
-                    _db().conn.commit()
-                    logger.info(f"[extract] Persisted browser_profile_name='{_req_profile_name}' to drama {drama_id} metadata")
-            except Exception as _meta_ex:
-                logger.warning(f"[extract] Failed to parse drama metadata: {_meta_ex}")
-                profile_name_img = _req_profile_name or ""
-
-            if not profile_name_img:
-                _msg = "⚠️ Chưa chọn Browser Profile — bỏ qua tạo ảnh AI cho " + str(len(chars_for_gen)) + " nhân vật. Chọn profile rồi bấm AI Gen."
-                yield f'data: {json.dumps({"event": "status", "message": _msg})}\n\n'
+                if drama_obj:
+                    _img_meta = json.loads(drama_obj.get("metadata", "{}") or "{}")
+            except:
+                pass
+                
+            image_engine = _img_meta.get("video_engine", "grok")
+            profile_name = _req_profile_name or _img_meta.get("browser_profile_name") or _img_meta.get("browser_profile") or ""
+            
+            if _req_profile_name and not _img_meta.get("browser_profile_name"):
+                _img_meta["browser_profile_name"] = _req_profile_name
+                _db().conn.execute("UPDATE dramas SET metadata = ? WHERE id = ?", (json.dumps(_img_meta), drama_id))
+                _db().conn.commit()
+                
+            if not profile_name:
+                yield f'data: {json.dumps({"event": "status", "message": f"⚠️ Chưa chọn Browser Profile — bỏ qua tạo {total_images_needed} ảnh AI. Chọn profile rồi bấm AI Gen."})}\n\n'
             else:
-                _msg = "🎨 Đang tạo ảnh tham chiếu cho " + str(len(chars_for_gen)) + " nhân vật mới..."
-                yield f'data: {json.dumps({"event": "status", "message": _msg})}\n\n'
-                from pathlib import Path as _PImg
-                _grok_s = os.path.join(_ext_dir, "engines", "grok_char_image.js")
-                _top = _PImg(_ext_dir).parents[2]
+                yield f'data: {json.dumps({"event": "status", "message": f"🎨 Đang tạo {total_images_needed} ảnh tham chiếu ({image_engine})..."})}\n\n'
+                
+                from pathlib import Path
+                _top = Path(_ext_dir).parents[2]
                 _bdir = str(_top / "tubecli" / "extensions" / "browser")
                 try:
-                    from tubecli.config import DATA_DIR as _D2
-                    _pdir = os.path.join(str(_D2), "browser_profiles")
+                    from tubecli.config import DATA_DIR
+                    _pdir = os.path.join(str(DATA_DIR), "browser_profiles")
                 except:
                     _pdir = str(_top / "data" / "browser_profiles")
                 _rdir = _get_ref_dir()
-                from datetime import datetime as _dt3
+                from datetime import datetime as _dt
+                
+                aspect_ratio = _img_meta.get("aspect_ratio", "16:9")
+                char_ar = aspect_ratio if image_engine == "veo3" else "1:1" # veo3 uses same AR for chars
+                
                 _gok = 0
                 _ger = 0
-                # Get aspect ratio from drama metadata
-                _char_ar = "1:1"
-                try:
-                    _drama_meta_ar = json.loads(drama_obj.get("metadata", "{}") or "{}")
-                    _char_ar = _drama_meta_ar.get("aspect_ratio", "1:1")
-                except:
-                    pass
-                for _ci, _co in enumerate(chars_for_gen):
-                    _cid = _co["id"]
-                    _cn = _co.get("name", "Unknown")
-                    _ca = _co.get("appearance", "")
-                    _msg2 = f"🎨 [{_ci+1}/{len(chars_for_gen)}] Tạo ảnh: {_cn}..."
-                    yield f'data: {json.dumps({"event": "status", "message": _msg2})}\n\n'
-                    _cp = _build_char_ref_prompt(_cn, _ca, char_style, _char_ar)
-                    _ts = _dt3.now().strftime("%Y%m%d_%H%M%S")
-                    _cout = os.path.join(_rdir, f"char_{_cid}_ai_{_ts}.png")
-                    os.makedirs(os.path.dirname(_cout), exist_ok=True)
-                    logger.info(f"CharGen [{_cn}] output={_cout}, profile={profile_name_img}")
-                    _cmd = ["node", _grok_s, "--profile", profile_name_img, "--prompt", _cp, "--output", _cout, "--profiles-dir", _pdir, "--timeout", "120"]
-                    _env = os.environ.copy()
-                    _env["NODE_PATH"] = os.path.join(_bdir, "node_modules")
-                    try:
-                        _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir, env=_env)
-                        _so, _se = await asyncio.wait_for(_pr.communicate(), timeout=150)
-                        _sot = _so.decode("utf-8", errors="replace").strip()
-                        _set = _se.decode("utf-8", errors="replace").strip()
-                        logger.info(f"CharGen [{_cn}] exit={_pr.returncode}, stdout_len={len(_sot)}, stderr_len={len(_set)}")
-                        logger.info(f"CharGen [{_cn}] stdout last 500: {_sot[-500:]}")
-                        _imok = False
-                        if _sot:
+                
+                if image_engine == "veo3":
+                    # --- VEO3 BATCH MODE ---
+                    batch_jobs = []
+                    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    for c in chars_for_gen:
+                        cp = _build_char_ref_prompt(c.get("name", ""), c.get("appearance", ""), char_style, char_ar)
+                        cout = os.path.join(_rdir, f"char_{c['id']}_ai_{_ts}.png")
+                        batch_jobs.append({"id": f"char_{c['id']}", "prompt": cp, "output": cout, "type": "character", "db_id": c['id']})
+                        
+                    for s in scenes_for_gen:
+                        sp = _build_scene_ref_prompt(s.get("location", ""), s.get("time", ""), s.get("description", ""), scene_visual_style, aspect_ratio)
+                        sout = os.path.join(_rdir, f"scene_{s['id']}_ai_{_ts}.png")
+                        batch_jobs.append({"id": f"scene_{s['id']}", "prompt": sp, "output": sout, "type": "scene", "db_id": s['id']})
+                        
+                    if batch_jobs:
+                        jobs_file = os.path.join(_ext_dir, "_extract_batch_jobs.json")
+                        with open(jobs_file, "w", encoding="utf-8") as f:
+                            json.dump(batch_jobs, f)
+                            
+                        _veo3_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
+                        _cmd = ["node", _veo3_script, "--profile", profile_name, "--jobs", jobs_file, "--profiles-dir", _pdir, "--aspect-ratio", aspect_ratio, "--timeout", "120"]
+                        _env = os.environ.copy()
+                        _env["NODE_PATH"] = os.path.join(_bdir, "node_modules")
+                        
+                        try:
+                            _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=_bdir, env=_env)
+                            
+                            while True:
+                                line = await _pr.stdout.readline()
+                                if not line:
+                                    break
+                                line_str = line.decode('utf-8', errors='replace').strip()
+                                logger.info(f"[Veo3 Batch Extract] {line_str}") # Log to terminal
+                                if line_str.startswith('{'):
+                                    try:
+                                        msg = json.loads(line_str)
+                                        job_id = msg.get("id", "")
+                                        if msg.get("status") == "success":
+                                            job_path = msg.get("path")
+                                            for j in batch_jobs:
+                                                if j["id"] == job_id:
+                                                    if j["type"] == "character":
+                                                        try:
+                                                            _ors = json.loads(next((c.get("reference_images") or "[]" for c in chars_for_gen if c["id"] == j["db_id"]), "[]"))
+                                                        except:
+                                                            _ors = []
+                                                        _ors.append(job_path)
+                                                        _db().update_character(j["db_id"], {"reference_images": json.dumps(_ors), "image_url": job_path})
+                                                        yield f'data: {json.dumps({"event": "status", "message": f"✅ Đã tạo ảnh nhân vật {job_id}"})}\n\n'
+                                                    else:
+                                                        _db().update_scene(j["db_id"], {"image_url": job_path})
+                                                        yield f'data: {json.dumps({"event": "status", "message": f"✅ Đã tạo ảnh cảnh {job_id}"})}\n\n'
+                                                    _gok += 1
+                                                    break
+                                        elif msg.get("status") == "error" and job_id:
+                                            _ger += 1
+                                            _err_msg = msg.get("message", "Unknown error")
+                                            yield f'data: {json.dumps({"event": "status", "message": f"⚠️ Lỗi {job_id}: {_err_msg}"})}\n\n'
+                                    except:
+                                        pass
+                                        
+                            await _pr.wait()
+                            
+                        except Exception as e:
+                            logger.error(f"[Veo3 Batch Extract] Python Exception: {e}")
+                            yield f'data: {json.dumps({"event": "status", "message": f"⚠️ Lỗi hệ thống: {e}"})}\n\n'
+                            
+                else:
+                    # --- GROK SEQUENTIAL MODE ---
+                    _grok_char = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    _grok_scene = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    for _ci, c in enumerate(chars_for_gen):
+                        _cid = c["id"]
+                        _cn = c.get("name", "Unknown")
+                        _ca = c.get("appearance", "")
+                        yield f'data: {json.dumps({"event": "status", "message": f"🎨 [{_ci+1}/{len(chars_for_gen)}] Tạo ảnh nhân vật: {_cn[:30]}..."})}\n\n'
+                        
+                        _cp = _build_char_ref_prompt(_cn, _ca, char_style, "1:1")
+                        _cout = os.path.join(_rdir, f"char_{_cid}_ai_{_ts}.png")
+                        os.makedirs(os.path.dirname(_cout), exist_ok=True)
+                        
+                        _cmd = ["node", _grok_char, "--profile", profile_name, "--prompt", _cp, "--output", _cout, "--profiles-dir", _pdir, "--timeout", "120"]
+                        _env = os.environ.copy()
+                        _env["NODE_PATH"] = os.path.join(_bdir, "node_modules")
+                        try:
+                            _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir, env=_env)
+                            _so, _se = await asyncio.wait_for(_pr.communicate(), timeout=150)
+                            _sot = _so.decode("utf-8", errors="replace").strip()
+                            _imok = False
                             for _ln in reversed(_sot.splitlines()):
                                 if _ln.strip().startswith("{"):
                                     try:
                                         _rj = json.loads(_ln.strip())
-                                        logger.info(f"CharGen [{_cn}] parsed JSON: {_rj}")
-                                        # Use actual path from result, fallback to expected path
                                         actual_path = _rj.get("path", _cout)
                                         if _rj.get("status") == "success" and os.path.exists(actual_path):
                                             try:
-                                                _ors = json.loads(_co.get("reference_images") or "[]")
+                                                _ors = json.loads(c.get("reference_images") or "[]")
                                             except:
                                                 _ors = []
                                             _ors.append(actual_path)
                                             _db().update_character(_cid, {"reference_images": json.dumps(_ors), "image_url": actual_path})
                                             _imok = True
                                             _gok += 1
-                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cho " + _cn})}\n\n'
+                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cho " + _cn[:20]})}\n\n'
                                             break
-                                        elif _rj.get("status") == "success":
-                                            logger.warning(f"CharGen [{_cn}] success but file not found: {actual_path}, exists={os.path.exists(actual_path)}, cout_exists={os.path.exists(_cout)}")
                                     except:
                                         pass
-                        if not _imok:
+                            if not _imok:
+                                _ger += 1
+                        except Exception as _ex:
                             _ger += 1
-                            _em = _set[:150] if _set else "Không tìm thấy ảnh output"
-                            logger.warning(f"CharGen [{_cn}] FAILED: {_em}")
-                            yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh " + _cn + ": " + _em[:80]})}\n\n'
-                    except Exception as _ex:
-                        _ger += 1
-                        yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh " + _cn + ": " + str(_ex)[:80]})}\n\n'
-                _msg3 = f"🎨 Hoàn thành: {_gok} thành công, {_ger} thất bại"
-                yield f'data: {json.dumps({"event": "status", "message": _msg3})}\n\n'
-
-        # --- Auto-generate AI reference images for new scenes ---
-        all_drama_scenes = _db().list_scenes(drama_id)
-        scenes_for_gen = [sc for sc in all_drama_scenes if sc.get("location", "").strip() and not sc.get("image_url", "").strip()]
-        if scenes_for_gen:
-            drama_obj_sc = _db().get_drama(drama_id)
-            scene_visual_style = _get_visual_style(drama_obj_sc) if drama_obj_sc else "Realistic"
-            try:
-                drama_meta_sc = json.loads(drama_obj_sc.get("metadata", "{}") or "{}")
-                profile_name_sc = (
-                    _req_profile_name
-                    or drama_meta_sc.get("browser_profile_name")
-                    or drama_meta_sc.get("browser_profile")
-                    or ""
-                )
-            except:
-                profile_name_sc = _req_profile_name or ""
-            
-            scene_ar = "16:9"
-            try:
-                scene_ar = drama_meta_sc.get("aspect_ratio", "16:9")
-            except:
-                pass
-
-            if not profile_name_sc:
-                _smsg = "⚠️ Chưa chọn Browser Profile — bỏ qua tạo ảnh AI cho " + str(len(scenes_for_gen)) + " cảnh."
-                yield f'data: {json.dumps({"event": "status", "message": _smsg})}\n\n'
-            else:
-                _smsg = "🖼️ Đang tạo ảnh tham chiếu cho " + str(len(scenes_for_gen)) + " cảnh mới..."
-                yield f'data: {json.dumps({"event": "status", "message": _smsg})}\n\n'
-                from pathlib import Path as _PSc
-                _grok_sc = os.path.join(_ext_dir, "engines", "grok_char_image.js")
-                _top_sc = _PSc(_ext_dir).parents[2]
-                _bdir_sc = str(_top_sc / "tubecli" / "extensions" / "browser")
-                try:
-                    from tubecli.config import DATA_DIR as _DSc
-                    _pdir_sc = os.path.join(str(_DSc), "browser_profiles")
-                except:
-                    _pdir_sc = str(_top_sc / "data" / "browser_profiles")
-                _rdir_sc = _get_ref_dir()
-                from datetime import datetime as _dtsc
-                _sok = 0
-                _ser = 0
-                for _si, _so_obj in enumerate(scenes_for_gen):
-                    _sid = _so_obj["id"]
-                    _sloc = _so_obj.get("location", "Unknown")
-                    _stime = _so_obj.get("time", "")
-                    _sdesc = _so_obj.get("description", "")
-                    _smsg2 = f"🖼️ [{_si+1}/{len(scenes_for_gen)}] Tạo ảnh cảnh: {_sloc[:40]}..."
-                    yield f'data: {json.dumps({"event": "status", "message": _smsg2})}\n\n'
-                    _sp = _build_scene_ref_prompt(_sloc, _stime, _sdesc, scene_visual_style, scene_ar)
-                    _sts = _dtsc.now().strftime("%Y%m%d_%H%M%S")
-                    _sout = os.path.join(_rdir_sc, f"scene_{_sid}_ai_{_sts}.png")
-                    os.makedirs(os.path.dirname(_sout), exist_ok=True)
-                    logger.info(f"SceneGen [{_sloc[:30]}] output={_sout}, profile={profile_name_sc}")
-                    _scmd = ["node", _grok_sc, "--profile", profile_name_sc, "--prompt", _sp, "--output", _sout, "--profiles-dir", _pdir_sc, "--timeout", "120"]
-                    _senv = os.environ.copy()
-                    _senv["NODE_PATH"] = os.path.join(_bdir_sc, "node_modules")
-                    try:
-                        _spr = await asyncio.create_subprocess_exec(*_scmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir_sc, env=_senv)
-                        _sso, _sse = await asyncio.wait_for(_spr.communicate(), timeout=150)
-                        _ssot = _sso.decode("utf-8", errors="replace").strip()
-                        _simok = False
-                        if _ssot:
-                            for _sln in reversed(_ssot.splitlines()):
+                            
+                    for _si, s in enumerate(scenes_for_gen):
+                        _sid = s["id"]
+                        _sloc = s.get("location", "Unknown")
+                        yield f'data: {json.dumps({"event": "status", "message": f"🖼️ [{_si+1}/{len(scenes_for_gen)}] Tạo ảnh cảnh: {_sloc[:30]}..."})}\n\n'
+                        
+                        _sp = _build_scene_ref_prompt(_sloc, s.get("time", ""), s.get("description", ""), scene_visual_style, aspect_ratio)
+                        _sout = os.path.join(_rdir, f"scene_{_sid}_ai_{_ts}.png")
+                        os.makedirs(os.path.dirname(_sout), exist_ok=True)
+                        
+                        _cmd = ["node", _grok_scene, "--profile", profile_name, "--prompt", _sp, "--output", _sout, "--profiles-dir", _pdir, "--timeout", "120"]
+                        try:
+                            _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir, env=_env)
+                            _so, _se = await asyncio.wait_for(_pr.communicate(), timeout=150)
+                            _sot = _so.decode("utf-8", errors="replace").strip()
+                            _simok = False
+                            for _sln in reversed(_sot.splitlines()):
                                 if _sln.strip().startswith("{"):
                                     try:
-                                        _srj = json.loads(_sln.strip())
-                                        actual_path_sc = _srj.get("path", _sout)
-                                        if _srj.get("status") == "success" and os.path.exists(actual_path_sc):
-                                            _db().update_scene(_sid, {"image_url": actual_path_sc})
+                                        _rj = json.loads(_sln.strip())
+                                        actual_path = _rj.get("path", _sout)
+                                        if _rj.get("status") == "success" and os.path.exists(actual_path):
+                                            _db().update_scene(_sid, {"image_url": actual_path})
                                             _simok = True
-                                            _sok += 1
-                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cảnh " + _sloc[:40]})}\n\n'
+                                            _gok += 1
+                                            yield f'data: {json.dumps({"event": "status", "message": "✅ Đã tạo ảnh cảnh " + _sloc[:20]})}\n\n'
                                             break
                                     except:
                                         pass
-                        if not _simok:
-                            _ser += 1
-                            yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh cảnh " + _sloc[:40]})}\n\n'
-                    except Exception as _sex:
-                        _ser += 1
-                        yield f'data: {json.dumps({"event": "status", "message": "⚠️ Lỗi tạo ảnh cảnh " + _sloc[:40] + ": " + str(_sex)[:60]})}\n\n'
-                _smsg3 = f"🖼️ Hoàn thành cảnh: {_sok} thành công, {_ser} thất bại"
-                yield f'data: {json.dumps({"event": "status", "message": _smsg3})}\n\n'
+                            if not _simok:
+                                _ger += 1
+                        except Exception as _ex:
+                            _ger += 1
+
+                yield f'data: {json.dumps({"event": "status", "message": f"✨ Hoàn thành: {_gok} thành công, {_ger} thất bại"})}\n\n'
 
         # Return final result
         result = {
@@ -2259,6 +2413,13 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         }
         yield f"data: {json.dumps(result)}\n\n"
         yield "data: [DONE]\n\n"
+      except Exception as _gen_err:
+        logger.error(f"[Extract] Unhandled generator error: {_gen_err}")
+        try:
+            yield f"data: {json.dumps({'event': 'error', 'message': f'Server error: {str(_gen_err)[:300]}'})}\n\n"
+            yield "data: [DONE]\n\n"
+        except:
+            pass
 
     return StreamingResponse(
         generate(),
@@ -2419,6 +2580,18 @@ async def generate_storyboard(episode_id: int, request: Request):
 
             all_shots = []
             is_first = True
+            scene_map = {f"{s['location'].lower()}|{s['time'].lower()}": s["id"] for s in scenes}
+
+            # Clear old storyboards BEFORE starting chunk loop (non-append mode)
+            # This way incremental saves per-chunk can always use append=True
+            if not append_mode:
+                from datetime import datetime as _dt_sb
+                _db().conn.execute(
+                    "UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL",
+                    (_dt_sb.now().isoformat(), episode_id),
+                )
+                _db().conn.commit()
+                logger.info(f"Storyboard: cleared old shots for episode {episode_id} (fresh generation)")
 
             for idx in pending_chunk_indices:
                 chunk_text = chunks[idx]
@@ -2452,8 +2625,11 @@ async def generate_storyboard(episode_id: int, request: Request):
                     prompt,
                     language, base_url, api_key, model, agent_temp, context
                 ):
-                    full_response.append(chunk)
-                    yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
+                    if chunk == "\x00REASONING\x00":
+                        yield f"data: {json.dumps({'event': 'progress_reasoning'})}\n\n"
+                    else:
+                        full_response.append(chunk)
+                        yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
 
                 full_text = "".join(full_response)
 
@@ -2566,8 +2742,35 @@ async def generate_storyboard(episode_id: int, request: Request):
                     expected = scene_count_in_chunk
                     if len(shots) < expected:
                         logger.warning(f"Storyboard chunk {idx+1}: AI returned {len(shots)} shots but expected {expected}")
-                        yield f"data: {json.dumps({'event': 'status', 'message': f'⚠️ Chunk {idx+1}: {len(shots)}/{expected} shots'})}\\n\\n"
+                        yield f"data: {json.dumps({'event': 'status', 'message': f'⚠️ Chunk {idx+1}: {len(shots)}/{expected} shots'})}\n\n"
                     all_shots.extend(shots)
+                    
+                    # ── Incremental save: save this chunk's shots immediately ──
+                    # So if a later chunk fails, these shots are already in DB
+                    try:
+                        for _cs in shots:
+                            _cs_names = _cs.get("character_names", [])
+                            _cs_ids = []
+                            for _cn in (_cs_names or []):
+                                _cid = char_name_map.get(_cn.lower().strip())
+                                if _cid:
+                                    _cs_ids.append(_cid)
+                            _cs["character_ids"] = _cs_ids
+                            _cs_loc = (_cs.get("location") or "").lower()
+                            _cs_tm = (_cs.get("time") or "").lower()
+                            _cs_key = f"{_cs_loc}|{_cs_tm}"
+                            if _cs_key in scene_map:
+                                _cs["scene_id"] = scene_map[_cs_key]
+                            else:
+                                for _sk, _sid in scene_map.items():
+                                    if _cs_loc and _cs_loc in _sk.split("|")[0]:
+                                        _cs["scene_id"] = _sid
+                                        break
+                        _chunk_saved = _db().save_storyboards_bulk(episode_id, shots, append=True)
+                        yield f"data: {json.dumps({'event': 'status', 'message': f'💾 Đã lưu {len(_chunk_saved)} shots (chunk {idx+1})'})}\n\n"
+                        logger.info(f"Storyboard chunk {idx+1}: saved {len(_chunk_saved)} shots incrementally")
+                    except Exception as _save_err:
+                        logger.error(f"Storyboard chunk {idx+1}: incremental save failed: {_save_err}")
             
                 is_first = False
 
@@ -2616,36 +2819,14 @@ async def generate_storyboard(episode_id: int, request: Request):
                 yield f"data: {json.dumps({'event': 'status', 'message': f'Auto-split {split_count} shots exceeding {MAX_SHOT_DURATION}s'})}\n\n"
             all_shots = split_result
 
-            yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(all_shots)} shots...'})}\n\n"
-
-            for shot in all_shots:
-                names = shot.get("character_names", [])
-                char_ids = []
-                for name in (names or []):
-                    cid = char_name_map.get(name.lower().strip())
-                    if cid:
-                        char_ids.append(cid)
-                shot["character_ids"] = char_ids
-
-            scene_map = {f"{s['location'].lower()}|{s['time'].lower()}": s["id"] for s in scenes}
-            for shot in all_shots:
-                loc = (shot.get("location") or "").lower()
-                tm = (shot.get("time") or "").lower()
-                key = f"{loc}|{tm}"
-                if key in scene_map:
-                    shot["scene_id"] = scene_map[key]
-                else:
-                    for skey, sid in scene_map.items():
-                        if loc and loc in skey.split("|")[0]:
-                            shot["scene_id"] = sid
-                            break
-
-            saved = _db().save_storyboards_bulk(episode_id, all_shots, append=append_mode)
+            # Shots already saved incrementally per-chunk above.
+            # Just emit final result.
+            yield f"data: {json.dumps({'event': 'status', 'message': f'✅ Hoàn thành {len(all_shots)} shots!'})}\n\n"
 
             result = {
                 "event": "complete",
                 "storyboards": all_shots,
-                "saved_count": len(saved),
+                "saved_count": len(all_shots),
             }
             yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
