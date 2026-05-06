@@ -43,9 +43,9 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
 3. **INFOGRAPHIC FALLBACK**: If the script is an infographic/educational video and has NO visual actors mentioned at all (only a narrator explaining), you MUST invent 1-3 "Generic Visual Actors" to act out the concepts (e.g., "A stressed employee").
 4. **GALLERY MATCHING ALGORITHM**:
    - For EVERY character you extract (including the invented Generic Visual Actors from Rule 2), you MUST strictly evaluate the 'available_gallery_characters' provided in the context.
-   - Compare based on: name similarity, tags, role_type, age_range, and overall vibe.
+   - Compare based on: name similarity, tags, role_type, age_range, char_type, appearance, and overall vibe.
    - Assign a mental suitability score (0-100). Do NOT randomly assign characters.
-   - If a gallery character is a strong match (score >= 60), output their ID in `gallery_item_id` and the score in `suitability_score`.
+   - If a gallery character is a strong match (score >= 50), output their ID in `gallery_item_id` and the score in `suitability_score`.
    - If multiple characters match, choose the one with the highest suitability score.
    - If NO gallery character is a good fit, leave `gallery_item_id` as `null` and `suitability_score` as `null`.
 5. **CONSOLIDATE VARIATIONS**: The SAME character in different poses or emotions (e.g. "Nhân vật Chibi đang khóc", "Nhân vật Chibi mỉm cười", "Chibi thinking") must be ONE single character entry. Use the BASE name (e.g. "Nhân vật Chibi"). Do NOT create separate character entries for emotional states, actions, or poses of the same person/figure.
@@ -56,6 +56,10 @@ You MUST output ONLY a valid JSON object (no markdown fences, no explanation) wi
 10. Scene prompts should be in ENGLISH, describe the background only (no characters).
 11. If existing characters/scenes are provided in context, DO NOT re-extract them — only extract NEW ones.
 12. Output ONLY the JSON object, no other text before or after it.
+13. **TYPE-AWARE MATCHING**: Gallery items have a `Type` field: `individual`, `duo`, `group`, or `friend`.
+   - When the script has a PAIR of characters who interact together (couple, rivals, partners, siblings), prefer matching them as ONE `duo` or `friend` gallery item instead of two `individual` items.
+   - When the script mentions a team/group/class of characters, prefer a `group` gallery item.
+   - DO NOT assign a `duo`/`group`/`friend` gallery item to a single standalone character.
 """
 
 

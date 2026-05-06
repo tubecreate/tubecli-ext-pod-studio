@@ -45,23 +45,46 @@ class ContentStudioExtension(Extension):
                 logger.warning(f"Failed to install httpx: {e}")
 
     def _init_database(self):
-        """Initialize SQLite database with schema."""
+        """Initialize JSON file store (migrated from SQLite)."""
         try:
             from tubecli.config import DATA_DIR
-            db_dir = os.path.join(str(DATA_DIR), "content_studio")
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "content_studio.db")
+            data_dir = os.path.join(str(DATA_DIR), "content_studio")
+            os.makedirs(data_dir, exist_ok=True)
 
             # Dynamic import from extension dir
             ext_dir = self.extension_dir or os.path.dirname(os.path.abspath(__file__))
             if ext_dir not in sys.path:
                 sys.path.insert(0, ext_dir)
 
-            from db.database import Database
-            Database.get_instance(db_path)
-            logger.info(f"Database initialized: {db_path}")
+            from db.json_store import JsonStore
+            JsonStore.get_instance(data_dir)
+            logger.info(f"JsonStore initialized: {data_dir}")
+
+            # Auto-migrate from SQLite if old DB exists AND migration hasn't completed
+            old_db = os.path.join(data_dir, "content_studio.db")
+            index_file = os.path.join(data_dir, "dramas_index.json")
+            if os.path.exists(old_db) and not os.path.exists(index_file):
+                logger.info("Found old SQLite DB, starting migration...")
+                from db.migrate_db_to_json import migrate
+                migrate(old_db, data_dir)
+            elif os.path.exists(old_db) and os.path.exists(index_file):
+                # Migration already done but DB wasn't renamed — try again
+                for ext in ["-shm", "-wal"]:
+                    wal = old_db + ext
+                    if os.path.exists(wal):
+                        try:
+                            os.remove(wal)
+                        except Exception:
+                            pass
+                try:
+                    os.rename(old_db, old_db + ".migrated")
+                    logger.info("Old SQLite DB renamed to .migrated")
+                except Exception:
+                    logger.warning("Could not rename old DB — migration already complete, ignoring.")
         except Exception as e:
-            logger.error(f"Failed to init database: {e}")
+            logger.error(f"Failed to init store: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _init_settings(self):
         """Initialize extension settings."""

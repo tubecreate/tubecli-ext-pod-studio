@@ -277,15 +277,18 @@ async function sleep(ms) {
             currentShotOutput = shot.output;
             videoSaved = false;
 
-            // Configure settings (Mode & Aspect ratio)
-            try {
-                await _configureSettings(page, shot.aspect_ratio || '9:16');
-            } catch (e) {
-                log('Could not configure settings: ' + e.message);
+            // Configure settings ONLY on first shot (settings persist for the batch)
+            if (idx === 0) {
+                try {
+                    await _configureSettings(page, shot.aspect_ratio || '9:16');
+                } catch (e) {
+                    log('Could not configure settings: ' + e.message);
+                }
             }
 
             // Upload reference images (if any)
             const refImages = shot.ref_images || [];
+            log(`Ref images: ${refImages.length} file(s)${refImages.length > 0 ? ' → ' + refImages.map(p => path.basename(p)).join(', ') : ''}`);
             if (refImages.length > 0) {
                 await _uploadRefImages(page, refImages);
             }
@@ -418,22 +421,253 @@ async function sleep(ms) {
 
                 // Check if video is being generated (loading/progress indicators)
                 let isGenerating = false;
+                let actualPercent = null;
                 try {
-                    isGenerating = await page.evaluate(() => {
+                    const progressInfo = await page.evaluate(() => {
+                        // Check for the new Veo 3 progress element: videocam icon + percentage text
+                        const videoIcons = document.querySelectorAll('i.google-symbols');
+                        for (const icon of videoIcons) {
+                            if (icon.textContent.trim() === 'videocam') {
+                                const parent = icon.parentElement;
+                                if (parent) {
+                                    // The percentage is usually in the parent or sibling
+                                    const textContent = parent.textContent || '';
+                                    const match = textContent.match(/(\d+)%/);
+                                    if (match) {
+                                        return { generating: true, percent: parseInt(match[1], 10) };
+                                    }
+                                }
+                            }
+                        }
+                        
                         // Check for spinning/loading indicators
                         const spinners = document.querySelectorAll('[class*="spinner"], [class*="loading"], [class*="progress"]');
-                        if (spinners.length > 0) return true;
+                        if (spinners.length > 0) return { generating: true, percent: null };
+                        
                         // Check for generation status text
                         const text = document.body.innerText;
-                        if (text.includes('Đang tạo') || text.includes('Generating') || text.includes('Processing')) return true;
-                        return false;
+                        if (text.includes('Đang tạo') || text.includes('Generating') || text.includes('Processing')) return { generating: true, percent: null };
+                        
+                        return { generating: false, percent: null };
                     });
+                    
+                    isGenerating = progressInfo.generating;
+                    actualPercent = progressInfo.percent;
                 } catch (e) {}
 
                 if (isGenerating) {
-                    lastPercent = Math.min(lastPercent + 5, 90);
+                    if (actualPercent !== null) {
+                        lastPercent = actualPercent;
+                    } else {
+                        lastPercent = Math.min(lastPercent + 5, 90);
+                    }
                     console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: lastPercent }));
-                    log(`Still generating... ~${lastPercent}%`);
+                    log(`Still generating... ${actualPercent !== null ? actualPercent + '%' : '~' + lastPercent + '%'}`);
+                    continue;
+                }
+                // ── Check for generation error ("Không thành công" / "unusual activity") ──
+                let tileHasError = false;
+                let isHighTraffic = false;
+                try {
+                    const errState = await page.evaluate(() => {
+                        let hasErr = false;
+                        let highTraf = false;
+                        const body = document.body.innerText;
+                        if (body.includes('Không thành công') || body.includes('unusual activity') ||
+                            body.includes('could not be generated') || body.includes('không thể tạo')) {
+                            hasErr = true;
+                        }
+                        if (body.includes('lượng truy cập cao') || body.includes('high traffic') || body.includes('thử lại sau vài phút')) {
+                            highTraf = true;
+                        }
+                        // Check for error icon on the latest tile
+                        const tiles = document.querySelectorAll('[data-tile-id]');
+                        for (const tile of tiles) {
+                            const tileText = tile.innerText || '';
+                            if (tileText.includes('Không thành công') || tileText.includes('error') ||
+                                tile.querySelector('i[class*="error"], i[class*="warning"]')) {
+                                hasErr = true;
+                            }
+                            if (tileText.includes('lượng truy cập cao') || tileText.includes('high traffic')) {
+                                highTraf = true;
+                            }
+                        }
+                        return { hasErr, highTraf };
+                    });
+                    tileHasError = errState.hasErr;
+                    isHighTraffic = errState.highTraf;
+                } catch (e) {}
+
+                if (tileHasError && retryAttempts < MAX_RETRY_CLICKS) {
+                    retryAttempts++;
+                    log(`⚠️ Generation error detected! (High Traffic: ${isHighTraffic}). Clicking retry (attempt ${retryAttempts}/${MAX_RETRY_CLICKS})...`);
+                    console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: `Retry ${retryAttempts}/${MAX_RETRY_CLICKS}${isHighTraffic ? ' (Waiting for traffic)' : ''}` }));
+                    
+                    if (isHighTraffic) {
+                        log('High traffic detected. Waiting 30 seconds before retrying...');
+                        await sleep(30000);
+                    }
+                    
+                    await sleep(3000);
+                    let retryClicked = false;
+                    
+                    try {
+                        retryClicked = await page.evaluate(() => {
+                            const allDivs = document.querySelectorAll('div');
+                            for (const div of allDivs) {
+                                const buttons = div.querySelectorAll(':scope > button');
+                                if (buttons.length !== 3) continue;
+                                
+                                const iconTexts = [];
+                                let refreshBtn = null;
+                                for (const btn of buttons) {
+                                    const icon = btn.querySelector('i');
+                                    const iconText = icon ? icon.textContent.trim() : '';
+                                    iconTexts.push(iconText);
+                                    if (iconText === 'refresh') refreshBtn = btn;
+                                }
+                                
+                                if (iconTexts.includes('refresh') && 
+                                    iconTexts.includes('undo') && 
+                                    iconTexts.includes('delete_forever') &&
+                                    refreshBtn) {
+                                    refreshBtn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        });
+                        if (retryClicked) log('✅ Clicked "refresh" button in error action group (refresh+undo+delete_forever)');
+                    } catch (e) { log('Method 1 failed: ' + e.message); }
+                    
+                    if (!retryClicked) {
+                        try {
+                            const refreshBtns = page.locator('button:has(i:text-is("refresh"))');
+                            const count = await refreshBtns.count();
+                            for (let b = 0; b < count; b++) {
+                                const btn = refreshBtns.nth(b);
+                                const parentDiv = btn.locator('xpath=..');
+                                const siblingUndo = parentDiv.locator('button:has(i:text-is("undo"))');
+                                const siblingDelete = parentDiv.locator('button:has(i:text-is("delete_forever"))');
+                                if (await siblingUndo.count() > 0 && await siblingDelete.count() > 0) {
+                                    await btn.click();
+                                    retryClicked = true;
+                                    log('✅ Clicked "refresh" button via Playwright sibling check');
+                                    break;
+                                }
+                            }
+                        } catch (e) { log('Method 2 failed: ' + e.message); }
+                    }
+                    
+                    if (retryClicked) {
+                        lastPercent = 0;
+                        await sleep(10000);
+                        deadline = Date.now() + timeout;
+                        continue;
+                    } else {
+                        log('Could not find retry button - all methods failed');
+                    }
+                }
+                
+                // ── If all retries exhausted and still error → modify prompt and regenerate ──
+                if (tileHasError && retryAttempts >= MAX_RETRY_CLICKS && !promptModified) {
+                    if (isHighTraffic) {
+                        log(`❌ High traffic persists after ${MAX_RETRY_CLICKS} retries. Aborting shot to save time.`);
+                        console.log(JSON.stringify({ status: 'error', shot_id: shot.id, message: 'High traffic. Please try again later.' }));
+                        break;
+                    }
+                    
+                    log(`❌ All ${MAX_RETRY_CLICKS} retries failed. Modifying prompt and regenerating...`);
+                    console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: 'Modifying prompt and retrying...' }));
+                    promptModified = true;
+                    
+                    try { await page.keyboard.press('Escape'); } catch(e) {}
+                    await sleep(1000);
+                    
+                    try {
+                        const inputSelectors = [
+                            'textarea[placeholder*="tạo"]',
+                            'textarea[placeholder*="create"]',
+                            'textarea[placeholder*="muốn"]',
+                            'textarea',
+                            'div[contenteditable="true"]',
+                        ];
+                        let retryInput = null;
+                        for (const sel of inputSelectors) {
+                            try {
+                                const el = page.locator(sel).last();
+                                if (await el.isVisible({ timeout: 1500 })) {
+                                    retryInput = el;
+                                    break;
+                                }
+                            } catch (e) {}
+                        }
+                        
+                        if (retryInput) {
+                            await retryInput.click();
+                            await sleep(500);
+                            
+                            let newPrompt = shot.prompt.replace(/\n+/g, ' ').trim();
+                            newPrompt = newPrompt
+                                .replace(/blood|gore|violence|weapon|gun|knife|死|殺|暴力/gi, '')
+                                .replace(/\s{2,}/g, ' ')
+                                .trim();
+                            newPrompt = `A cinematic scene: ${newPrompt}`;
+                            const aspectRatio = shot.aspect_ratio || '9:16';
+                            if (!newPrompt.includes('aspect ratio')) {
+                                const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
+                                newPrompt += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
+                            }
+                            
+                            await retryInput.fill('');
+                            await sleep(200);
+                            try {
+                                await retryInput.fill(newPrompt);
+                            } catch(e) {
+                                await page.keyboard.type(newPrompt, { delay: 5 });
+                            }
+                            await sleep(1000);
+                            
+                            let submitted = false;
+                            try {
+                                const submitBtn = page.locator('button:has(i:text("arrow_forward"))').last();
+                                if (await submitBtn.isVisible({ timeout: 2000 })) {
+                                    await submitBtn.click();
+                                    submitted = true;
+                                }
+                            } catch (e) {}
+                            if (!submitted) {
+                                try {
+                                    const createBtn = page.locator('button[aria-label*="Tạo"], button[aria-label*="Create"], button:has-text("Tạo")').last();
+                                    if (await createBtn.isVisible({ timeout: 1000 })) {
+                                        await createBtn.click();
+                                        submitted = true;
+                                    }
+                                } catch (e) {}
+                            }
+                            if (!submitted) {
+                                await page.keyboard.press('Enter');
+                            }
+                            
+                            log('Modified prompt submitted! Waiting for regeneration...');
+                            capturedVideoUrl = null;
+                            videoSaved = false;
+                            lastPercent = 0;
+                            retryAttempts = 0;
+                            deadline = Date.now() + timeout;
+                            await sleep(10000);
+                            continue;
+                        }
+                    } catch (e) {
+                        log('Prompt modification failed: ' + e.message);
+                    }
+                }
+                
+                if (tileHasError) {
+                    if (retryAttempts >= MAX_RETRY_CLICKS && promptModified) {
+                        log('❌ All retries and prompt modifications failed. Giving up on this shot.');
+                        break;
+                    }
                     continue;
                 }
 
@@ -512,206 +746,7 @@ async function sleep(ms) {
                                         await sleep(1000);
                                     }
                                     
-                                    // If global download listener caught it, we're done
-                if (!videoSaved) {
-                    // ── Check for generation error ("Không thành công" / "unusual activity") ──
-                    let tileHasError = false;
-                    try {
-                        tileHasError = await page.evaluate(() => {
-                            const body = document.body.innerText;
-                            if (body.includes('Không thành công') || body.includes('unusual activity') ||
-                                body.includes('could not be generated') || body.includes('không thể tạo')) {
-                                return true;
-                            }
-                            // Check for error icon on the latest tile
-                            const tiles = document.querySelectorAll('[data-tile-id]');
-                            for (const tile of tiles) {
-                                const tileText = tile.innerText || '';
-                                if (tileText.includes('Không thành công') || tileText.includes('error') ||
-                                    tile.querySelector('i[class*="error"], i[class*="warning"]')) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        });
-                    } catch (e) {}
-    
-                    if (tileHasError && retryAttempts < MAX_RETRY_CLICKS) {
-                        retryAttempts++;
-                        log(`⚠️ Generation error detected! Clicking retry (attempt ${retryAttempts}/${MAX_RETRY_CLICKS})...`);
-                        console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: `Retry ${retryAttempts}/${MAX_RETRY_CLICKS}` }));
-                        
-                        // Wait for the retry button to fully render
-                        await sleep(3000);
-                        let retryClicked = false;
-                        
-                        // The 3 error action buttons are direct children of one container div:
-                        //   <div class="sc-adc89304-5">
-                        //     <button><i class="google-symbols">refresh</i><span>Thử lại</span></button>
-                        //     <button><i class="google-symbols">undo</i><span>Sử dụng lại câu lệnh</span></button>
-                        //     <button><i class="google-symbols">delete_forever</i><span>Xoá</span></button>
-                        //   </div>
-                        // We identify this group by matching all 3 icon names, then click "refresh".
-                        
-                        // Method 1: DOM evaluate — find the button group by icon fingerprint
-                        try {
-                            retryClicked = await page.evaluate(() => {
-                                const allDivs = document.querySelectorAll('div');
-                                for (const div of allDivs) {
-                                    const buttons = div.querySelectorAll(':scope > button');
-                                    if (buttons.length !== 3) continue;
-                                    
-                                    const iconTexts = [];
-                                    let refreshBtn = null;
-                                    for (const btn of buttons) {
-                                        const icon = btn.querySelector('i');
-                                        const iconText = icon ? icon.textContent.trim() : '';
-                                        iconTexts.push(iconText);
-                                        if (iconText === 'refresh') refreshBtn = btn;
-                                    }
-                                    
-                                    // Verify this is the error action group
-                                    if (iconTexts.includes('refresh') && 
-                                        iconTexts.includes('undo') && 
-                                        iconTexts.includes('delete_forever') &&
-                                        refreshBtn) {
-                                        refreshBtn.click();
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            });
-                            if (retryClicked) log('✅ Clicked "refresh" button in error action group (refresh+undo+delete_forever)');
-                        } catch (e) { log('Method 1 failed: ' + e.message); }
-                        
-                        // Method 2: Playwright locator fallback — click the <i>refresh</i> button
-                        //           but only if it's a sibling of <i>undo</i> and <i>delete_forever</i>
-                        if (!retryClicked) {
-                            try {
-                                // Find all buttons with refresh icon
-                                const refreshBtns = page.locator('button:has(i:text-is("refresh"))');
-                                const count = await refreshBtns.count();
-                                for (let b = 0; b < count; b++) {
-                                    const btn = refreshBtns.nth(b);
-                                    // Check if sibling buttons have undo + delete_forever icons
-                                    const parentDiv = btn.locator('xpath=..');
-                                    const siblingUndo = parentDiv.locator('button:has(i:text-is("undo"))');
-                                    const siblingDelete = parentDiv.locator('button:has(i:text-is("delete_forever"))');
-                                    if (await siblingUndo.count() > 0 && await siblingDelete.count() > 0) {
-                                        await btn.click();
-                                        retryClicked = true;
-                                        log('✅ Clicked "refresh" button via Playwright sibling check');
-                                        break;
-                                    }
-                                }
-                            } catch (e) { log('Method 2 failed: ' + e.message); }
-                        }
-                        
-                        if (retryClicked) {
-                            // Reset progress and wait for regeneration
-                            lastPercent = 0;
-                            await sleep(10000); // Wait 10s for regeneration to start
-                            deadline = Date.now() + timeout; // Reset timeout
-                            continue;
-                        } else {
-                            log('Could not find retry button - all methods failed');
-                        }
-                    }
-                    
-                    // ── If all retries exhausted and still error → modify prompt and regenerate ──
-                    if (tileHasError && retryAttempts >= MAX_RETRY_CLICKS && !promptModified) {
-                        log(`❌ All ${MAX_RETRY_CLICKS} retries failed. Modifying prompt and regenerating...`);
-                        console.log(JSON.stringify({ status: 'generating', shot_id: shot.id, percent: 0, message: 'Modifying prompt and retrying...' }));
-                        promptModified = true;
-                        
-                        // Close any error dialogs
-                        try { await page.keyboard.press('Escape'); } catch(e) {}
-                        await sleep(1000);
-                        
-                        // Find the prompt input and modify it
-                        try {
-                            const inputSelectors = [
-                                'textarea[placeholder*="tạo"]',
-                                'textarea[placeholder*="create"]',
-                                'textarea[placeholder*="muốn"]',
-                                'textarea',
-                                'div[contenteditable="true"]',
-                            ];
-                            let retryInput = null;
-                            for (const sel of inputSelectors) {
-                                try {
-                                    const el = page.locator(sel).last();
-                                    if (await el.isVisible({ timeout: 1500 })) {
-                                        retryInput = el;
-                                        break;
-                                    }
-                                } catch (e) {}
-                            }
-                            
-                            if (retryInput) {
-                                await retryInput.click();
-                                await sleep(500);
-                                
-                                // Simplify/rephrase the prompt to avoid content filters
-                                let newPrompt = shot.prompt.replace(/\n+/g, ' ').trim();
-                                // Remove potentially problematic words/phrases
-                                newPrompt = newPrompt
-                                    .replace(/blood|gore|violence|weapon|gun|knife|死|殺|暴力/gi, '')
-                                    .replace(/\s{2,}/g, ' ')
-                                    .trim();
-                                // Add safety prefix
-                                newPrompt = `A cinematic scene: ${newPrompt}`;
-                                const aspectRatio = shot.aspect_ratio || '9:16';
-                                if (!newPrompt.includes('aspect ratio')) {
-                                    const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
-                                    newPrompt += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
-                                }
-                                
-                                await retryInput.fill('');
-                                await sleep(200);
-                                try {
-                                    await retryInput.fill(newPrompt);
-                                } catch(e) {
-                                    await page.keyboard.type(newPrompt, { delay: 5 });
-                                }
-                                await sleep(1000);
-                                
-                                // Submit
-                                let submitted = false;
-                                try {
-                                    const submitBtn = page.locator('button:has(i:text("arrow_forward"))').last();
-                                    if (await submitBtn.isVisible({ timeout: 2000 })) {
-                                        await submitBtn.click();
-                                        submitted = true;
-                                    }
-                                } catch (e) {}
-                                if (!submitted) {
-                                    try {
-                                        const createBtn = page.locator('button[aria-label*="Tạo"], button[aria-label*="Create"], button:has-text("Tạo")').last();
-                                        if (await createBtn.isVisible({ timeout: 1000 })) {
-                                            await createBtn.click();
-                                            submitted = true;
-                                        }
-                                    } catch (e) {}
-                                }
-                                if (!submitted) {
-                                    await page.keyboard.press('Enter');
-                                }
-                                
-                                log('Modified prompt submitted! Waiting for regeneration...');
-                                capturedVideoUrl = null;
-                                videoSaved = false;
-                                lastPercent = 0;
-                                retryAttempts = 0; // Reset retry counter for the new prompt
-                                deadline = Date.now() + timeout; // Reset timeout
-                                await sleep(10000);
-                                continue;
-                            }
-                        } catch (e) {
-                            log('Prompt modification failed: ' + e.message);
-                        }
-                    }
-                }
+
                                     if (videoSaved) {
                                         log('Video saved by global download listener!');
                                     }
@@ -845,91 +880,273 @@ async function _configureSettings(page, targetAR) {
         } catch(e) {
             log('Wait for textarea timeout in settings config');
         }
-        await sleep(1000); // Let UI settle
+        await sleep(1000);
         
-        let settingsClicked = false;
+        // ── Step 1: Find and identify the settings chip button ──
+        // The chip shows current mode info like "🍌 Nano Banana 2 crop_9_16 1x" (image mode)
+        // or "Veo 2 crop_9_16 5s" (video mode)
         
-        // Method 1: Find the textarea, go to its parent container, and click the second-to-last button
-        settingsClicked = await page.evaluate(() => {
-            const ta = document.querySelector('textarea, div[contenteditable="true"]');
-            if (ta) {
-                let container = ta.parentElement;
-                // Walk up until we find a container with at least 2 buttons
-                for (let i = 0; i < 5 && container; i++) {
-                    const buttons = Array.from(container.querySelectorAll('button'));
-                    if (buttons.length >= 2) {
-                        // Usually: [+] [Settings Pill] [Submit]
-                        // The settings pill is always the one right before the submit button (which is the last one)
-                        buttons[buttons.length - 2].click();
-                        return true;
+        let settingsChip = null;
+        
+        // Method A: Find button with aria-haspopup="menu" near the prompt area
+        // The settings chip always has aria-haspopup="menu" and contains model info
+        try {
+            const chips = page.locator('button[aria-haspopup="menu"]');
+            const count = await chips.count();
+            log(`Found ${count} buttons with aria-haspopup="menu"`);
+            
+            for (let i = count - 1; i >= 0; i--) {
+                const chip = chips.nth(i);
+                try {
+                    const text = await chip.textContent({ timeout: 1000 });
+                    const lower = (text || '').toLowerCase();
+                    // Settings chip contains model names or mode indicators
+                    if (lower.includes('banana') || lower.includes('imagen') || 
+                        lower.includes('veo') || lower.includes('1x') || 
+                        lower.includes('5s') || lower.includes('crop_')) {
+                        settingsChip = chip;
+                        log(`Found settings chip (Method A): "${text.trim().substring(0, 50)}"`);
+                        break;
                     }
-                    container = container.parentElement;
+                } catch(e) {}
+            }
+        } catch(e) {}
+        
+        // Method B: Walk up from textarea to find the button
+        if (!settingsChip) {
+            try {
+                const found = await page.evaluate(() => {
+                    const ta = document.querySelector('textarea, div[contenteditable="true"]');
+                    if (!ta) return null;
+                    let container = ta.parentElement;
+                    for (let i = 0; i < 5 && container; i++) {
+                        const buttons = Array.from(container.querySelectorAll('button[aria-haspopup="menu"]'));
+                        if (buttons.length > 0) {
+                            // Return info about the last one (closest to submit)
+                            const btn = buttons[buttons.length - 1];
+                            return btn.textContent.trim().substring(0, 80);
+                        }
+                        container = container.parentElement;
+                    }
+                    return null;
+                });
+                if (found) {
+                    settingsChip = page.locator('button[aria-haspopup="menu"]').last();
+                    log(`Found settings chip (Method B): "${found}"`);
+                }
+            } catch(e) {}
+        }
+        
+        if (!settingsChip) {
+            log('❌ Could not find settings chip button');
+            return;
+        }
+        
+        // ── Step 2: Check current mode before clicking ──
+        let currentText = '';
+        try {
+            currentText = (await settingsChip.textContent({ timeout: 2000 })).toLowerCase();
+        } catch(e) {}
+        
+        const isCurrentlyVideo = currentText.includes('veo') || currentText.includes('5s') || currentText.includes('8s');
+        const isCurrentlyImage = currentText.includes('banana') || currentText.includes('imagen') || currentText.includes('1x');
+        log(`Current mode: ${isCurrentlyVideo ? 'VIDEO' : isCurrentlyImage ? 'IMAGE' : 'UNKNOWN'} (text: "${currentText.trim().substring(0, 50)}")`);
+        
+        // ── Step 3: Click the chip to open popup ──
+        await settingsChip.click();
+        await sleep(2000);
+        
+        // ── Step 4: Switch to Video mode + Thành phần (Composition) ──
+        // Radix UI tabs use role="tab" with data-state="active"/"inactive"
+        // DOM .click() does NOT work — must use Playwright .click() for real mouse events
+        //
+        // Tab structure:
+        //   <button role="tab" id="radix-:xxx:-trigger-VIDEO" data-state="inactive">
+        //     <i class="google-symbols">videocam</i>Video
+        //   </button>
+        
+        // Click "Video" tab
+        log('Selecting Video mode...');
+        let videoClicked = false;
+        
+        // Method 1: Radix ID selector (most reliable)
+        try {
+            const videoTab = page.locator('button[role="tab"][id*="trigger-VIDEO"], button[role="tab"][id*="VIDEO"]').first();
+            if (await videoTab.isVisible({ timeout: 2000 })) {
+                const state = await videoTab.getAttribute('data-state');
+                log(`Video tab found, state: ${state}`);
+                if (state !== 'active') {
+                    await videoTab.click();
+                    videoClicked = true;
+                    log('✅ Clicked Video tab via Radix ID');
+                } else {
+                    videoClicked = true;
+                    log('✅ Video tab already active');
                 }
             }
-            return false;
-        });
+        } catch(e) { log('Video tab Method 1: ' + e.message); }
         
-        // Method 2: Fallback text selectors + Radix menu selector
-        if (!settingsClicked) {
-            log('Method 1 failed, trying fallback text selectors...');
-            // The button has aria-haspopup="menu". We take the last one on the page which is usually the one next to prompt.
-            const settingsChip = page.locator('button[aria-haspopup="menu"], button:has-text("Video"), button:has-text("Hình ảnh"), button:has-text("Veo"), button:has-text("Imagen"), button:has-text("1x"), button:has-text("5s")').last();
-            if (await settingsChip.isVisible({ timeout: 2000 })) {
+        // Method 2: Find tab with "videocam" icon
+        if (!videoClicked) {
+            try {
+                const videoTab = page.locator('button[role="tab"]:has(i:text("videocam"))').first();
+                if (await videoTab.isVisible({ timeout: 1500 })) {
+                    await videoTab.click();
+                    videoClicked = true;
+                    log('✅ Clicked Video tab via videocam icon');
+                }
+            } catch(e) {}
+        }
+        
+        // Method 3: Text-based (Playwright click, not DOM)
+        if (!videoClicked) {
+            try {
+                const videoTab = page.locator('button[role="tab"]:has-text("Video")').first();
+                if (await videoTab.isVisible({ timeout: 1500 })) {
+                    await videoTab.click();
+                    videoClicked = true;
+                    log('✅ Clicked Video tab via text match');
+                }
+            } catch(e) {}
+        }
+        
+        log(videoClicked ? '✅ Video mode selected' : '⚠️ Could not select Video mode');
+        await sleep(1500);
+        
+        // Click "Thành phần" (Composition) tab
+        log('Selecting Thành phần (Composition)...');
+        let compClicked = false;
+        
+        // Method 1: Radix ID selector
+        try {
+            const compTab = page.locator('button[role="tab"][id*="trigger-VIDEO_REFERENCES"], button[role="tab"][id*="VIDEO_REFERENCES"]').first();
+            if (await compTab.isVisible({ timeout: 2000 })) {
+                const state = await compTab.getAttribute('data-state');
+                log(`Composition tab found, state: ${state}`);
+                if (state !== 'active') {
+                    await compTab.click();
+                    compClicked = true;
+                    log('✅ Clicked Composition tab via Radix ID');
+                } else {
+                    compClicked = true;
+                    log('✅ Composition tab already active');
+                }
+            }
+        } catch(e) { log('Composition tab Method 1: ' + e.message); }
+        
+        // Method 2: Find tab with "chrome_extension" icon
+        if (!compClicked) {
+            try {
+                const compTab = page.locator('button[role="tab"]:has(i:text("chrome_extension"))').first();
+                if (await compTab.isVisible({ timeout: 1500 })) {
+                    await compTab.click();
+                    compClicked = true;
+                    log('✅ Clicked Composition tab via icon');
+                }
+            } catch(e) {}
+        }
+        
+        // Method 3: Text-based (Vietnamese + English)
+        if (!compClicked) {
+            try {
+                const compTab = page.locator('button[role="tab"]:has-text("Thành phần"), button[role="tab"]:has-text("Ingredients")').first();
+                if (await compTab.isVisible({ timeout: 1500 })) {
+                    await compTab.click();
+                    compClicked = true;
+                    log('✅ Clicked Composition tab via text match');
+                }
+            } catch(e) {}
+        }
+        
+        log(compClicked ? '✅ Thành phần selected' : '⚠️ Could not select Thành phần');
+        await sleep(1000);
+        
+        // ── Step 5: Set Aspect Ratio ──
+        const arMap = { '4:3': '16:9', '3:4': '9:16' };
+        const ar = arMap[targetAR] || targetAR || '9:16';
+        
+        // AR buttons are also Radix tabs with role="tab"
+        let arClicked = false;
+        
+        // Method 1: Radix ID for aspect ratio
+        const arId = ar.replace(':', '_'); // "9:16" → "9_16"
+        try {
+            const arTab = page.locator(`button[role="tab"][id*="${arId}"], button[role="tab"][id*="${ar}"]`).first();
+            if (await arTab.isVisible({ timeout: 1500 })) {
+                const state = await arTab.getAttribute('data-state');
+                if (state !== 'active') {
+                    await arTab.click();
+                    arClicked = true;
+                    log(`✅ Set AR to ${ar} via Radix ID`);
+                } else {
+                    arClicked = true;
+                    log(`✅ AR ${ar} already active`);
+                }
+            }
+        } catch(e) {}
+        
+        // Method 2: Find by icon "crop_9_16" or "crop_16_9"
+        if (!arClicked) {
+            const cropIcon = ar === '9:16' ? 'crop_9_16' : ar === '16:9' ? 'crop_16_9' : `crop_${arId}`;
+            try {
+                const arTab = page.locator(`button[role="tab"]:has(i:text("${cropIcon}"))`).first();
+                if (await arTab.isVisible({ timeout: 1500 })) {
+                    await arTab.click();
+                    arClicked = true;
+                    log(`✅ Set AR to ${ar} via crop icon`);
+                }
+            } catch(e) {}
+        }
+        
+        // Method 3: Text match
+        if (!arClicked) {
+            try {
+                const arTab = page.locator(`button[role="tab"]:has-text("${ar}")`).first();
+                if (await arTab.isVisible({ timeout: 1500 })) {
+                    await arTab.click();
+                    arClicked = true;
+                }
+            } catch(e) {}
+        }
+        
+        log(arClicked ? `✅ Aspect ratio set to ${ar}` : `⚠️ Could not set AR to ${ar}`);
+        
+        await sleep(500);
+        
+        // Close popup
+        await page.keyboard.press('Escape');
+        await sleep(500);
+        
+        // ── Step 6: Verify final state ──
+        try {
+            const finalText = await settingsChip.textContent({ timeout: 2000 });
+            const finalLower = (finalText || '').toLowerCase();
+            const isVideo = finalLower.includes('veo') || finalLower.includes('video') || 
+                           finalLower.includes('5s') || finalLower.includes('8s') || finalLower.includes('4s');
+            log(`Final chip: "${(finalText || '').trim().substring(0, 60)}" → ${isVideo ? '✅ VIDEO' : '❌ IMAGE'}`);
+            
+            if (!isVideo) {
+                log('⚠️ Still image mode — reopening for force switch...');
                 await settingsChip.click();
-                settingsClicked = true;
+                await sleep(2000);
+                
+                // Force click via Playwright
+                try {
+                    const vTab = page.locator('button[role="tab"][id*="VIDEO"], button[role="tab"]:has(i:text("videocam"))').first();
+                    if (await vTab.isVisible({ timeout: 1500 })) await vTab.click();
+                } catch(e) {}
+                await sleep(1000);
+                try {
+                    const cTab = page.locator('button[role="tab"][id*="VIDEO_REFERENCES"], button[role="tab"]:has-text("Thành phần"), button[role="tab"]:has-text("Ingredients")').first();
+                    if (await cTab.isVisible({ timeout: 1500 })) await cTab.click();
+                } catch(e) {}
+                await sleep(500);
+                
+                await page.keyboard.press('Escape');
+                await sleep(500);
             }
-        }
+        } catch(e) {}
         
-        if (settingsClicked) {
-            await sleep(1500);
-            
-            // Now the popup is open. Look for the "Video" mode button.
-            let videoModeClicked = await page.evaluate(() => {
-                const els = document.querySelectorAll('button, div[role="button"], span, div[role="menuitem"]');
-                for (const el of els) {
-                    const text = el.textContent.trim().toLowerCase();
-                    // Click the one that exactly says 'video'
-                    if (text === 'video') {
-                        el.click();
-                        return true;
-                    }
-                }
-                return false;
-            });
-            
-            if (!videoModeClicked) {
-                const videoBtn = page.locator('text="Video"').first();
-                try { if (await videoBtn.isVisible({ timeout: 1000 })) await videoBtn.click(); } catch(e) {}
-            }
-            await sleep(1000);
-            
-            // Now set Aspect Ratio
-            const arMap = { '4:3': '16:9', '3:4': '9:16' };
-            const ar = arMap[targetAR] || targetAR || '9:16';
-            
-            let arClicked = await page.evaluate((ratio) => {
-                const els = document.querySelectorAll('button, div[role="button"], span, div[role="menuitem"]');
-                for (const el of els) {
-                    if (el.textContent.trim() === ratio) {
-                        el.click();
-                        return true;
-                    }
-                }
-                return false;
-            }, ar);
-            
-            if (!arClicked) {
-                const arBtn = page.locator(`text="${ar}"`).first();
-                try { if (await arBtn.isVisible({ timeout: 1000 })) await arBtn.click(); } catch(e) {}
-            }
-            await sleep(500);
-            
-            // Close the popup
-            await page.keyboard.press('Escape');
-            await sleep(500);
-        } else {
-            log('Could not find settings chip to click.');
-        }
     } catch (e) {
         log('_configureSettings error: ' + e.message);
         try { await page.keyboard.press('Escape'); } catch(x) {}

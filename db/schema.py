@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
     browser_profiles TEXT DEFAULT '[]',
     aspect_ratio TEXT DEFAULT '16:9',
     narration_source TEXT DEFAULT 'prose',
+    video_length TEXT DEFAULT 'standard',
 
     -- SEO config
     seo_mode TEXT DEFAULT 'ai_generate',

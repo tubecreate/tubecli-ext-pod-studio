@@ -62,8 +62,10 @@ class ContentAgent:
                 for gc in gallery_chars:
                     roster_lines.append(
                         f"  - ID={gc['id']}, Name=\"{gc['name']}\", "
-                        f"Type={gc.get('char_type','')}, Tags={gc.get('tags','')}, "
-                        f"Role={gc.get('role_type','')}, Age={gc.get('age_range','')}"
+                        f"Type={gc.get('char_type','individual')}, Gender={gc.get('gender','')}, "
+                        f"Tags={gc.get('tags','')}, "
+                        f"Role={gc.get('role_type','')}, Age={gc.get('age_range','')}, "
+                        f"Appearance=\"{gc.get('appearance_summary','')[:150]}\""
                     )
                 roster_text = "\n".join(roster_lines)
 
@@ -84,9 +86,17 @@ class ContentAgent:
                     "3. **FUZZY MATCHING**: A gallery character named 'Nhân vật Chibi' can "
                     "represent 'Nhân vật Chibi đang khóc', 'Chibi character', 'Cute character', etc. "
                     "Match by the BASE character identity, ignoring emotional/action suffixes.\n"
-                    "4. **CREATE NEW ONLY IF**: No gallery character remotely fits the role. "
+                    "4. **TYPE MATCHING (CRITICAL)**:\n"
+                    "   - `Type=individual` → single person/character.\n"
+                    "   - `Type=duo` → a PAIR of characters (couple, two friends, two rivals).\n"
+                    "   - `Type=group` → a GROUP of 3+ characters.\n"
+                    "   - `Type=friend` → a pair/group of FRIENDS.\n"
+                    "   When the script describes interactions between TWO characters (a couple, rivals, partners), "
+                    "prefer a `duo` or `friend` gallery item over two separate `individual` items.\n"
+                    "   When the script describes a group/team/class, prefer a `group` gallery item.\n"
+                    "5. **CREATE NEW ONLY IF**: No gallery character remotely fits the role. "
                     "In that case, set `gallery_item_id` to null.\n"
-                    "5. **NEVER DUPLICATE**: If a gallery character is already in `existing_characters`, "
+                    "6. **NEVER DUPLICATE**: If a gallery character is already in `existing_characters`, "
                     "do NOT re-extract them.\n\n"
                     "### Required Output Fields for EVERY character:\n"
                     "```\n"
@@ -97,21 +107,232 @@ class ContentAgent:
                 base_prompt += gallery_injection
                 logger.info(f"[extractor] Injected GALLERY-FIRST rules ({len(gallery_chars)} gallery chars available)")
 
+            # ── Graphic Template Injection (Presentation format) ──
+            graphic_templates = context.get("available_graphic_templates")
+            if graphic_templates:
+                template_lines = []
+                for gt in graphic_templates:
+                    template_lines.append(
+                        f"  - ID={gt['id']}, Name=\"{gt['name']}\", "
+                        f"Type={gt.get('type','')}, Tags={gt.get('tags','')}, "
+                        f"Style: {gt.get('style_description','')}"
+                    )
+                template_text = "\n".join(template_lines)
+
+                graphic_injection = (
+                    "\n\n## GRAPHIC TEMPLATE GALLERY (HIGHEST PRIORITY)\n"
+                    "You have a GRAPHIC TEMPLATE GALLERY with pre-designed visual styles. "
+                    "You MUST reference these templates when writing image prompts for each screen.\n\n"
+                    "### Available Graphic Templates:\n"
+                    f"{template_text}\n\n"
+                    "### How to use:\n"
+                    "1. For EACH screen, pick the BEST matching template from the gallery above.\n"
+                    "2. In the screen's `prompt` field, describe the graphic using that template's STYLE "
+                    "(colors, layout, icon style, typography) combined with the actual content.\n"
+                    "3. Example: If template is '3D Pie Chart' with style 'colorful 3D segments on dark bg', "
+                    "write: 'Flat 2D slide on dark gradient. A colorful 3D pie chart with 4 segments: "
+                    "Context 40%, Role 30%, Style 20%, Output 10%. Bold white title: AI Prompt Components. "
+                    "Same 3D glossy style as reference template.'\n"
+                    "4. NEVER just write a generic description — always reference a specific template style.\n"
+                )
+                base_prompt += graphic_injection
+                logger.info(f"[extractor] Injected GRAPHIC TEMPLATE rules ({len(graphic_templates)} templates available)")
+
         # ── Anatomy Safety Injection (for storyboard_breaker) ──
         # Appended to ALL storyboard prompts (default + skill-overridden)
         # to prevent AI image generators from creating mutated characters.
         if self.agent_type == "storyboard_breaker":
             anatomy_injection = (
-                "\n\n## ANATOMY SAFETY RULES (MANDATORY)\n"
-                "When a shot contains characters/people/creatures, you MUST append this EXACT phrase "
-                "to the END of the `image_prompt`:\n"
-                '", perfect anatomy, highly detailed, no mutations, no extra limbs, no missing limbs, '
-                'exactly two arms, exactly two legs, single head, high quality"\n'
-                "Do NOT add this to scenery-only shots (no characters). "
-                "This is CRITICAL to prevent AI from generating deformed characters with extra heads, "
-                "multiple arms, or missing limbs."
+                "\n\n## CHARACTER ANATOMY & COMPOSITION RULES (MANDATORY)\n"
+                "When a shot contains characters/people/creatures, follow ALL these rules:\n\n"
+                "### Rule 1: COMPOSITION — Prevent Body Duplication\n"
+                "- Describe EXACTLY how many characters are in the shot.\n"
+                "- For single-character shots, write: 'A single [character description]' — "
+                "NEVER just '[character]' alone, always prefix with 'A single' or 'One'.\n"
+                "- NEVER describe the same character twice in one prompt.\n"
+                "- Specify the character's FULL pose in ONE clear sentence "
+                "(e.g., 'standing with arms crossed' NOT 'upper body... lower body...').\n\n"
+                "### Rule 2: ANATOMY SUFFIX — Append to image_prompt\n"
+                "You MUST append this EXACT phrase to the END of every `image_prompt` that contains characters:\n"
+                '", one single complete body, correct human proportions, '
+                'five fingers on each hand, no duplicate body parts, no merged torsos, '
+                'no extra limbs, no missing limbs, no deformed hands, '
+                'anatomically correct, professional quality"\n\n'
+                "### Rule 3: FRAMING — Reduce Defect Risk\n"
+                "- Prefer medium shots (waist-up) or close-ups over full-body shots — "
+                "fewer visible body parts = fewer defects.\n"
+                "- If full-body is needed, keep the pose SIMPLE (standing, sitting, walking). "
+                "Avoid complex poses like crossed legs, intertwined arms, or hands touching face.\n"
+                "- For hands: prefer hands at sides, on hips, or holding a simple object. "
+                "NEVER describe detailed finger positions.\n\n"
+                "Do NOT add anatomy suffix to scenery-only shots (no characters)."
             )
             base_prompt += anatomy_injection
+
+        # ── Video Length Mode Injection (ALL agents) ──
+        # Inject duration-specific constraints based on video_length setting
+        if context:
+            vl = context.get("video_length", "standard")
+            # Backwards compat: old "short" → "short_60s"
+            if vl == "short":
+                vl = "short_60s"
+            
+            length_rules = {}
+            
+            if vl == "short_60s":
+                length_rules = {
+                    "series_planner": (
+                        "\n\n## ⚡ SHORT VIDEO MODE (< 60s) — CONTENT SELECTION\n"
+                        "This is for SHORT-FORM video (TikTok/YouTube Shorts/Reels, < 60 seconds).\n"
+                        "CRITICAL: Do NOT try to cover everything. Instead:\n"
+                        "1. **SCAN** the entire premise for the single most SURPRISING, CONTROVERSIAL, or HIGH-VALUE insight.\n"
+                        "2. Each episode = 1 SINGLE powerful idea that makes viewers say 'Wait, really?!'\n"
+                        "3. Episode titles must be clickbait-worthy hooks, not summaries.\n"
+                        "4. Plot outline for each episode: MAX 2-3 sentences focused on ONE angle.\n"
+                        "5. Think like a viral content creator, not a textbook author."
+                    ),
+                    "novel_writer": (
+                        "\n\n## ⚡ SHORT VIDEO MODE (< 60s) — HOOK-FIRST WRITING\n"
+                        "This is a SHORT-FORM video (TikTok/YouTube Shorts/Reels, < 60 seconds).\n\n"
+                        "### Step 1: ANALYZE (do this mentally, don't write it)\n"
+                        "Read ALL the content and identify:\n"
+                        "- The most SHOCKING or SURPRISING fact/insight\n"
+                        "- The most CONTROVERSIAL or debate-worthy claim\n"
+                        "- The most EMOTIONALLY resonant moment\n"
+                        "Pick the ONE that would make someone stop scrolling.\n\n"
+                        "### Step 2: WRITE using this exact structure\n"
+                        "1. **HOOK (first 1-2 sentences)**: Lead with the insight from Step 1. "
+                        "Use patterns like: 'Did you know...', 'Most people think X, but actually...'\n"
+                        "2. **VALUE (3-5 sentences)**: Core message with concrete details. No repetition.\n"
+                        "3. **PUNCHLINE (last 1-2 sentences)**: Twist, takeaway, or CTA.\n\n"
+                        "### Hard Rules\n"
+                        "- TOTAL: 100-150 words MAXIMUM.\n"
+                        "- NO introductions, NO 'In this video...', NO background context.\n"
+                        "- Write conversationally, like talking to a friend."
+                    ),
+                    "script_rewriter": (
+                        "\n\n## ⚡ SHORT VIDEO MODE (< 60s) — SCRIPT FORMAT\n"
+                        "Format for SHORT-FORM video (< 60 seconds):\n"
+                        "- MAX 3-5 scenes. Scene 1 = HOOK (3-second attention grab).\n"
+                        "- Last scene = PUNCHLINE or CTA.\n"
+                        "- Each scene: MAX 2-3 lines. Total spoken: MAX 150 words.\n"
+                        "- Fast cuts, high energy. No slow transitions."
+                    ),
+                    "storyboard_breaker": (
+                        "\n\n## ⚡ SHORT VIDEO MODE (< 60s) — STORYBOARD\n"
+                        "SHORT-FORM video (< 60 seconds):\n"
+                        "- TOTAL duration: 40-55 seconds. Each shot: 3-5 seconds.\n"
+                        "- Maximum 8-10 shots total.\n"
+                        "- Shot #1 = THE HOOK. Most visually striking moment.\n"
+                        "- Fast-paced transitions. Narration per shot: 1-2 sentences max.\n"
+                        "- Last shot: memorable visual + punchline/CTA."
+                    ),
+                }
+            elif vl == "short_3m":
+                length_rules = {
+                    "series_planner": (
+                        "\n\n## 📱 SHORT VIDEO MODE (< 3 min) — CONTENT PLANNING\n"
+                        "This is for SHORT video (YouTube Shorts/Reels, 1-3 minutes).\n"
+                        "- Each episode = 1 focused topic with clear beginning, middle, end.\n"
+                        "- Episode titles should be curiosity-driven hooks.\n"
+                        "- Plot outline: 4-6 sentences covering 1 core argument/story arc.\n"
+                        "- Include 2-3 supporting points or examples, not just surface-level."
+                    ),
+                    "novel_writer": (
+                        "\n\n## 📱 SHORT VIDEO MODE (< 3 min) — WRITING STRATEGY\n"
+                        "This is a SHORT video (1-3 minutes). Write with depth but concisely.\n\n"
+                        "### Structure (300-450 words total)\n"
+                        "1. **HOOK (2-3 sentences)**: Open with a surprising fact, question, or bold claim.\n"
+                        "2. **CONTEXT (3-4 sentences)**: Brief setup — why this matters.\n"
+                        "3. **CORE VALUE (8-12 sentences)**: Main content with 2-3 key points. "
+                        "Each point gets 2-4 sentences with concrete examples or data.\n"
+                        "4. **CONCLUSION (2-3 sentences)**: Memorable takeaway or call-to-action.\n\n"
+                        "### Rules\n"
+                        "- TOTAL: 300-450 words. NOT more.\n"
+                        "- Start strong — no 'In this video...' or generic intros.\n"
+                        "- Every paragraph must deliver new information.\n"
+                        "- Conversational tone, but with substance."
+                    ),
+                    "script_rewriter": (
+                        "\n\n## 📱 SHORT VIDEO MODE (< 3 min) — SCRIPT FORMAT\n"
+                        "Format for SHORT video (1-3 minutes):\n"
+                        "- 5-8 scenes total. Scene 1 = HOOK.\n"
+                        "- Each scene: 3-5 lines of narration/dialogue.\n"
+                        "- Total spoken content: 300-450 words.\n"
+                        "- Good pacing — mix of fast and breathing moments.\n"
+                        "- If input is too long, compress: keep strongest points, cut filler."
+                    ),
+                    "storyboard_breaker": (
+                        "\n\n## 📱 SHORT VIDEO MODE (< 3 min) — STORYBOARD\n"
+                        "SHORT video (1-3 minutes):\n"
+                        "- TOTAL duration: 90-170 seconds.\n"
+                        "- Each shot: 5-10 seconds. Target 15-25 shots total.\n"
+                        "- Shot #1 = Visual HOOK. Grab attention immediately.\n"
+                        "- Mix shot types: close-ups for emotion, wide for context.\n"
+                        "- Narration per shot: 2-3 sentences.\n"
+                        "- Last 2-3 shots: build to memorable conclusion."
+                    ),
+                }
+            elif vl == "long_10m":
+                length_rules = {
+                    "series_planner": (
+                        "\n\n## 📺 LONG VIDEO MODE (> 10 min) — DEEP CONTENT PLANNING\n"
+                        "This is for LONG-FORM YouTube video (10-20 minutes).\n"
+                        "- Each episode should be COMPREHENSIVE — cover the topic thoroughly.\n"
+                        "- Plot outline: 8-15 sentences with detailed structure.\n"
+                        "- Include multiple sections: intro hook, background, main argument, "
+                        "examples/evidence, counter-arguments, conclusion.\n"
+                        "- Break into natural chapters/segments for retention.\n"
+                        "- Think like a documentary filmmaker or long-form essayist."
+                    ),
+                    "novel_writer": (
+                        "\n\n## 📺 LONG VIDEO MODE (> 10 min) — DEEP WRITING\n"
+                        "This is a LONG-FORM video (10-20 minutes). Write with depth and richness.\n\n"
+                        "### Structure (1500-2500 words total)\n"
+                        "1. **COLD OPEN / HOOK (3-5 sentences)**: Start with the most compelling moment.\n"
+                        "2. **INTRO & CONTEXT (1-2 paragraphs)**: Set the stage, why this matters.\n"
+                        "3. **MAIN BODY (5-8 sections)**: Deep exploration with:\n"
+                        "   - Concrete examples and stories\n"
+                        "   - Data, facts, or expert opinions\n"
+                        "   - Analogies to make complex ideas accessible\n"
+                        "   - Transitions between sections\n"
+                        "4. **CLIMAX / KEY INSIGHT (1-2 paragraphs)**: The 'aha moment'.\n"
+                        "5. **CONCLUSION (1 paragraph)**: Strong takeaway + CTA.\n\n"
+                        "### Rules\n"
+                        "- TOTAL: 1500-2500 words. Be thorough, not padded.\n"
+                        "- Use storytelling techniques: tension, surprise, resolution.\n"
+                        "- Include 'chapter markers' (section headings) for retention.\n"
+                        "- Vary sentence length and rhythm to maintain engagement."
+                    ),
+                    "script_rewriter": (
+                        "\n\n## 📺 LONG VIDEO MODE (> 10 min) — SCRIPT FORMAT\n"
+                        "Format for LONG-FORM video (10-20 minutes):\n"
+                        "- 15-30 scenes. Organized in 3-5 acts/chapters.\n"
+                        "- Include scene headings that serve as chapter markers.\n"
+                        "- Mix pacing: intense moments + breathing room.\n"
+                        "- Total spoken content: 1500-2500 words.\n"
+                        "- Use cliffhangers between chapters to maintain retention.\n"
+                        "- Every 2-3 minutes, include a 're-hook' — a new question or surprising turn."
+                    ),
+                    "storyboard_breaker": (
+                        "\n\n## 📺 LONG VIDEO MODE (> 10 min) — STORYBOARD\n"
+                        "LONG-FORM video (10-20 minutes):\n"
+                        "- TOTAL duration: 600-1200 seconds (10-20 minutes).\n"
+                        "- Each shot: 8-15 seconds. Target 50-100 shots total.\n"
+                        "- Organize shots into chapters/segments.\n"
+                        "- Mix visual variety: talking head, B-roll, graphics, transitions.\n"
+                        "- Shot #1 = Cold open hook.\n"
+                        "- Include visual 're-hooks' every 15-20 shots.\n"
+                        "- Narration per shot: 2-4 sentences."
+                    ),
+                }
+            # else: standard → no injection needed
+            
+            if length_rules:
+                injection = length_rules.get(self.agent_type)
+                if injection:
+                    base_prompt += injection
+                    logger.info(f"[{self.agent_type}] Injected {vl.upper()} video length constraints")
 
         full_system = f"{base_prompt}\n\n## Language Requirement\n{lang_prompt}"
 
@@ -144,6 +365,7 @@ class ContentAgent:
             "Health & Wellness": "health.json",
             "Faith & Religion": "faith.json",
             "Xianxia Donghua": "xianxia.json",
+            "Presentation / Screen": "presentation.json",
         }
         
         filename = FORMAT_TO_FILE.get(content_format)

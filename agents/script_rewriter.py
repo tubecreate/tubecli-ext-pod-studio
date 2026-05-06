@@ -52,14 +52,30 @@ If the context JSON contains a `previous_episode` object, it means you are writi
 - Do NOT summarize or repeat the events of the previous episode. Start the first scene immediately after.
 - Ensure character relationships and subplots carry over naturally. Use `characters` list from context to avoid inventing new characters if existing ones fit better.
 
-## Gallery Character Usage (IMPORTANT)
-If the context contains `gallery_characters`, these are pre-defined visual characters with reference images available.
-- You MUST use these gallery characters as visual actors in your script. Reference them by their EXACT gallery name.
-- Choose gallery characters that MATCH the gender and role needed for each part of the content.
-- For educational/non-drama content: assign gallery characters as visual representations for concepts.
-  Example: If gallery has "Nhân vật Chibi" (male, child), use "Nhân vật Chibi" as the visual actor for explanations.
-- Do NOT invent new character names when a gallery character fits. The gallery characters have reference images — using them ensures visual consistency.
-- If the script needs a character type NOT available in the gallery (e.g. needs a female but gallery only has males), you MAY create a new character with a descriptive name."""
+## Character Description Guidelines (CRITICAL FOR VISUAL CONSISTENCY)
+When introducing a character for the FIRST time, you MUST include a vivid **visual introduction** in the action/description paragraph. This description will later be used to match the character against pre-defined visual references.
+
+### What to describe on first appearance:
+- **Gender** (male/female)
+- **Age range** (child, teen, young adult, middle-aged, elderly)
+- **Key visual features**: hair style/color, build, clothing style, distinguishing marks
+- **Role impression**: occupation, social status, demeanor
+
+### Example:
+```
+## S01 | INT · Office | Morning
+
+A young woman in her late 20s with long black hair tied in a ponytail enters the room. She wears a crisp white blouse and navy pencil skirt, carrying a leather briefcase. Her sharp eyes scan the room with quiet confidence.
+
+Thảo: (adjusting her glasses) Is this the marketing department?
+```
+
+### Rules:
+- First appearance = DETAILED visual description (50-100 words for main characters, 20-40 for supporting)
+- Subsequent appearances = reference by name only, no need to re-describe
+- Be SPECIFIC about clothing, hair, build — do NOT leave these vague
+- If the content mentions pairs, groups, or teams of characters, describe the GROUP dynamic (e.g. "A trio of high school friends — two boys and a girl — burst through the door laughing")
+- If `gallery_characters` are provided in context, you may use their names and appearance details as inspiration, but focus on writing a natural, descriptive script. The character matching step will handle gallery assignment automatically."""
 
 
 class ScriptRewriterAgent(ContentAgent):

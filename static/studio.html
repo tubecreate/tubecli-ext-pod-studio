@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Content Studio — AI Drama Writer</title>
     <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260425_gallery_tab">
+    <link rel="stylesheet" href="/content-studio-static/flowchart.css?v=20260502">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -90,6 +91,9 @@
                                 <span class="meta-pill" id="metaScenes">0 scenes</span>
                             </div>
                             <div class="editor-actions">
+                                <button class="btn btn-sm" onclick="openFlowchart()" title="Visual Flowchart">
+                                    🔗 Flowchart
+                                </button>
                                 <button class="btn btn-primary btn-sm" onclick="resumeAutoPilot()">
                                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                                     Resume Auto-Pilot
@@ -233,6 +237,7 @@
                                     <span class="char-count" id="sbCount"></span>
                                 </div>
                                 <div class="toolbar-right">
+
                                     <button class="btn btn-secondary btn-sm tooltip-btn" id="btnClearSB" onclick="clearStoryboards()" title="Clear Storyboards" style="margin-right: 8px;">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                         Clear
@@ -297,8 +302,10 @@
                         <!-- Step 5.5: AI Video (Grok Gen) -->
                         <div class="step-panel" id="stepAIVideo" style="display:none">
                             <div class="step-toolbar">
-                                <div class="toolbar-left">
+                                <div class="toolbar-left" style="display:flex; align-items:center; gap:10px;">
                                     <span class="char-count" id="vidCount">0 videos</span>
+                                    <span id="vidAspectBadge" style="display:none; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; background:rgba(99,102,241,0.15); color:rgb(129,140,248); border:1px solid rgba(99,102,241,0.25);">16:9</span>
+                                    <span id="vidRefBadge" style="display:none; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; background:rgba(245,158,11,0.12); color:rgb(251,191,36); border:1px solid rgba(245,158,11,0.25); cursor:pointer;" title="Click to view ref images detail" onclick="showRefImagesDetail()">🖼 0 refs</span>
                                 </div>
                                 <div class="toolbar-right" style="display:flex; gap:6px;">
                                     <button class="btn btn-sm" style="color:#ef4444;" onclick="clearAllVideos()" title="Xóa toàn bộ video đã tạo">
@@ -316,7 +323,7 @@
                                     <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                                 </div>
                                 <div class="empty-title">Generate AI Videos</div>
-                                <div class="empty-desc">Tự động tạo video từ prompt cho từng shot qua Grok, sử dụng Chrome Profile.<br><br>Ghi chú: Sẽ tốn nhiều thời gian hơn ảnh.</div>
+                                <div class="empty-desc">Tự động tạo video từ prompt cho từng shot qua Grok/Veo3, sử dụng Chrome Profile.<br><br>Ghi chú: Sẽ tốn nhiều thời gian hơn ảnh.</div>
                                 <button class="btn btn-primary" onclick="openGenVideosDialog()">
                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                                     Start Video Generation
@@ -791,10 +798,11 @@
             </div>
 
             <!-- Gallery Item Modal -->
-            <div class="overlay" id="galleryItemModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+            <div class="overlay" id="galleryItemModal" style="display:none">
                 <div class="modal card" style="max-width: 800px; width: 90%;">
-                    <div class="modal-header">
+                    <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
                         <h2 class="modal-title" id="galItemModalTitle">Add Character</h2>
+                        <button class="btn btn-outline" style="padding: 4px 8px; border: none; font-size: 16px; background: transparent; color: var(--text-2);" onclick="document.getElementById('galleryItemModal').style.display='none'">✕</button>
                     </div>
                     <div class="modal-form" style="padding: 20px; display:flex; flex-direction:row; gap:24px;">
                         <!-- Left: Image & Analysis -->
@@ -863,12 +871,30 @@
                                 <div class="form-group" style="flex:1;">
                                     <label class="form-label">Type</label>
                                     <select id="galItemCharType" class="input">
-                                        <option value="individual">👤 Individual</option>
-                                        <option value="duo">👥 Duo / Pair</option>
-                                        <option value="friend_group">🤝 Friend Group</option>
-                                        <option value="crowd">👨‍👩‍👧‍👦 Crowd / Many</option>
-                                        <option value="creature">🐾 Creature / Pet</option>
-                                        <option value="object">📦 Object / Prop</option>
+                                        <optgroup label="👥 Characters">
+                                            <option value="individual">👤 Individual</option>
+                                            <option value="duo">👥 Duo / Pair</option>
+                                            <option value="friend_group">🤝 Friend Group</option>
+                                            <option value="crowd">👨‍👩‍👧‍👦 Crowd / Many</option>
+                                            <option value="creature">🐾 Creature / Pet</option>
+                                        </optgroup>
+                                        <optgroup label="📊 Graphic / Assets">
+                                            <option value="chart">📊 Chart (Pie, Bar, Line)</option>
+                                            <option value="diagram">🔀 Diagram / Flowchart</option>
+                                            <option value="infographic">📈 Infographic</option>
+                                            <option value="table">📋 Table / Data Grid</option>
+                                            <option value="screenshot">🖥️ Screenshot / UI</option>
+                                            <option value="screen">📺 Screen / Slide Template</option>
+                                            <option value="object">📦 Object / Prop</option>
+                                        </optgroup>
+                                        <optgroup label="✨ Effects / Overlays">
+                                            <option value="holographic">🌈 Holographic</option>
+                                            <option value="thought_bubble">💭 Thought Bubble</option>
+                                            <option value="overlay">🎭 Overlay / Frame</option>
+                                            <option value="transition">🔄 Transition</option>
+                                            <option value="particle">✨ Particle / Glow</option>
+                                            <option value="data_panel">📟 Data Panel / HUD</option>
+                                        </optgroup>
                                     </select>
                                 </div>
                                 <div class="form-group" style="flex:1;">
@@ -1135,6 +1161,7 @@
                                     <option value="Commercial / Advertisement">🛒 Quảng cáo / Thương hiệu</option>
                                     <option value="Podcast / Talkshow">🎙️ Podcast / Talkshow</option>
                                     <option value="Educational / Learning">📚 Giáo dục / Bài giảng</option>
+                                    <option value="Presentation / Screen">🖥️ Thuyết trình / Màn hình Graphic</option>
                                     <option value="Health & Wellness">⚕️ Sức khoẻ / Đời sống</option>
                                     <option value="Faith & Religion">🙏 Tôn giáo / Tín ngưỡng</option>
                                     <option value="Xianxia Donghua">⚔️ Hoạt hình Tu tiên</option>
@@ -1261,6 +1288,20 @@
                                     <option value="Action and Motion">Nhấn mạnh Hành động</option>
                                     <option value="Lighting and Atmosphere">Nhấn mạnh Ánh sáng & Cinematic</option>
                                 </select>
+                            </label>
+                        </div>
+                        <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">📏 Video Length</span>
+                                <select id="wizVideoLength" class="input" onchange="onVideoLengthChange()">
+                                    <option value="short_60s">⚡ Short < 1 phút (TikTok/Shorts/Reels)</option>
+                                    <option value="short_3m">📱 Short < 3 phút (YouTube Shorts/Reels)</option>
+                                    <option value="standard" selected>🎬 Standard (Video YouTube thường)</option>
+                                    <option value="long_10m">📺 Long > 10 phút (YouTube Deep Content)</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 2;">
+                                <span class="field-label" style="font-size:11px; color:var(--text-3);" id="wizVideoLengthHint"></span>
                             </label>
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
@@ -1513,6 +1554,30 @@
                     <div class="modal-actions" style="margin-top:25px;">
                         <button type="button" class="btn" onclick="document.getElementById('audioGenModal').style.display='none'">Cancel</button>
                         <button type="button" class="btn btn-primary" id="btnConfirmAudioGen" onclick="confirmGenerateRawAudio()">Generate Audio</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Batch Audio Gen Modal -->
+        <div class="modal-overlay" id="batchAudioGenModal" style="display:none; z-index:10000; align-items:center; justify-content:center; padding:20px;">
+            <div class="modal" style="width: 450px;">
+                <div class="modal-header">
+                    <h2 class="modal-title">Generate All Audio</h2>
+                </div>
+                <div class="modal-form">
+                    <label class="field">
+                        <span class="field-label">Select Voice for Batch TTS</span>
+                        <div class="select-wrapper">
+                            <select id="batchAudioVoice" class="input">
+                                <option value="">Loading voices...</option>
+                            </select>
+                            <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                        </div>
+                    </label>
+                    <div class="modal-actions" style="margin-top:25px;">
+                        <button type="button" class="btn" onclick="document.getElementById('batchAudioGenModal').style.display='none'">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="btnConfirmBatchAudio" onclick="confirmBatchAudioGen()">Generate All</button>
                     </div>
                 </div>
             </div>
@@ -1823,5 +1888,6 @@
         <div class="toast-container" id="toastContainer"></div>
     </div>
     <script src="/content-studio-static/studio2.js?v=20260427_profilepicker"></script>
+    <script src="/content-studio-static/flowchart.js?v=20260502"></script>
 </body>
 </html>

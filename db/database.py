@@ -72,6 +72,10 @@ class Database:
             self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN gallery_category_id INTEGER")
             self.conn.commit()
             logger.info("Migration: added gallery_category_id to auto_pipeline_jobs")
+        if "video_length" not in ap_cols:
+            self.conn.execute("ALTER TABLE auto_pipeline_jobs ADD COLUMN video_length TEXT DEFAULT 'standard'")
+            self.conn.commit()
+            logger.info("Migration: added video_length to auto_pipeline_jobs")
         # Migrate char_gallery_items
         try:
             gi_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(char_gallery_items)").fetchall()}
@@ -139,7 +143,7 @@ class Database:
         if not d:
             return None
         d["episodes"] = self._dicts(self.conn.execute(
-            "SELECT id, episode_number, title, status FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
+            "SELECT id, episode_number, title, status, metadata FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
             (d["id"],),
         ).fetchall())
         d["characters"] = self._dicts(self.conn.execute(
@@ -331,7 +335,7 @@ class Database:
                      "action", "result", "atmosphere", "image_prompt", "video_prompt",
                      "bgm_prompt", "sound_effect", "dialogue", "description",
                      "duration", "scene_id", "status", "composed_image",
-                     "first_frame_image", "last_frame_image", "video_url",
+                     "first_frame_image", "last_frame_image", "reference_images", "video_url",
                      "narration_text", "tts_audio_url"]:
             if key in data:
                 fields.append(f"{key} = ?")
@@ -506,9 +510,10 @@ class Database:
             """INSERT INTO auto_pipeline_jobs (source_type, source_url, source_title, status,
                preset_name, pipeline_template, content_format, visual_style, max_episodes,
                language, voice_preset, browser_profiles, aspect_ratio, narration_source,
+               video_length,
                seo_mode, seo_title_template, seo_description_template, seo_tags,
                upload_targets, upload_privacy, gallery_category_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.get("source_type", "youtube_link"),
                 data.get("source_url", ""),
@@ -524,6 +529,7 @@ class Database:
                 json.dumps(data.get("browser_profiles", [])),
                 data.get("aspect_ratio", "16:9"),
                 data.get("narration_source", "prose"),
+                data.get("video_length", "standard"),
                 data.get("seo_mode", "ai_generate"),
                 data.get("seo_title_template", ""),
                 data.get("seo_description_template", ""),
@@ -560,7 +566,7 @@ class Database:
                      "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
                      "preset_name", "pipeline_template", "content_format", "visual_style", 
                      "max_episodes", "language", "voice_preset", "browser_profiles",
-                     "aspect_ratio", "narration_source", "gallery_category_id",
+                     "aspect_ratio", "narration_source", "video_length", "gallery_category_id",
                      "seo_mode", "seo_title_template", "seo_description_template", "seo_tags",
                      "upload_targets", "upload_privacy"]:
             if key in data:

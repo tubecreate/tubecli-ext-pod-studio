@@ -175,8 +175,8 @@ def _repair_json(text: str) -> dict:
 
 
 def _db():
-    from db.database import Database
-    return Database.get_instance()
+    from db.json_store import JsonStore
+    return JsonStore.get_instance()
 
 def _find_shot_start_time(segments, shot_text, search_from_idx=0):
     """
@@ -253,10 +253,58 @@ def _find_shot_start_time(segments, shot_text, search_from_idx=0):
     if best_score > 0.45:
         return segments[best_idx]["start"], best_idx
         
-    # Fallback
-    st = segments[search_from_idx]["start"] if search_from_idx < len(segments) else 0
-    next_idx = min(search_from_idx + 1, len(segments) - 1)
+    # Fallback: estimate how many segments this shot should span
+    # Average Whisper segment ≈ 2-3 words, so skip proportionally
+    estimated_segments = max(1, len(words) // 3)
+    
+    # The start time for THIS shot is where we currently are
+    st = segments[search_from_idx]["start"] if search_from_idx < len(segments) else (segments[-1]["end"] if segments else 0)
+    
+    # Advance the index for the NEXT shot
+    next_idx = min(search_from_idx + estimated_segments, len(segments) - 1)
+    
     return st, next_idx
+
+
+def _redistribute_zero_duration(shot_starts, total_duration, logger=None):
+    """
+    Fix 0-duration shots caused by consecutive identical start times.
+    Groups consecutive shots with the same start time and redistributes
+    the available time range evenly among them.
+    """
+    if len(shot_starts) <= 1:
+        return shot_starts
+    
+    fixed = list(shot_starts)
+    n = len(fixed)
+    
+    # Find groups of consecutive identical start times
+    i = 0
+    while i < n:
+        # Find the end of this group of identical starts
+        j = i + 1
+        while j < n and abs(fixed[j] - fixed[i]) < 0.01:
+            j += 1
+        
+        group_size = j - i
+        if group_size > 1:
+            # Multiple shots share the same start time
+            group_start = fixed[i]
+            # The end boundary is the start of the next group, or total_duration
+            group_end = fixed[j] if j < n else total_duration
+            available = group_end - group_start
+            
+            if available > 0.5:
+                # Evenly distribute the available time
+                per_shot = available / group_size
+                for k in range(group_size):
+                    fixed[i + k] = group_start + (k * per_shot)
+                if logger:
+                    logger.info(f"[Redistribute] Fixed {group_size} zero-duration shots at {group_start:.2f}s, "
+                                f"redistributed {available:.2f}s ({per_shot:.2f}s each)")
+        i = j
+    
+    return fixed
 
 
 def _clean_appearance_for_ref(appearance: str) -> str:
@@ -632,6 +680,16 @@ async def generate_outline(drama_id: int, request: Request):
     user_msg = f"Premise Length: {len(premise)} characters\nPremise: {premise}\nTarget Outputs: {target_eps_str}\nLanguage: {language}"
     
     agent_context = {"content_format": content_format}
+    
+    # Inject video_length for short mode awareness
+    if drama_doc:
+        try:
+            d_meta_outline = json.loads(drama_doc.get("metadata", "{}") or "{}")
+            vl = d_meta_outline.get("video_length", "standard")
+            if vl:
+                agent_context["video_length"] = vl
+        except:
+            pass
 
     full_response = []
     try:
@@ -726,9 +784,11 @@ async def _autopilot_runner(drama_id: int):
 
             # Context for continuity and visual styles
             content_format = meta.get("content_format", "Drama / Narrative")
+            video_length = meta.get("video_length", "standard")
             context = {
                 "visual_style": drama.get("style", "realistic") if drama else "realistic",
-                "content_format": content_format
+                "content_format": content_format,
+                "video_length": video_length
             }
             # Inject gallery items into context when gallery category is assigned
             gallery_cat_id = meta.get("gallery_category_id")
@@ -738,6 +798,7 @@ async def _autopilot_runner(drama_id: int):
                     if gallery_items:
                         context["gallery_assets"] = [
                             {
+                                "id": gi.get("id"),
                                 "name": gi.get("name", ""),
                                 "type": gi.get("char_type", "individual"),
                                 "role": gi.get("role_type", ""),
@@ -764,15 +825,41 @@ async def _autopilot_runner(drama_id: int):
                         }
 
             # 2. Flow: Novel Writer
+            _novel_prompt = f"Episode Title: {title}\nPlot Outline: {plot_outline}"
+            if video_length in ("short", "short_60s"):
+                _novel_prompt += (
+                    "\n\n[SHORT VIDEO MODE < 60s] MAX 100-150 words. Hook first sentence. No filler."
+                )
+            elif video_length == "short_3m":
+                _novel_prompt += (
+                    "\n\n[SHORT VIDEO MODE < 3 min] TOTAL 300-450 words. Hook opening. Concise but with depth."
+                )
+            elif video_length == "long_10m":
+                _novel_prompt += (
+                    "\n\n[LONG VIDEO MODE > 10 min] TOTAL 1500-2500 words. Deep, comprehensive. Use chapter sections."
+                )
             prose = await a_novel.chat_complete(
-                f"Episode Title: {title}\nPlot Outline: {plot_outline}",
+                _novel_prompt,
                 language, base_url, api_key, model, s.get_agent_config("novel_writer").get("temperature", 0.7), context
             )
             _db().update_episode(ep_id, {"content": prose})
 
             # 3. Flow: Script Rewriter
+            _rewrite_prompt = f"Please write the formatted screenplay for this episode.\n\n{prose}"
+            if video_length in ("short", "short_60s"):
+                _rewrite_prompt += (
+                    "\n\n[SHORT < 60s] MAX 3-5 scenes, 150 words total. Scene 1 = Hook. Fast cuts."
+                )
+            elif video_length == "short_3m":
+                _rewrite_prompt += (
+                    "\n\n[SHORT < 3 min] 5-8 scenes, 300-450 words total. Scene 1 = Hook. Good pacing."
+                )
+            elif video_length == "long_10m":
+                _rewrite_prompt += (
+                    "\n\n[LONG > 10 min] 15-30 scenes in 3-5 acts. 1500-2500 words. Chapter markers. Re-hooks every 2-3 min."
+                )
             script = await a_script.chat_complete(
-                f"Please write the formatted screenplay for this episode.\n\n{prose}",
+                _rewrite_prompt,
                 language, base_url, api_key, model, s.get_agent_config("script_rewriter").get("temperature", 0.6), context
             )
             _db().update_episode(ep_id, {"script_content": script})
@@ -795,6 +882,86 @@ async def _autopilot_runner(drama_id: int):
             # Parse extracted JSON loosely
             try:
                 extracted = _repair_json(extract_json_str)
+                
+                # ── Gallery matching for autopilot (same logic as manual extract) ──
+                _ap_chars = extracted.get("characters", [])
+                _ap_gallery_cat_id = meta.get("gallery_category_id")
+                if _ap_chars and _ap_gallery_cat_id:
+                    try:
+                        _ap_gallery_items = _db().list_gallery_items(_ap_gallery_cat_id)
+                        if _ap_gallery_items:
+                            # Simple matching: by name substring, role, and gender
+                            def _ap_normalize(n):
+                                return (n or "").lower().strip()
+                            
+                            _ap_used_ids = set()
+                            for ch in _ap_chars:
+                                c_name = _ap_normalize(ch.get("name", ""))
+                                c_role = _ap_normalize(ch.get("role", ""))
+                                best_gi = None
+                                best_score = 0
+                                
+                                for gi in _ap_gallery_items:
+                                    g_name = _ap_normalize(gi.get("name", ""))
+                                    g_role = _ap_normalize(gi.get("role_type", ""))
+                                    is_extra = "extra" in g_role
+                                    
+                                    # Skip already-used non-extra gallery items
+                                    if gi["id"] in _ap_used_ids and not is_extra:
+                                        continue
+                                    
+                                    score = 0
+                                    # Name matching
+                                    if g_name == c_name:
+                                        score += 50
+                                    elif g_name in c_name or c_name in g_name:
+                                        score += 40
+                                    else:
+                                        c_words = set(c_name.split())
+                                        g_words = set(g_name.split())
+                                        overlap = c_words & g_words
+                                        if overlap:
+                                            score += 20 * len(overlap)
+                                        elif is_extra or "extra" in c_role:
+                                            score -= 3
+                                        else:
+                                            score -= 15
+                                    
+                                    # Role matching
+                                    if g_role and c_role and (g_role in c_role or c_role in g_role):
+                                        score += 10
+                                    if "extra" in g_role and "extra" in c_role:
+                                        score += 20
+                                    
+                                    # Tag matching
+                                    g_tags = set(t.strip().lower() for t in (gi.get("tags", "") or "").split(",") if t.strip())
+                                    if g_tags:
+                                        c_text = f"{c_name} {ch.get('appearance', '')} {ch.get('description', '')}".lower()
+                                        tag_hits = sum(1 for t in g_tags if t in c_text)
+                                        score += min(tag_hits * 10, 30)
+                                    
+                                    if score > best_score:
+                                        best_score = score
+                                        best_gi = gi
+                                
+                                if best_gi and best_score >= 35:
+                                    # Merge gallery image into character
+                                    if best_gi.get("image_url"):
+                                        ch["image_url"] = best_gi["image_url"]
+                                    if best_gi.get("reference_images"):
+                                        ch["reference_images"] = best_gi["reference_images"]
+                                    if best_gi.get("voice_style"):
+                                        ch["voice_style"] = best_gi["voice_style"]
+                                    base_app = best_gi.get("appearance", "")
+                                    if base_app:
+                                        ch["appearance"] = f"{base_app}\n\nAdditional Details: {ch.get('appearance', '')}"
+                                    is_extra = "extra" in _ap_normalize(best_gi.get("role_type", ""))
+                                    if not is_extra:
+                                        _ap_used_ids.add(best_gi["id"])
+                                    logger.info(f"  Autopilot gallery match: '{ch.get('name')}' → '{best_gi.get('name')}' (score={best_score})")
+                    except Exception as gme:
+                        logger.warning(f"Autopilot gallery matching error: {gme}")
+                
                 _db().save_characters_dedup(drama_id, ep_id, extracted.get("characters", []))
                 _db().save_scenes_dedup(drama_id, ep_id, extracted.get("scenes", []))
             except Exception as e:
@@ -802,10 +969,17 @@ async def _autopilot_runner(drama_id: int):
 
             # 4b. Flow: Generate AI reference images for characters without images
             # Runs every episode — the filter `chars_needing_images` ensures only NEW chars get generated
-            meta["autopilot_status"] = f"running {idx+1}/{total} - generating character refs"
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            # SKIP for formats that have no characters at all
+            # Note: Presentation format NOW has a Presenter character, so do NOT skip
+            _skip_ref_images = False
+            if _skip_ref_images:
+                logger.info(f"Autopilot: Skipping char/scene image gen for Presentation format (handled at step 5b)")
             
-            try:
+            if not _skip_ref_images:
+              meta["autopilot_status"] = f"running {idx+1}/{total} - generating character refs"
+              _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            
+              try:
                 # Re-read drama metadata from DB to get latest engine setting saved by wizard
                 _fresh_drama = _db().get_drama(drama_id)
                 if _fresh_drama:
@@ -1009,15 +1183,15 @@ async def _autopilot_runner(drama_id: int):
                             continue
                 else:
                     logger.info(f"Autopilot: no NEW characters need image generation for ep {ep_num}")
-            except Exception as e:
+              except Exception as e:
                 import traceback
                 logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
 
-            # 4c. Flow: Check for remaining scenes without images (handles batch failures)
-            meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+              # 4c. Flow: Check for remaining scenes without images (handles batch failures)
+              meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
+              _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
             
-            try:
+              try:
                 scene_engine = meta.get("video_engine", "grok")
                 scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
@@ -1127,15 +1301,15 @@ async def _autopilot_runner(drama_id: int):
                                 continue
                 else:
                     logger.info(f"Autopilot: all scenes have images ✓")
-            except Exception as e:
+              except Exception as e:
                 import traceback
                 logger.error(f"Autopilot scene image gen error: {e}\n{traceback.format_exc()}")
 
             # 5. Flow: Storyboard Breaker
             import re as _re_ap
-            _ap_headings = _re_ap.findall(r'^## S\d+[^\n]*', script, _re_ap.MULTILINE)
+            _ap_headings = _re_ap.findall(r'\[SHOW:[^\]]*\]', script)
             _ap_count = len(_ap_headings) if _ap_headings else 1
-            _ap_h_list = '\n'.join(_ap_headings) if _ap_headings else '(no headings)'
+            _ap_h_list = '\n'.join(_ap_headings) if _ap_headings else '(no [SHOW] sections found)'
             
             # Add narration_source to context
             context["narration_source"] = meta.get("narration_source", "prose")
@@ -1146,10 +1320,22 @@ async def _autopilot_runner(drama_id: int):
             
             sb_prompt = (
                 f"Break this screenplay into storyboard shots.\n"
-                f"CRITICAL: Script has EXACTLY {_ap_count} scenes. Output EXACTLY {_ap_count} shots.\n"
+                f"CRITICAL: Script has EXACTLY {_ap_count} [SHOW] sections. Create AT LEAST {_ap_count} shots (1 per section, more if narration is long).\n"
                 f"REMINDER: EVERY shot MUST include `illustrate_layout` describing visual composition with characters.\n"
-                f"Scenes:\n{_ap_h_list}\n\nScript:\n\n{script[:15000]}"
+                f"[SHOW] sections:\n{_ap_h_list}\n\nScript:\n\n{script[:15000]}"
             )
+            if video_length in ("short", "short_60s"):
+                sb_prompt += (
+                    "\n\n[SHORT < 60s] Duration ≤ 50s. 8-10 shots, 3-5s each. Shot #1 = Hook."
+                )
+            elif video_length == "short_3m":
+                sb_prompt += (
+                    "\n\n[SHORT < 3 min] Duration 90-170s. 15-25 shots, 5-10s each. Shot #1 = Hook."
+                )
+            elif video_length == "long_10m":
+                sb_prompt += (
+                    "\n\n[LONG > 10 min] Duration 600-1200s. 50-100 shots, 8-15s each. Organize into chapters."
+                )
             sb_json_str = await a_storybd.chat_complete(
                 sb_prompt,
                 language, base_url, api_key, model, s.get_agent_config("storyboard_breaker").get("temperature", 0.6), context
@@ -1163,6 +1349,151 @@ async def _autopilot_runner(drama_id: int):
                         _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
             except Exception as e:
                 logger.error(f"Autopilot Storyboard error: {e}")
+
+            # ── 5b. Flow: Gen Screen Images (Presentation format only) ──
+            # For Presentation/Screen format, we generate static screen images FIRST
+            # (containing text + graphic style). These become the reference for video gen
+            # to preserve text accuracy — AI video generation would corrupt text otherwise.
+            if content_format == "Presentation / Screen":
+                try:
+                    screen_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                    screen_shots = _db().list_storyboards(ep_id)
+                    # For Presentation: regenerate ALL screens (overwrite). Previous runs may have
+                    # saved wrong images. Only require image_prompt to be present.
+                    screen_pending = [s for s in screen_shots if s.get("image_prompt", "").strip()]
+                    
+                    if screen_pending:
+                        image_engine = meta.get("video_engine", "grok")
+                        meta["autopilot_status"] = f"running {idx+1}/{total} - generating {len(screen_pending)} screens ({image_engine})"
+                        meta["autopilot_progress"] = int(((idx + 0.7) / total) * 100)
+                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                        
+                        if image_engine == "veo3":
+                            # ─── VEO3: Use veo3_batch_images.js (sequential, one-by-one) ───
+                            from pathlib import Path as _PathScr
+                            _ext_dir_scr = os.path.dirname(os.path.abspath(__file__))
+                            batch_script = os.path.join(_ext_dir_scr, "engines", "veo3_batch_images.js")
+                            top_dir = _PathScr(_ext_dir_scr).parents[2]
+                            browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+                            try:
+                                from tubecli.config import DATA_DIR
+                                profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+                            except:
+                                profiles_dir = str(top_dir / "data" / "browser_profiles")
+                            
+                            ref_dir = _get_ref_dir()
+                            from datetime import datetime as _dtScr
+                            screen_aspect = meta.get("aspect_ratio", "16:9")
+                            
+                            # Build batch jobs
+                            batch_jobs = []
+                            job_shot_map = {}
+                            for shot in screen_pending:
+                                sid = shot["id"]
+                                ts = _dtScr.now().strftime("%Y%m%d_%H%M%S")
+                                out_path = os.path.join(ref_dir, f"screen_{sid}_{ts}.png")
+                                prompt = shot.get("image_prompt", "").strip()
+                                job_id = f"screen_{sid}"
+                                batch_jobs.append({"id": job_id, "prompt": prompt, "output": out_path})
+                                job_shot_map[job_id] = {"shot": shot, "output": out_path}
+                            
+                            jobs_file = os.path.join(ref_dir, "_screen_batch_jobs.json")
+                            with open(jobs_file, "w", encoding="utf-8") as f:
+                                json.dump(batch_jobs, f, ensure_ascii=False)
+                            
+                            cmd = [
+                                "node", batch_script,
+                                "--profile", screen_profile,
+                                "--jobs", jobs_file,
+                                "--profiles-dir", profiles_dir,
+                                "--aspect-ratio", screen_aspect,
+                                "--timeout", "120"
+                            ]
+                            env = os.environ.copy()
+                            env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                            
+                            screen_ok = 0
+                            try:
+                                batch_timeout = 180 * len(screen_pending)
+                                proc = await asyncio.create_subprocess_exec(
+                                    *cmd,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
+                                    cwd=browser_ext_dir,
+                                    env=env,
+                                )
+                                
+                                while True:
+                                    try:
+                                        line = await asyncio.wait_for(proc.stdout.readline(), timeout=180)
+                                    except asyncio.TimeoutError:
+                                        continue
+                                    if not line:
+                                        break
+                                    line_str = line.decode("utf-8", errors="replace").strip()
+                                    if line_str.startswith("{"):
+                                        try:
+                                            res = json.loads(line_str)
+                                            job_id = res.get("id", "")
+                                            if res.get("status") == "success" and job_id in job_shot_map:
+                                                info = job_shot_map[job_id]
+                                                saved_path = res.get("path", info["output"])
+                                                if os.path.isfile(saved_path):
+                                                    _db().update_storyboard(info["shot"]["id"], {"composed_image": saved_path, "status": "image_done"})
+                                                    screen_ok += 1
+                                                    logger.info(f"  ✓ Screen saved: shot {info['shot']['id']}")
+                                                meta["autopilot_status"] = f"running {idx+1}/{total} - screen {screen_ok}/{len(screen_pending)}"
+                                                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                                            elif res.get("status") == "error" and res.get("message") == "RATE_LIMIT":
+                                                logger.error("Veo3 rate limit during screen gen")
+                                                break
+                                        except json.JSONDecodeError:
+                                            pass
+                                
+                                await proc.wait()
+                            except Exception as ve:
+                                logger.error(f"Veo3 screen batch error: {ve}")
+                            
+                            try:
+                                os.remove(jobs_file)
+                            except:
+                                pass
+                            
+                            logger.info(f"Autopilot Veo3 Screen Gen: {screen_ok}/{len(screen_pending)} screens for ep {ep_num}")
+                        else:
+                            # ─── GROK: Use grok_image_engine.batch_generate ───
+                            import sys as _sys_scr
+                            _ext_dir_scr = os.path.dirname(os.path.abspath(__file__))
+                            _engines_dir_scr = os.path.join(_ext_dir_scr, "engines")
+                            if _engines_dir_scr not in _sys_scr.path:
+                                _sys_scr.path.insert(0, _engines_dir_scr)
+                            from grok_image_engine import batch_generate as screen_batch_generate
+                            
+                            async def _screen_progress(done, total_s, shot_id, status, path=None):
+                                if path:
+                                    _db().update_storyboard(shot_id, {"composed_image": path, "status": "image_done"})
+                                meta["autopilot_status"] = f"running {idx+1}/{total} - screen {done}/{total_s}"
+                                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                            
+                            screen_results = await screen_batch_generate(
+                                shots=screen_pending,
+                                profile_name=screen_profile,
+                                episode_id=ep_id,
+                                headless=False,
+                                overwrite=False,
+                                progress_callback=_screen_progress,
+                            )
+                            
+                            screen_ok = sum(1 for r in screen_results if r.get("status") == "success")
+                            logger.info(f"Autopilot Grok Screen Gen: {screen_ok}/{len(screen_pending)} screens for ep {ep_num}")
+                            
+                            if any(r.get("message") == "RATE_LIMIT_REACHED" for r in screen_results):
+                                logger.error("Rate limit during screen gen.")
+                    else:
+                        logger.info(f"Autopilot: all screens already generated for ep {ep_num} ✓")
+                except Exception as e:
+                    import traceback
+                    logger.error(f"Autopilot Screen Gen error: {e}\n{traceback.format_exc()}")
 
         # ── 6. Flow: Publish to Platforms ──
         pipeline = meta.get("pipeline", [])
@@ -1380,7 +1711,7 @@ async def upload_character_ref(char_id: int, request: Request):
     
     # Update character's reference_images list
     db = _db()
-    char = db._dict(db.conn.execute("SELECT * FROM characters WHERE id = ?", (char_id,)).fetchone())
+    char = db.get_character(char_id)
     if not char:
         raise HTTPException(404, "Character not found")
     
@@ -1409,7 +1740,7 @@ async def generate_character_ref(char_id: int, request: Request, background_task
         raise HTTPException(400, "Browser profile required")
     
     db = _db()
-    char = db._dict(db.conn.execute("SELECT * FROM characters WHERE id = ?", (char_id,)).fetchone())
+    char = db.get_character(char_id)
     if not char:
         raise HTTPException(404, "Character not found")
     
@@ -1539,7 +1870,7 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
         raise HTTPException(400, "Browser profile required")
     
     db = _db()
-    scene = db._dict(db.conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone())
+    scene = db.get_scene(scene_id)
     if not scene:
         raise HTTPException(404, "Scene not found")
     
@@ -1562,6 +1893,8 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
     
     time_of_day = (scene.get("time", "") or "").strip()
     description = (scene.get("description", "") or "").strip()
+    scene_own_prompt = (scene.get("prompt", "") or "").strip()
+    
     prompt = _build_scene_ref_prompt(location, time_of_day, description, scene_visual_style, scene_aspect_ratio)
     
     ref_dir = _get_ref_dir()
@@ -1751,6 +2084,66 @@ async def update_storyboard(sb_id: int, request: Request):
     return _db().update_storyboard(sb_id, data)
 
 
+@router.post("/api/v1/studio/storyboards/{sb_id}/upload-ref")
+async def upload_storyboard_ref(sb_id: int, request: Request):
+    """Upload an extra reference image for a storyboard shot and append to reference_images."""
+    from datetime import datetime
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+    ref_dir = _get_ref_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    fname = f"sb_ref_{sb_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+    fpath = os.path.join(ref_dir, fname)
+    content = await file.read()
+    with open(fpath, "wb") as f:
+        f.write(content)
+    # Append to reference_images JSON array
+    db = _db()
+    shot = db.get_storyboard(sb_id)
+    if not shot:
+        raise HTTPException(404, "Shot not found")
+    try:
+        refs = json.loads(shot.get("reference_images") or "[]")
+    except:
+        refs = []
+    refs.append(fpath)
+    db.update_storyboard(sb_id, {"reference_images": json.dumps(refs)})
+    return {"ok": True, "path": fpath, "url": f"/api/v1/studio/references/{fname}", "total_refs": len(refs)}
+
+
+@router.put("/api/v1/studio/episodes/{episode_id}/flowchart-layout")
+async def save_flowchart_layout(episode_id: int, request: Request):
+    """Save flowchart node positions into episode metadata."""
+    data = await request.json()
+    db = _db()
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+    try:
+        meta = json.loads(ep.get("metadata") or "{}")
+    except:
+        meta = {}
+    meta["flowchart_layout"] = data.get("layout", {})
+    db.update_episode(episode_id, {"metadata": json.dumps(meta, ensure_ascii=False)})
+    return {"ok": True}
+
+
+@router.get("/api/v1/studio/episodes/{episode_id}/flowchart-layout")
+async def get_flowchart_layout(episode_id: int):
+    """Get saved flowchart layout from episode metadata."""
+    db = _db()
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+    try:
+        meta = json.loads(ep.get("metadata") or "{}")
+    except:
+        meta = {}
+    return {"layout": meta.get("flowchart_layout", {})}
+
+
 # ── AI Agent Chat (SSE) ────────────────────────────────────
 
 @router.get("/api/v1/studio/agent/types")
@@ -1826,6 +2219,7 @@ async def agent_chat(request: Request):
         drama_meta_chat = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
         context["visual_style"] = drama.get("style", "realistic") if drama else "realistic"
         context["content_format"] = drama_meta_chat.get("content_format", "Drama / Narrative")
+        context["video_length"] = drama_meta_chat.get("video_length", "standard")
         context["characters"] = [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c.get("appearance", ""), "personality": c.get("personality", "")} for c in chars]
         context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s.get("description", "")} for s in scenes]
 
@@ -1839,12 +2233,14 @@ async def agent_chat(request: Request):
                     roster = []
                     for gi in gallery_items_chat:
                         roster.append({
+                            "id": gi["id"],
                             "name": gi["name"],
+                            "char_type": gi.get("char_type", "individual"),
                             "gender": gi.get("gender", ""),
                             "age_range": gi.get("age_range", ""),
                             "role_type": gi.get("role_type", ""),
                             "tags": gi.get("tags", ""),
-                            "appearance": (gi.get("appearance", "") or "")[:150],
+                            "appearance": (gi.get("appearance", "") or "")[:200],
                         })
                     context["gallery_characters"] = roster
                     logger.info(f"[script_rewriter] Injected {len(roster)} gallery characters into context")
@@ -1969,11 +2365,14 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         "existing_scenes": [{"location": s["location"], "time": s["time"]} for s in existing_scenes],
     }
 
-    # Inject available gallery characters for the AI to select from
+    # Inject available gallery items for the AI to select from
     gallery_category_id = drama_meta.get("gallery_category_id")
+    content_format = drama_meta.get("content_format", "Drama / Narrative")
     if gallery_category_id:
         try:
             gallery_items = _db().list_gallery_items(gallery_category_id)
+            
+            # Always inject characters for ALL formats (so Presentation can use Gallery Presenters)
             context["available_gallery_characters"] = [
                 {
                     "id": item["id"],
@@ -1987,6 +2386,19 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                 }
                 for item in gallery_items
             ]
+            
+            # Also inject graphic templates specifically for Presentation
+            if content_format == "Presentation / Screen":
+                context["available_graphic_templates"] = [
+                    {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "type": item.get("char_type", "Infographic"),
+                        "tags": item.get("tags", ""),
+                        "style_description": item.get("appearance", "")[:300],
+                    }
+                    for item in gallery_items
+                ]
         except Exception as e:
             logger.error(f"Failed to load gallery items for context: {e}")
 
@@ -2005,6 +2417,19 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                 "Extract ALL characters and scenes from this script. "
                 "Do NOT skip any named character even if minor. "
                 "If character/scene already exists in context, skip it."
+            )
+        elif content_format == "Presentation / Screen":
+            extract_msg = (
+                "Design the PRESENTATION STUDIO for this script.\n"
+                "IMPORTANT RULES:\n"
+                "- Extract exactly ONE character as the Presenter/Host. "
+                "If `available_gallery_characters` exist in context, USE one of them.\n"
+                "- Extract ONE scene per script section (## L01, ## L02, etc.).\n"
+                "- Scene `prompt` must describe ONLY the flat graphic/infographic content on a solid/gradient background.\n"
+                "- DO NOT include the presenter character in scene prompts. The presenter is added at video generation time.\n"
+                "- BANNED in scene prompts: people, presenter, character, studio, room, desk, audience.\n"
+                "- Apply the visual style from `visual_assets` if available.\n"
+                "- Scene `location` MUST use format: 'Studio Screen: [Full Title of This Slide]'."
             )
         else:
             extract_msg = (
@@ -2092,65 +2517,178 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                     pass
 
             if _gallery_items_full:
-                _used_gallery_ids = set()
+
+                # ── Enhanced Gallery Matching Algorithm v2 ──
+                # Supports char_type (individual/duo/group/friend),
+                # uses balanced scoring, name mismatch penalty,
+                # and Hungarian-style optimal allocation.
+
+                def _infer_gender(char_data):
+                    """Infer gender from appearance text if not explicit."""
+                    g = (char_data.get("gender", "") or "").lower().strip()
+                    if g:
+                        return g
+                    app = (char_data.get("appearance", "") or "").lower()
+                    desc = (char_data.get("description", "") or "").lower()
+                    name = (char_data.get("name", "") or "").lower()
+                    text = f"{name} {app} {desc}"
+                    female_kw = ["cô gái", "female", "woman", "girl", "nữ", "she ", "her ", "phụ nữ",
+                                 "thiếu nữ", "bà ", "mẹ ", "chị ", "em gái", "công chúa", "nàng", "cô "]
+                    male_kw = ["chàng trai", "male", "man", "boy", "nam", "he ", "his ", "đàn ông",
+                               "ông ", "bố ", "cha ", "anh ", "em trai", "hoàng tử", "chàng"]
+                    f_hits = sum(1 for w in female_kw if w in text)
+                    m_hits = sum(1 for w in male_kw if w in text)
+                    if f_hits > m_hits:
+                        return "female"
+                    elif m_hits > f_hits:
+                        return "male"
+                    return ""
+
+                def _infer_char_type_need(char_data):
+                    """Detect if this script character implies a duo/group/friend."""
+                    text = f"{char_data.get('name', '')} {char_data.get('description', '')} {char_data.get('personality', '')}".lower()
+                    group_kw = ["nhóm", "group", "team", "hội", "đội", "bọn", "các bạn", "mọi người",
+                                "tập thể", "members", "crew"]
+                    duo_kw = ["cặp", "duo", "đôi", "pair", "couple", "hai người", "two ", "2 người"]
+                    friend_kw = ["bạn bè", "friend", "đồng hành", "companion", "buddy", "partner",
+                                 "bạn thân", "cùng nhau", "together"]
+                    if any(w in text for w in group_kw):
+                        return "group"
+                    if any(w in text for w in duo_kw):
+                        return "duo"
+                    if any(w in text for w in friend_kw):
+                        return "friend"
+                    return "individual"
+
+                def _normalize_name(name):
+                    """Normalize name for comparison: lowercase, remove diacritics noise words."""
+                    import re
+                    n = (name or "").lower().strip()
+                    # Remove common noise prefixes
+                    for noise in ["nhân vật ", "character ", "nv "]:
+                        if n.startswith(noise):
+                            n = n[len(noise):]
+                    return n.strip()
 
                 def _score_match(char_data, gallery_item):
                     score = 0
-                    c_gender = (char_data.get("gender", "") or "").lower().strip()
+
+                    # ── 1. Gender (max +15, mismatch = instant reject) ──
+                    c_gender = _infer_gender(char_data)
                     g_gender = (gallery_item.get("gender", "") or "").lower().strip()
-                    if not c_gender:
-                        app = (char_data.get("appearance", "") or "").lower()
-                        if any(w in app for w in ["cô gái", "female", "woman", "girl", "nữ", "she", "her", "phụ nữ"]):
-                            c_gender = "female"
-                        elif any(w in app for w in ["chàng trai", "male", "man", "boy", "nam", "he", "his", "đàn ông"]):
-                            c_gender = "male"
                     if c_gender and g_gender:
                         if c_gender == g_gender:
-                            score += 40
+                            score += 15
                         else:
-                            return -100
-                    c_name = (char_data.get("name", "") or "").lower()
-                    g_name = (gallery_item.get("name", "") or "").lower()
+                            return -100  # Hard reject
+
+                    # ── 2. Name matching (max +50, mismatch -15) ──
+                    c_name = _normalize_name(char_data.get("name", ""))
+                    g_name = _normalize_name(gallery_item.get("name", ""))
                     if c_name and g_name:
-                        if g_name in c_name or c_name in g_name:
-                            score += 30
+                        if g_name == c_name:
+                            score += 50  # Exact match
+                        elif g_name in c_name or c_name in g_name:
+                            score += 40  # Substring match
                         else:
-                            overlap = set(c_name.split()) & set(g_name.split())
+                            c_words = set(c_name.split())
+                            g_words = set(g_name.split())
+                            overlap = c_words & g_words
                             if overlap:
-                                score += 15 * len(overlap)
+                                score += 20 * len(overlap)
+                            else:
+                                # For 'extra' roles, names rarely match (they're generic)
+                                # so reduce penalty significantly
+                                g_role_type = (gallery_item.get("role_type", "") or "").lower()
+                                c_role_type = (char_data.get("role", "") or "").lower()
+                                if "extra" in g_role_type or "extra" in c_role_type:
+                                    score -= 3   # Very small penalty for extras
+                                else:
+                                    score -= 15  # Normal name mismatch penalty
+
+                    # ── 3. Tag matching (max +30) ──
                     g_tags = set(t.strip().lower() for t in (gallery_item.get("tags", "") or "").split(",") if t.strip())
                     if g_tags:
-                        c_text = f"{c_name} {char_data.get('appearance', '')} {char_data.get('personality', '')}".lower()
+                        c_text = f"{c_name} {char_data.get('appearance', '')} {char_data.get('personality', '')} {char_data.get('description', '')}".lower()
                         tag_hits = sum(1 for t in g_tags if t in c_text)
-                        score += tag_hits * 10
+                        score += min(tag_hits * 10, 30)  # Cap at 30
+
+                    # ── 4. Role matching (+10) ──
                     g_role = (gallery_item.get("role_type", "") or "").lower()
                     c_role = (char_data.get("role", "") or "").lower()
                     if g_role and c_role and (g_role in c_role or c_role in g_role):
                         score += 10
+                    # Extra-to-extra boost: gallery extras are generic background assets
+                    # that should flexibly match any script extra character
+                    if "extra" in g_role and "extra" in c_role:
+                        score += 20  # Strong boost for extra-to-extra matching
+
+                    # ── 5. Age matching (+10) ──
                     g_age = (gallery_item.get("age_range", "") or "").lower()
                     c_app = (char_data.get("appearance", "") or "").lower()
                     if g_age and g_age in c_app:
                         score += 10
+
+                    # ── 6. char_type matching (individual/duo/group/friend) (+20 bonus / -20 penalty) ──
+                    g_type = (gallery_item.get("char_type", "") or "individual").lower().strip()
+                    c_type_need = _infer_char_type_need(char_data)
+                    if g_type != "individual":
+                        # Gallery item is duo/group/friend
+                        if g_type == c_type_need:
+                            score += 25  # Perfect type match
+                        elif c_type_need != "individual" and g_type in ("duo", "friend", "group"):
+                            score += 10  # Partial match (both multi-person)
+                        else:
+                            score -= 20  # Mismatch: gallery is group but char is individual
+                    elif c_type_need != "individual":
+                        # Char needs group but gallery is individual → small penalty
+                        score -= 10
+
                     return score
 
-                for char in characters:
+                # ── Hungarian-style optimal allocation ──
+                # Build full score matrix, then assign greedily by best global scores
+                score_matrix = []
+                for ci, char in enumerate(characters):
+                    # Trust AI pick if it's valid and exists in gallery
                     ai_gid = char.get("gallery_item_id")
-                    if ai_gid and any(gi["id"] == ai_gid for gi in _gallery_items_full) and ai_gid not in _used_gallery_ids:
-                        _used_gallery_ids.add(ai_gid)
-                        continue
-                    best_gi, best_score = None, 0
+                    if ai_gid and any(gi["id"] == ai_gid for gi in _gallery_items_full):
+                        # Verify AI pick with our scoring too
+                        ai_gi = next((gi for gi in _gallery_items_full if gi["id"] == ai_gid), None)
+                        if ai_gi:
+                            ai_score = _score_match(char, ai_gi)
+                            if ai_score >= 25:  # AI pick is reasonable
+                                score_matrix.append((ai_score + 5, ci, ai_gi))  # +5 bonus for AI agreement
                     for gi in _gallery_items_full:
-                        if gi["id"] in _used_gallery_ids:
-                            continue
                         s = _score_match(char, gi)
-                        if s > best_score:
-                            best_score = s
-                            best_gi = gi
-                    if best_gi and best_score >= 20:
-                        char["gallery_item_id"] = best_gi["id"]
-                        char["suitability_score"] = best_score
-                        _used_gallery_ids.add(best_gi["id"])
-                    else:
+                        if s > 0:
+                            score_matrix.append((s, ci, gi))
+
+                # Sort by score descending → assign best first
+                score_matrix.sort(key=lambda x: x[0], reverse=True)
+                _used_gallery_ids = set()
+                _assigned_chars = set()
+                MATCH_THRESHOLD = 35
+
+                for s, ci, gi in score_matrix:
+                    if ci in _assigned_chars:
+                        continue
+                    # Allow 'extra' gallery items to be reused by multiple characters
+                    # (extras are generic background people — same asset fits many roles)
+                    gi_role = (gi.get("role_type", "") or "").lower()
+                    is_extra_gallery = "extra" in gi_role
+                    if gi["id"] in _used_gallery_ids and not is_extra_gallery:
+                        continue
+                    if s >= MATCH_THRESHOLD:
+                        characters[ci]["gallery_item_id"] = gi["id"]
+                        characters[ci]["suitability_score"] = s
+                        if not is_extra_gallery:
+                            _used_gallery_ids.add(gi["id"])  # Only lock non-extra items
+                        _assigned_chars.add(ci)
+
+                # Mark unmatched characters
+                for ci, char in enumerate(characters):
+                    if ci not in _assigned_chars:
                         char["gallery_item_id"] = None
                         char["suitability_score"] = None
 
@@ -2188,8 +2726,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         try:
             ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
             ep_meta["extract_completed"] = True
-            _db().conn.execute("UPDATE episodes SET metadata = ? WHERE id = ?", (json.dumps(ep_meta), episode_id))
-            _db().conn.commit()
+            _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta)})
         except:
             pass
 
@@ -2228,8 +2765,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
             
             if _req_profile_name and not _img_meta.get("browser_profile_name"):
                 _img_meta["browser_profile_name"] = _req_profile_name
-                _db().conn.execute("UPDATE dramas SET metadata = ? WHERE id = ?", (json.dumps(_img_meta), drama_id))
-                _db().conn.commit()
+                _db().update_drama(drama_id, {"metadata": json.dumps(_img_meta)})
                 
             if not profile_name:
                 yield f'data: {json.dumps({"event": "status", "message": f"⚠️ Chưa chọn Browser Profile — bỏ qua tạo {total_images_needed} ảnh AI. Chọn profile rồi bấm AI Gen."})}\n\n'
@@ -2439,8 +2975,7 @@ async def clear_storyboards(episode_id: int):
     """Clear (soft delete) all storyboards for an episode."""
     import datetime
     now = datetime.datetime.now().isoformat()
-    _db().conn.execute("UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL", (now, episode_id))
-    _db().conn.commit()
+    _db().clear_storyboards(episode_id)
     return {"status": "ok"}
 
 
@@ -2463,10 +2998,7 @@ async def generate_storyboard(episode_id: int, request: Request):
     # Check for existing storyboards if append_mode is true
     existing_shots = []
     if append_mode:
-        existing_shots = _db().conn.execute(
-            "SELECT storyboard_number, description FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number",
-            (episode_id,)
-        ).fetchall()
+        existing_shots = _db().get_existing_storyboards_summary(episode_id)
 
     # Get settings
     s = _settings()
@@ -2540,12 +3072,12 @@ async def generate_storyboard(episode_id: int, request: Request):
     async def generate():
         try:
             import re
-            # Generic section heading pattern: matches ## S01, ## N01, ## L01, ## AD01, ## H01, ## D01, ## EP01, etc.
-            section_pattern = r'(?m)(?=^## (?:S|N|L|AD|H|D|EP)\d+)'
+            # [SHOW: ...] section pattern
+            section_pattern = r'(?=\[SHOW:[^\]]*\])'
             parts = re.split(section_pattern, script)
             parts = [p.strip() for p in parts if p.strip()]
             
-            has_tags = any(re.match(r'^## (?:S|N|L|AD|H|D|EP)\d+', p) for p in parts)
+            has_tags = any(re.match(r'\[SHOW:', p) for p in parts)
             if not has_tags:
                 chunk_size = 1
                 chunks = [script]
@@ -2556,7 +3088,7 @@ async def generate_storyboard(episode_id: int, request: Request):
                 scene_count = 0
                 for part in parts:
                     current_chunk += part + "\n\n"
-                    if re.match(r'^## (?:S|N|L|AD|H|D|EP)\d+', part):
+                    if re.match(r'\[SHOW:', part):
                         scene_count += 1
                     if scene_count >= chunk_size:
                         chunks.append(current_chunk.strip())
@@ -2571,7 +3103,7 @@ async def generate_storyboard(episode_id: int, request: Request):
             pending_chunk_indices = []
             scenes_so_far = 0
             for idx, chunk_text in enumerate(chunks):
-                scenes_in_chunk = len(re.findall(r'^## (?:S|N|L|AD|H|D|EP)\d+', chunk_text, re.MULTILINE)) if has_tags else 1
+                scenes_in_chunk = len(re.findall(r'\[SHOW:[^\]]*\]', chunk_text)) if has_tags else 1
                 scenes_so_far += scenes_in_chunk
                 
                 if scenes_so_far <= existing_shots_count and existing_shots_count > 0:
@@ -2586,11 +3118,7 @@ async def generate_storyboard(episode_id: int, request: Request):
             # This way incremental saves per-chunk can always use append=True
             if not append_mode:
                 from datetime import datetime as _dt_sb
-                _db().conn.execute(
-                    "UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL",
-                    (_dt_sb.now().isoformat(), episode_id),
-                )
-                _db().conn.commit()
+                _db().clear_storyboards(episode_id)
                 logger.info(f"Storyboard: cleared old shots for episode {episode_id} (fresh generation)")
 
             for idx in pending_chunk_indices:
@@ -2599,17 +3127,16 @@ async def generate_storyboard(episode_id: int, request: Request):
 
                 # Count scenes in this chunk and list their headings
                 import re as _re_sb
-                scene_headings = _re_sb.findall(r'^## (?:S|N|L|AD|H|D|EP)\d+[^\n]*', chunk_text, _re_sb.MULTILINE)
+                scene_headings = _re_sb.findall(r'\[SHOW:[^\]]*\]', chunk_text)
                 scene_count_in_chunk = len(scene_headings) if scene_headings else 1
-                headings_list = '\n'.join(scene_headings) if scene_headings else '(no section headings found)'
+                headings_list = '\n'.join(scene_headings) if scene_headings else '(no [SHOW] sections found)'
                 
                 prompt = (
                     f"Break this portion of the screenplay into storyboard shots.\n"
-                    f"CRITICAL: This chunk contains EXACTLY {scene_count_in_chunk} scenes. "
-                    f"You MUST output EXACTLY {scene_count_in_chunk} shot objects, one per scene heading.\n"
-                    f"Scene headings in this chunk:\n{headings_list}\n\n"
-                    f"REMINDER: For EVERY shot, you MUST include the `illustrate_layout` field describing how visual elements are composed with characters (e.g. 'Character on left gesturing at floating data panel on right', 'Split screen: character top, process diagram bottom'). "
-                    f"Even without gallery assets, use Auto-Illustrate to create engaging visual compositions.\n\n"
+                    f"CRITICAL: This chunk contains {scene_count_in_chunk} [SHOW] sections. "
+                    f"Create AT LEAST {scene_count_in_chunk} shots (1 per section, more if narration is long).\n"
+                    f"[SHOW] sections in this chunk:\n{headings_list}\n\n"
+                    f"REMINDER: For EVERY shot, you MUST include the `illustrate_layout` field describing how visual elements are composed with characters.\n\n"
                     f"Script:\n\n{chunk_text}"
                 )
                 if append_mode and existing_shots and is_first:
@@ -2756,16 +3283,36 @@ async def generate_storyboard(episode_id: int, request: Request):
                                 if _cid:
                                     _cs_ids.append(_cid)
                             _cs["character_ids"] = _cs_ids
-                            _cs_loc = (_cs.get("location") or "").lower()
-                            _cs_tm = (_cs.get("time") or "").lower()
+                            _cs_loc = (_cs.get("location") or "").lower().strip()
+                            _cs_tm = (_cs.get("time") or "").lower().strip()
                             _cs_key = f"{_cs_loc}|{_cs_tm}"
                             if _cs_key in scene_map:
                                 _cs["scene_id"] = scene_map[_cs_key]
+                                logger.debug(f"Shot scene_id mapped (exact): '{_cs_loc}' → scene {scene_map[_cs_key]}")
                             else:
+                                # Fuzzy match: try partial location match (ignore time)
+                                _matched = False
                                 for _sk, _sid in scene_map.items():
-                                    if _cs_loc and _cs_loc in _sk.split("|")[0]:
+                                    _sk_loc = _sk.split("|")[0]
+                                    if _cs_loc and _sk_loc and (_cs_loc in _sk_loc or _sk_loc in _cs_loc):
                                         _cs["scene_id"] = _sid
+                                        _matched = True
+                                        logger.debug(f"Shot scene_id mapped (partial): '{_cs_loc}' ⊂ '{_sk_loc}' → scene {_sid}")
                                         break
+                                if not _matched:
+                                    # Fuzzy match: try word overlap (at least 2 words in common)
+                                    _cs_words = set(_cs_loc.split())
+                                    for _sk, _sid in scene_map.items():
+                                        _sk_loc = _sk.split("|")[0]
+                                        _sk_words = set(_sk_loc.split())
+                                        _common = _cs_words & _sk_words
+                                        if len(_common) >= 2:
+                                            _cs["scene_id"] = _sid
+                                            _matched = True
+                                            logger.debug(f"Shot scene_id mapped (word-overlap): '{_cs_loc}' ∩ '{_sk_loc}' = {_common} → scene {_sid}")
+                                            break
+                                if not _matched and _cs_loc:
+                                    logger.warning(f"Shot scene_id NOT mapped: loc='{_cs_loc}', time='{_cs_tm}'. Available scenes: {list(scene_map.keys())[:5]}")
                         _chunk_saved = _db().save_storyboards_bulk(episode_id, shots, append=True)
                         yield f"data: {json.dumps({'event': 'status', 'message': f'💾 Đã lưu {len(_chunk_saved)} shots (chunk {idx+1})'})}\n\n"
                         logger.info(f"Storyboard chunk {idx+1}: saved {len(_chunk_saved)} shots incrementally")
@@ -2948,6 +3495,10 @@ async def start_gen_images(episode_id: int, request: Request, background_tasks: 
     shots = _db().list_storyboards(episode_id)
     if not shots:
         raise HTTPException(400, "No storyboard shots found. Generate storyboard first.")
+
+    target_shot_ids = data.get("shot_ids")
+    if target_shot_ids:
+        shots = [s for s in shots if s["id"] in target_shot_ids]
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
@@ -3327,6 +3878,12 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     if not shots:
         raise HTTPException(400, "No storyboard shots found. Generate storyboard first.")
 
+    target_shot_ids = data.get("shot_ids")
+    if target_shot_ids:
+        shots = [s for s in shots if s["id"] in target_shot_ids]
+        if not shots:
+            raise HTTPException(400, "No matching storyboard shots found for the provided IDs.")
+
     # --- Inject character reference images into each shot ---
     db = _db()
     drama_id = ep.get("drama_id")
@@ -3356,6 +3913,14 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             return fpath
         return None
 
+    # Check if this is a Presentation format — Presenter must NOT be skipped
+    _is_presentation = False
+    try:
+        _dm = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
+        _is_presentation = (_dm.get("content_format") == "Presentation / Screen")
+    except:
+        pass
+
     for shot in shots:
         char_ids = shot.get("character_ids", [])
         # Handle character_ids stored as JSON string
@@ -3367,8 +3932,9 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
         ref_images = []
         # Narrator/Host role names that should NOT have reference images injected
         # These are voice-only characters — injecting their face causes Grok blocks
+        # NOTE: For Presentation format, the Presenter IS an on-screen visual character
         _NARRATOR_PATTERNS = [
-            'narrator', 'host', 'voiceover', 'presenter',
+            'narrator', 'host', 'voiceover',
             'người dẫn', 'dẫn chuyện', 'mc ', 'người kể',
             'health narrator', 'spiritual narrator',
         ]
@@ -3377,11 +3943,12 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             if not char:
                 continue
             # Skip narrator/host characters — they don't need visual consistency
+            # BUT: In Presentation format, the Presenter IS visual, so never skip
             char_name = (char.get("name") or "").lower().strip()
             char_role_desc = (char.get("description") or "").lower()
             is_narrator = any(p in char_name for p in _NARRATOR_PATTERNS) or \
                           any(p in char_role_desc for p in ['narrator', 'host', 'người dẫn', 'dẫn chuyện'])
-            if is_narrator:
+            if is_narrator and not _is_presentation:
                 logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: skipping narrator/host '{char.get('name')}' — no ref image needed")
                 continue
             resolved = _resolve_image_path(char.get("image_url", ""))
@@ -3448,22 +4015,110 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     # --- Inject scene images as ref_images for shots with scene_id ---
     try:
         all_scenes = {s["id"]: s for s in db.list_scenes(drama_id)} if drama_id else {}
+        scene_injected_count = 0
+        scene_skipped_count = 0
+        
+        # Build location→scene lookup for fallback matching
+        scene_by_loc = {}
+        for sid, sc in all_scenes.items():
+            loc_key = (sc.get("location") or "").lower().strip()
+            if loc_key and sc.get("image_url"):
+                scene_by_loc[loc_key] = sc
+        
+        logger.info(f"Scene injection: {len(all_scenes)} scenes in DB, {len(scene_by_loc)} with images, {len(shots)} shots to process")
+        
         for shot in shots:
             scene_id = shot.get("scene_id")
-            if not scene_id:
-                continue
-            scene = all_scenes.get(scene_id)
+            shot_num = shot.get("storyboard_number", shot.get("id", "?"))
+            shot_loc = (shot.get("location") or "").lower().strip()
+            
+            scene = None
+            match_method = ""
+            
+            # Method 1: Direct scene_id lookup
+            if scene_id:
+                scene = all_scenes.get(scene_id)
+                if scene:
+                    match_method = f"scene_id={scene_id}"
+                else:
+                    logger.warning(f"Shot {shot_num}: scene_id={scene_id} not found in scenes table")
+            
+            # Method 2: Fallback - fuzzy match by location name
+            if not scene and shot_loc:
+                # Exact match first
+                if shot_loc in scene_by_loc:
+                    scene = scene_by_loc[shot_loc]
+                    match_method = f"exact_loc='{shot_loc}'"
+                else:
+                    # Partial match
+                    for loc_key, sc in scene_by_loc.items():
+                        if shot_loc in loc_key or loc_key in shot_loc:
+                            scene = sc
+                            match_method = f"partial_loc='{loc_key}'"
+                            break
+            
             if not scene:
+                scene_skipped_count += 1
+                logger.debug(f"Shot {shot_num}: no scene match (scene_id={scene_id}, loc='{shot_loc}')")
                 continue
+            
             scene_img = scene.get("image_url", "")
-            if scene_img and os.path.isfile(scene_img):
-                existing_refs = shot.get("ref_images", [])
-                if scene_img not in existing_refs:
-                    # Scene image goes FIRST (highest priority for establishing the shot)
-                    shot["ref_images"] = [scene_img] + existing_refs[:2]  # max 3 total
-                    logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected scene image from scene {scene_id}")
+            if not scene_img:
+                scene_skipped_count += 1
+                logger.debug(f"Shot {shot_num}: scene matched ({match_method}) but no image_url")
+                continue
+                
+            if not os.path.isfile(scene_img):
+                scene_skipped_count += 1
+                logger.warning(f"Shot {shot_num}: scene image file not found: {scene_img}")
+                continue
+            
+            existing_refs = shot.get("ref_images", [])
+            if scene_img not in existing_refs:
+                # Scene image goes FIRST (highest priority for establishing the shot)
+                shot["ref_images"] = [scene_img] + existing_refs[:2]  # max 3 total
+                scene_injected_count += 1
+                logger.info(f"Shot {shot_num}: injected scene image ({match_method}) → total refs={len(shot['ref_images'])}")
+            else:
+                logger.debug(f"Shot {shot_num}: scene image already in refs")
+        
+        logger.info(f"Scene injection complete: {scene_injected_count} injected, {scene_skipped_count} skipped")
     except Exception as e:
-        logger.warning(f"Failed to inject scene ref images: {e}")
+        logger.warning(f"Failed to inject scene ref images: {e}", exc_info=True)
+
+    # --- Inject storyboard's own reference_images (extra refs from flowchart/manual) ---
+    try:
+        extra_ref_count = 0
+        for shot in shots:
+            try:
+                sb_refs = json.loads(shot.get("reference_images") or "[]")
+            except:
+                sb_refs = []
+            if not sb_refs:
+                continue
+            existing = shot.get("ref_images", [])
+            for rp in sb_refs:
+                if os.path.isfile(rp) and rp not in existing and len(existing) < 4:
+                    existing.append(rp)
+                    extra_ref_count += 1
+            shot["ref_images"] = existing
+        if extra_ref_count:
+            logger.info(f"Extra ref injection: {extra_ref_count} storyboard reference_images added")
+    except Exception as e:
+        logger.warning(f"Failed to inject extra ref images: {e}")
+
+    # --- Inject generated composed_image (Screen) as PRIMARY ref if it exists ---
+    try:
+        for shot in shots:
+            composed = shot.get("composed_image")
+            if composed and os.path.isfile(composed):
+                existing = shot.get("ref_images", [])
+                if composed not in existing:
+                    # Place it at the front so it takes highest priority for Image-to-Video
+                    shot["ref_images"] = [composed] + existing[:2]
+                    logger.info(f"Shot {shot['id']}: injected composed_image (generated screen) as primary ref")
+    except Exception as e:
+        logger.warning(f"Failed to inject composed_image ref: {e}")
 
     # Inject aspect ratio from drama metadata
     try:
@@ -3491,6 +4146,15 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             p = shot.get("image_prompt", "")
             if p and eng_suffix not in p:
                 shot["image_prompt"] = p.rstrip(". ") + eng_suffix
+
+    # Special handling for Presentation format: 
+    # Do not send image content description (which contains text) to video AI.
+    # Only send the motion/animation instructions.
+    if drama_meta.get("content_format") == "Presentation / Screen":
+        for shot in shots:
+            vp = shot.get("video_prompt", "").strip()
+            if vp:
+                shot["image_prompt"] = f"[VIDEO PROMPT]\n{vp}"
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
@@ -3780,10 +4444,9 @@ async def get_gen_videos_status(task_id: str):
 @router.post("/api/v1/studio/storyboards/{shot_id}/generate-tts")
 async def generate_shot_tts(shot_id: int, request: Request):
     """Generate TTS audio for a single storyboard shot using its narration_text."""
-    shot = _db().conn.execute("SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL", (shot_id,)).fetchone()
+    shot = _db().get_storyboard(shot_id)
     if not shot:
         raise HTTPException(404, "Shot not found")
-    shot = dict(shot)
     
     narration = shot.get("narration_text") or shot.get("dialogue") or shot.get("description") or shot.get("action") or ""
     narration = narration.strip()
@@ -3809,9 +4472,9 @@ async def generate_shot_tts(shot_id: int, request: Request):
     
     if not voice_id or not engine:
         # Try project metadata
-        ep = _db().conn.execute("SELECT drama_id FROM episodes WHERE id = ?", (shot.get("episode_id"),)).fetchone()
+        ep = _db().get_episode(shot.get("episode_id"))
         if ep:
-            drama = _db().conn.execute("SELECT metadata FROM dramas WHERE id = ?", (ep["drama_id"],)).fetchone()
+            drama = _db().get_drama(ep["drama_id"])
             if drama and drama["metadata"]:
                 meta = json.loads(drama["metadata"])
                 if not voice_id:
@@ -3880,10 +4543,16 @@ async def start_batch_tts(episode_id: int, request: Request):
     shots = _db().list_storyboards(episode_id)
     if not shots:
         raise HTTPException(400, "No storyboard shots")
+        
+    req_data = {}
+    try:
+        req_data = await request.json()
+    except:
+        pass
 
     # Resolve voice/engine from project metadata
-    voice_id = "vi-VN-HoaiMyNeural"
-    engine = "edge"
+    voice_id = req_data.get("voice_id") or "vi-VN-HoaiMyNeural"
+    engine = req_data.get("engine") or "edge"
     browser_profile = None
     drama_id = ep.get("drama_id")
     if drama_id:
@@ -3891,8 +4560,10 @@ async def start_batch_tts(episode_id: int, request: Request):
         if drama and drama.get("metadata"):
             try:
                 meta = json.loads(drama["metadata"])
-                voice_id = meta.get("tts_voice", voice_id)
-                engine = meta.get("tts_engine", engine)
+                if not req_data.get("voice_id"):
+                    voice_id = meta.get("tts_voice", voice_id)
+                if not req_data.get("engine"):
+                    engine = meta.get("tts_engine", engine)
                 browser_profile = meta.get("browser_profile_name")
             except:
                 pass
@@ -4087,6 +4758,11 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
 
             if not full_audio_path or not os.path.exists(full_audio_path):
                 raise Exception("Full audio path not found")
+            
+            # Save full audio URL to episode for future resplit
+            if full_audio_url:
+                _db().update_episode(episode_id, {"audio_url": full_audio_url})
+                logger.info(f"Saved full audio URL to episode: {full_audio_url}")
 
             # 3. Whisper Alignment (DIRECT call - avoids HTTP deadlock)
             logger.info(f"Full audio generated. Running Whisper directly on: {full_audio_path}")
@@ -4130,6 +4806,9 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
             for shot, s_text in zip(valid_shots, shot_texts):
                 st, curr_seg_idx = _find_shot_start_time(segments, s_text, curr_seg_idx)
                 shot_starts.append(st)
+            
+            # 5b. Fix 0-duration shots: redistribute time for consecutive identical starts
+            shot_starts = _redistribute_zero_duration(shot_starts, total_audio_duration, logger)
                 
             for i, shot in enumerate(valid_shots):
                 shot_id = shot["id"]
@@ -4160,6 +4839,151 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
                     task["results"].append({"shot_id": shot_id, "status": "error", "message": "FFmpeg split failed"})
                     
                 task["done"] += 1
+            
+            # ── Auto-fix: detect and fix 0-duration shots ──
+            logger.info(f"[AutoFix] Checking for 0-duration shots after split...")
+            zero_shots = []
+            for i, shot in enumerate(valid_shots):
+                shot_id = shot["id"]
+                shot_out = os.path.join(out_dir, f"gemini_shot_{shot_id}_{task_id}.mp3")
+                if os.path.exists(shot_out):
+                    try:
+                        p = subprocess.run(
+                            [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", shot_out],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        dur = float(p.stdout.strip())
+                        if dur < 0.5:
+                            narr = (shot.get("narration_text") or shot.get("dialogue") or "").strip()
+                            if len(narr) > 10:
+                                zero_shots.append(i)
+                    except:
+                        pass
+            
+            if zero_shots:
+                logger.info(f"[AutoFix] Found {len(zero_shots)} zero-duration shots with text, applying fix...")
+                
+                # Build timeline from current split
+                shot_durs = []
+                for i, shot in enumerate(valid_shots):
+                    shot_out = os.path.join(out_dir, f"gemini_shot_{shot['id']}_{task_id}.mp3")
+                    d = 0
+                    if os.path.exists(shot_out):
+                        try:
+                            p = subprocess.run(
+                                [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", shot_out],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            d = float(p.stdout.strip())
+                        except:
+                            d = 0
+                    shot_durs.append(d)
+                
+                # Find gap groups
+                gap_groups = []
+                gi = 0
+                cursor = 0.0
+                timeline = []
+                for d in shot_durs:
+                    timeline.append({"start": cursor, "end": cursor + d})
+                    cursor += d
+                
+                gi = 0
+                while gi < len(valid_shots):
+                    if gi in zero_shots:
+                        group = [gi]
+                        gj = gi + 1
+                        while gj < len(valid_shots) and gj in zero_shots:
+                            group.append(gj)
+                            gj += 1
+                        gap_start = timeline[group[0]]["start"]
+                        gap_end = timeline[gj]["start"] if gj < len(valid_shots) else total_audio_duration
+                        if gap_end - gap_start < 0.5:
+                            gap_end = gap_start + max(2.0 * len(group), 1.0)
+                            gap_end = min(gap_end, total_audio_duration)
+                        gap_groups.append({"indices": group, "gap_start": gap_start, "gap_end": gap_end})
+                        gi = gj
+                    else:
+                        gi += 1
+                
+                # Whisper each gap and re-split
+                import importlib.util as _ilu2
+                whisper_ep2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                           "..", "subtitle_extractor", "engines", "whisper_engine.py")
+                spec2 = _ilu2.spec_from_file_location("whisper_eng2", whisper_ep2)
+                wmod2 = _ilu2.module_from_spec(spec2)
+                spec2.loader.exec_module(wmod2)
+                
+                import uuid as _uuid2
+                fix_id = _uuid2.uuid4().hex[:6]
+                
+                for gap in gap_groups:
+                    indices = gap["indices"]
+                    gs, ge = gap["gap_start"], gap["gap_end"]
+                    gdur = ge - gs
+                    
+                    gap_path = os.path.join(out_dir, f"autofix_gap_{fix_id}_{indices[0]}.mp3")
+                    subprocess.run([ffmpeg_path, "-y", "-i", full_audio_path,
+                                   "-ss", f"{gs:.3f}", "-t", f"{gdur:.3f}",
+                                   "-acodec", "libmp3lame", "-ab", "192k", gap_path],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    if not os.path.exists(gap_path):
+                        continue
+                    
+                    # Whisper gap
+                    try:
+                        wr = await wmod2.extract_whisper(gap_path, language=None, model_size="small")
+                        gap_segs = [{"start": s["start"], "end": s["end"], "text": s["text"]}
+                                   for s in wr.get("subtitles", [])] if wr.get("status") == "success" else []
+                    except:
+                        gap_segs = []
+                    
+                    if gap_segs:
+                        # Match texts
+                        local_starts = []
+                        seg_idx = 0
+                        for idx in indices:
+                            txt = re.sub(r'\[.*?\]', '', 
+                                        valid_shots[idx].get("narration_text") or 
+                                        valid_shots[idx].get("dialogue") or "").strip()
+                            st, seg_idx = _find_shot_start_time(gap_segs, txt, seg_idx)
+                            local_starts.append(st)
+                        
+                        gap_local_dur = gap_segs[-1]["end"] if gap_segs else gdur
+                        local_starts = _redistribute_zero_duration(local_starts, gap_local_dur, logger)
+                    else:
+                        # Even split fallback
+                        per = gdur / len(indices)
+                        local_starts = [k * per for k in range(len(indices))]
+                        gap_local_dur = gdur
+                    
+                    # Re-split
+                    for k, idx in enumerate(indices):
+                        shot = valid_shots[idx]
+                        ls = local_starts[k]
+                        le = local_starts[k+1] if k+1 < len(local_starts) else gap_local_dur
+                        sdur = max(0.2, le - ls)
+                        abs_s = gs + ls
+                        
+                        fix_path = os.path.join(out_dir, f"fix_shot_{shot['id']}_{fix_id}.mp3")
+                        subprocess.run([ffmpeg_path, "-y", "-i", full_audio_path,
+                                       "-ss", f"{abs_s:.3f}", "-t", f"{sdur:.3f}",
+                                       "-acodec", "libmp3lame", "-ab", "192k", fix_path],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        
+                        if os.path.exists(fix_path):
+                            fname = os.path.basename(fix_path)
+                            _db().update_storyboard(shot["id"], {"tts_audio_url": f"/api/v1/tts/audio/{fname}"})
+                            logger.info(f"[AutoFix] Shot {shot['id']}: {abs_s:.2f}s ({sdur:.2f}s) ✓")
+                    
+                    try: os.remove(gap_path)
+                    except: pass
+                
+                logger.info(f"[AutoFix] Fixed {len(zero_shots)} zero-duration shots across {len(gap_groups)} gaps")
+            else:
+                logger.info(f"[AutoFix] No zero-duration shots found — all good!")
+                
         except Exception as e:
             logger.error(f"Gemini Batch TTS pipeline error: {e}")
             task["status"] = "error"
@@ -4271,6 +5095,9 @@ async def upload_audio_and_split(episode_id: int, request: Request):
         st, curr_seg_idx = _find_shot_start_time(segments, s_text, curr_seg_idx)
         shot_starts.append(st)
 
+    # Fix 0-duration shots: redistribute time for consecutive identical starts
+    shot_starts = _redistribute_zero_duration(shot_starts, total_audio_duration, logger)
+
     for i, shot in enumerate(valid_shots):
         shot_id = shot["id"]
         start_t = shot_starts[i]
@@ -4293,6 +5120,333 @@ async def upload_audio_and_split(episode_id: int, request: Request):
             _db().update_storyboard(shot_id, {"tts_audio_url": audio_url})
 
     return {"success": True, "message": f"Successfully split and assigned {len(valid_shots)} shots"}
+
+
+@router.post("/api/v1/studio/episodes/{episode_id}/resplit-audio")
+async def resplit_audio(episode_id: int, request: Request):
+    """
+    Smart re-split: only Whisper the gap segments where 0-duration shots exist.
+    
+    Algorithm:
+    1. Gather all shots and their current audio durations (from existing split files).
+    2. Identify "anchor" shots (duration >= 1s) — these are correctly placed.
+    3. Find "gap groups" — consecutive 0-duration shots between two anchors.
+    4. For each gap group:
+       a. Extract the audio segment covering the gap (from anchor_before end → anchor_after start).
+       b. Run Whisper ONLY on that extracted segment.
+       c. Match the 0-duration shot texts against the Whisper output.
+       d. Split the gap audio accordingly.
+    5. Keep all anchor shots untouched — only re-split the 0-duration ones.
+    """
+    import shutil, subprocess, re, uuid, glob
+    import importlib.util
+    
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+    
+    # Resolve TTS output directory
+    try:
+        from tubecli.config import DATA_DIR
+        tts_output_dir = os.path.join(str(DATA_DIR), "tts_vibevoice", "outputs")
+    except Exception:
+        tts_output_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "tts_vibevoice", "outputs"
+        )
+    
+    ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
+    ffprobe_path = shutil.which("ffprobe") or "ffprobe"
+    resplit_id = uuid.uuid4().hex[:6]
+    
+    # Try to find full audio file
+    full_audio_path = None
+    
+    # Method 1: From episode.audio_url
+    audio_url = ep.get("audio_url", "")
+    if audio_url:
+        fname = audio_url.split("/")[-1]
+        candidate = os.path.join(tts_output_dir, fname)
+        if os.path.exists(candidate):
+            full_audio_path = candidate
+    
+    # Method 2: Search for gemini_full_* or upload_* file matching episode_id
+    if not full_audio_path:
+        patterns = [
+            os.path.join(tts_output_dir, f"gemini_full_{episode_id}_*"),
+            os.path.join(tts_output_dir, f"upload_{episode_id}_*"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                # Use most recent
+                matches.sort(key=os.path.getmtime, reverse=True)
+                full_audio_path = matches[0]
+                break
+    
+    # Method 3: Concatenate all shot audio files to rebuild the full audio
+    if not full_audio_path:
+        shots_for_concat = _db().list_storyboards(episode_id)
+        shot_files = []
+        for s in shots_for_concat:
+            url = s.get("tts_audio_url", "")
+            if url:
+                fpath = os.path.join(tts_output_dir, url.split("/")[-1])
+                if os.path.exists(fpath):
+                    shot_files.append(fpath)
+        
+        if shot_files:
+            # Create concat list
+            concat_list_path = os.path.join(tts_output_dir, f"concat_{resplit_id}.txt")
+            merged_path = os.path.join(tts_output_dir, f"merged_{episode_id}_{resplit_id}.mp3")
+            with open(concat_list_path, "w") as f:
+                for fp in shot_files:
+                    f.write(f"file '{fp}'\n")
+            
+            cmd = [ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+                   "-acodec", "libmp3lame", "-ab", "192k", merged_path]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            try: os.remove(concat_list_path)
+            except: pass
+            
+            if os.path.exists(merged_path):
+                full_audio_path = merged_path
+                logger.info(f"[Resplit] Rebuilt full audio from {len(shot_files)} shot files: {merged_path}")
+    
+    if not full_audio_path:
+        raise HTTPException(400, "Cannot locate or rebuild full audio file for this episode")
+    
+    # Get total audio duration
+    total_audio_duration = 0
+    try:
+        probe_cmd = [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", full_audio_path]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+        total_audio_duration = float(probe_result.stdout.strip())
+    except:
+        pass
+    
+    # Get storyboard shots with their current audio durations
+    shots = _db().list_storyboards(episode_id)
+    valid_shots = [s for s in shots if (s.get("narration_text") or s.get("dialogue") or s.get("description"))]
+    if not valid_shots:
+        raise HTTPException(400, "No storyboard shots with narration text found.")
+    
+    # Probe each shot's current audio duration
+    shot_durations = []
+    for s in valid_shots:
+        dur = 0
+        audio_file_url = s.get("tts_audio_url", "")
+        if audio_file_url:
+            audio_fname = audio_file_url.split("/")[-1]
+            audio_fpath = os.path.join(tts_output_dir, audio_fname)
+            if os.path.exists(audio_fpath):
+                try:
+                    p = subprocess.run(
+                        [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audio_fpath],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    dur = float(p.stdout.strip())
+                except:
+                    dur = 0
+        shot_durations.append(dur)
+    
+    # Classify shots: anchor (>= 1s) vs zero (< 0.5s)
+    MIN_ANCHOR_DUR = 1.0
+    ZERO_THRESHOLD = 0.5
+    
+    # Build a timeline of each shot's position in the full audio.
+    # We need to know each shot's [start, end] in the full audio.
+    # The shots were split sequentially, so shot_i starts where shot_{i-1} ends.
+    shot_timeline = []
+    cursor = 0.0
+    for i, dur in enumerate(shot_durations):
+        shot_timeline.append({"start": cursor, "end": cursor + dur, "dur": dur})
+        cursor += dur
+    
+    logger.info(f"[Resplit] Total from splits: {cursor:.2f}s, full audio: {total_audio_duration:.2f}s, "
+                f"shots: {len(valid_shots)}")
+    
+    # Find gap groups: consecutive shots with duration < ZERO_THRESHOLD
+    gap_groups = []  # Each: {"indices": [i, i+1, ...], "gap_start": float, "gap_end": float}
+    i = 0
+    while i < len(valid_shots):
+        if shot_durations[i] < ZERO_THRESHOLD:
+            # Start of a gap group
+            group_indices = [i]
+            j = i + 1
+            while j < len(valid_shots) and shot_durations[j] < ZERO_THRESHOLD:
+                group_indices.append(j)
+                j += 1
+            
+            # Determine gap boundaries from surrounding anchors
+            # gap_start = end of last anchor before this group
+            gap_start = shot_timeline[group_indices[0]]["start"]
+            # gap_end = start of first anchor after this group, or total_audio_duration
+            if j < len(valid_shots):
+                gap_end = shot_timeline[j]["start"]
+            else:
+                gap_end = total_audio_duration
+            
+            # If gap is too small, use the total audio to estimate
+            if gap_end - gap_start < 0.5:
+                gap_end = gap_start + max(2.0 * len(group_indices), 1.0)
+                gap_end = min(gap_end, total_audio_duration)
+            
+            gap_groups.append({
+                "indices": group_indices,
+                "gap_start": gap_start,
+                "gap_end": gap_end
+            })
+            i = j
+        else:
+            i += 1
+    
+    if not gap_groups:
+        return {
+            "success": True,
+            "message": "No zero-duration shots found — nothing to fix.",
+            "fixed": 0,
+            "total_audio_duration": round(total_audio_duration, 2)
+        }
+    
+    logger.info(f"[Resplit] Found {len(gap_groups)} gap groups with "
+                f"{sum(len(g['indices']) for g in gap_groups)} zero-duration shots")
+    
+    # Load Whisper module once
+    whisper_engine_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "subtitle_extractor", "engines", "whisper_engine.py"
+    )
+    spec = importlib.util.spec_from_file_location("whisper_eng", whisper_engine_path)
+    whisper_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(whisper_mod)
+    
+    # Process each gap group
+    results = []
+    total_fixed = 0
+    
+    for gidx, gap in enumerate(gap_groups):
+        indices = gap["indices"]
+        gap_start = gap["gap_start"]
+        gap_end = gap["gap_end"]
+        gap_duration = gap_end - gap_start
+        
+        logger.info(f"[Resplit] Gap {gidx+1}/{len(gap_groups)}: "
+                     f"shots {[valid_shots[i]['id'] for i in indices]}, "
+                     f"time {gap_start:.2f}-{gap_end:.2f} ({gap_duration:.2f}s)")
+        
+        # a. Extract gap audio segment
+        gap_audio_path = os.path.join(tts_output_dir, f"gap_{resplit_id}_{gidx}.mp3")
+        cmd = [ffmpeg_path, "-y", "-i", full_audio_path,
+               "-ss", f"{gap_start:.3f}", "-t", f"{gap_duration:.3f}",
+               "-acodec", "libmp3lame", "-ab", "192k", gap_audio_path]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        if not os.path.exists(gap_audio_path):
+            logger.error(f"[Resplit] Failed to extract gap audio")
+            for idx in indices:
+                results.append({"shot_id": valid_shots[idx]["id"], "status": "error", "message": "gap extract failed"})
+            continue
+        
+        # b. Whisper only the gap segment
+        try:
+            whisper_result = await whisper_mod.extract_whisper(gap_audio_path, language=None, model_size="small")
+            if whisper_result.get("status") != "success":
+                raise Exception(whisper_result.get("message", "unknown"))
+            
+            gap_segments = [{"start": s["start"], "end": s["end"], "text": s["text"]}
+                           for s in whisper_result.get("subtitles", [])]
+        except Exception as e:
+            logger.error(f"[Resplit] Whisper failed on gap: {e}")
+            # Fallback: evenly distribute
+            per_shot = gap_duration / len(indices)
+            for k, idx in enumerate(indices):
+                shot = valid_shots[idx]
+                shot_start = gap_start + k * per_shot
+                shot_dur = per_shot
+                
+                out_path = os.path.join(tts_output_dir, f"resplit_shot_{shot['id']}_{resplit_id}.mp3")
+                cmd = [ffmpeg_path, "-y", "-i", full_audio_path,
+                       "-ss", f"{shot_start:.3f}", "-t", f"{shot_dur:.3f}",
+                       "-acodec", "libmp3lame", "-ab", "192k", out_path]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                if os.path.exists(out_path):
+                    fname = os.path.basename(out_path)
+                    _db().update_storyboard(shot["id"], {"tts_audio_url": f"/api/v1/tts/audio/{fname}"})
+                    results.append({"shot_id": shot["id"], "status": "ok", "duration": round(shot_dur, 2), "method": "even_split"})
+                    total_fixed += 1
+                else:
+                    results.append({"shot_id": shot["id"], "status": "error"})
+            
+            try: os.remove(gap_audio_path)
+            except: pass
+            continue
+        
+        # c. Match each shot's text against gap whisper segments
+        shot_texts_in_gap = []
+        for idx in indices:
+            s = valid_shots[idx]
+            txt = s.get("narration_text") or s.get("dialogue") or s.get("description") or ""
+            txt = re.sub(r'\[.*?\]', '', txt).strip()
+            shot_texts_in_gap.append(txt)
+        
+        # Find start times within the gap using existing algorithm
+        local_starts = []
+        local_seg_idx = 0
+        for txt in shot_texts_in_gap:
+            st, local_seg_idx = _find_shot_start_time(gap_segments, txt, local_seg_idx)
+            local_starts.append(st)
+        
+        # Redistribute any remaining duplicates
+        gap_local_duration = gap_segments[-1]["end"] if gap_segments else gap_duration
+        local_starts = _redistribute_zero_duration(local_starts, gap_local_duration, logger)
+        
+        # d. Split the gap into individual shots
+        for k, idx in enumerate(indices):
+            shot = valid_shots[idx]
+            local_start = local_starts[k]
+            local_end = local_starts[k+1] if k+1 < len(local_starts) else gap_local_duration
+            shot_dur = max(0.2, local_end - local_start)
+            
+            # Convert local time back to full audio time
+            abs_start = gap_start + local_start
+            
+            out_path = os.path.join(tts_output_dir, f"resplit_shot_{shot['id']}_{resplit_id}.mp3")
+            cmd = [ffmpeg_path, "-y", "-i", full_audio_path,
+                   "-ss", f"{abs_start:.3f}", "-t", f"{shot_dur:.3f}",
+                   "-acodec", "libmp3lame", "-ab", "192k", out_path]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            if os.path.exists(out_path):
+                fname = os.path.basename(out_path)
+                _db().update_storyboard(shot["id"], {"tts_audio_url": f"/api/v1/tts/audio/{fname}"})
+                results.append({
+                    "shot_id": shot["id"], "status": "ok",
+                    "duration": round(shot_dur, 2),
+                    "method": "whisper_gap",
+                    "abs_time": f"{abs_start:.2f}-{abs_start+shot_dur:.2f}"
+                })
+                total_fixed += 1
+                logger.info(f"[Resplit] Shot {shot['id']}: {abs_start:.2f}-{abs_start+shot_dur:.2f} "
+                           f"({shot_dur:.2f}s) ✓ (gap whisper)")
+            else:
+                results.append({"shot_id": shot["id"], "status": "error", "duration": 0})
+                logger.error(f"[Resplit] Shot {shot['id']}: FFmpeg split failed")
+        
+        # Cleanup gap audio
+        try: os.remove(gap_audio_path)
+        except: pass
+    
+    return {
+        "success": True,
+        "message": f"Fixed {total_fixed} shots across {len(gap_groups)} gap(s) — "
+                   f"Whispered only gap segments, not full audio",
+        "total_audio_duration": round(total_audio_duration, 2),
+        "gaps_processed": len(gap_groups),
+        "results": results
+    }
 
 
 @router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")
@@ -4453,6 +5607,7 @@ async def create_auto_pipeline_jobs(request: Request):
         "browser_profiles": data.get("browser_profiles", []),
         "aspect_ratio": data.get("aspect_ratio", "16:9"),
         "narration_source": data.get("narration_source", "prose"),
+        "video_length": data.get("video_length", "standard"),
         "seo_mode": data.get("seo_mode", "ai_generate"),
         "seo_title_template": data.get("seo_title_template", ""),
         "seo_description_template": data.get("seo_description_template", ""),
@@ -4617,6 +5772,7 @@ async def _process_single_job(job: dict):
         "pipeline": _get_pipeline_steps(job.get("pipeline_template", "drama_scene")),
         "aspect_ratio": job.get("aspect_ratio", "16:9"),
         "narration_source": job.get("narration_source", "prose"),
+        "video_length": job.get("video_length", "standard"),
     }
 
     if job.get("gallery_category_id"):

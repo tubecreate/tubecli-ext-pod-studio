@@ -7,8 +7,8 @@ const API = '/api/v1/studio';
 
 // ── State ──────────────────────────────────────────────────
 let dramas = [];
-let currentDrama = null;
-let currentEpisode = null;
+let currentEpisode = null; window._fc_getEpisode = () => currentEpisode;
+let currentDrama = null;   window._fc_getDrama = () => currentDrama;
 let currentStep = 'raw';
 let isStreaming = false;
 
@@ -157,12 +157,14 @@ window.showCreateDrama = function() {
     document.getElementById('wizPremise').value = '';
     document.getElementById('wizOutlineReview').textContent = '';
 
-    // Load presets dropdown and restore last-used config
+    // Load presets dropdown
     loadWizPresets();
-    restoreLastWizConfig();
     
-    // Load Character Gallery categories into the dropdown
-    loadWizGalleryCategories();
+    // Load Character Gallery categories into the dropdown FIRST,
+    // THEN restore last-used config (order matters — gallery options must exist before restore)
+    loadWizGalleryCategories().then(() => {
+        restoreLastWizConfig();
+    });
 
     document.getElementById('wizTitle').focus();
 }
@@ -223,7 +225,7 @@ const WIZ_FIELD_IDS = [
     'wizCharacterStyle', 'wizCharStyleCustom', 'wizCameraAngle',
     'wizEthnicity', 'wizPromptFocus', 'wizAspectRatio',
     'wizNarrationSource', 'wizLanguage', 'wizPipelineTemplate',
-    'wizGalleryCategory', 'wizNoTextPrompt'
+    'wizGalleryCategory', 'wizNoTextPrompt', 'wizVideoLength'
 ];
 const WIZ_CHECKBOX_IDS = [];
 
@@ -405,6 +407,7 @@ async function _createDramaFromWiz() {
     metadata.content_format = document.getElementById('wizContentFormat').value;
     metadata.narration_source = document.getElementById('wizNarrationSource').value;
     metadata.text_in_video = document.getElementById('wizNoTextPrompt')?.value || 'notext';
+    metadata.video_length = document.getElementById('wizVideoLength')?.value || 'standard';
     
     const galleryCatId = document.getElementById('wizGalleryCategory').value;
     if (galleryCatId) {
@@ -1248,6 +1251,20 @@ async function doExtract() {
 
         if (extractedData) {
             toast(`Extracted ${extractedData.saved_characters} characters, ${extractedData.saved_scenes} scenes!`, 'success');
+
+            // Mark extract as completed in episode metadata
+            if (currentEpisode) {
+                try {
+                    let epMeta = {};
+                    try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                    epMeta.extract_completed = true;
+                    await apiFetch(`/episodes/${currentEpisode.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ metadata: JSON.stringify(epMeta) })
+                    });
+                    currentEpisode.metadata = JSON.stringify(epMeta);
+                } catch(e) { console.warn('[doExtract] Could not save extract_completed flag', e); }
+            }
 
             // Refresh drama data for header counters and global list
             if (currentDrama) {
@@ -2958,51 +2975,131 @@ async function startRealtimeAutoPilot() {
                     try { epMeta = JSON.parse(currentEpisode.metadata || "{}"); } catch(e){}
                     
                     // 4. Extract (skip if not in pipeline)
+                    // Uses epMeta.extract_completed flag (saved per-episode) to decide
                     if (pipeline.includes('extract')) {
                         setStep('extract');
                         
-                        // Check if extract was already completed for THIS episode
-                        let hasExtractData = epMeta.extract_completed;
+                        // Re-read episode metadata (may have been updated by a previous run)
+                        try {
+                            const freshEp = await apiFetch(`/episodes/${currentEpisode.id}`);
+                            currentEpisode = freshEp;
+                            epMeta = {};
+                            try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                        } catch(e) {}
                         
-                        // Check if any characters or scenes are missing images
-                        // Default to true so if API fails, we run extract instead of skipping
-                        let missingImages = true;
-                        if (hasExtractData) {
-                            try {
-                                missingImages = false;
-                                // Scenes are stored per drama, not per episode
-                                const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
-                                if (sceneRes && sceneRes.items) {
-                                    for (const sc of sceneRes.items) {
-                                        if (!sc.image_url) {
-                                            missingImages = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (!missingImages) {
-                                    const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
-                                    if (charRes && charRes.items) {
-                                        for (const ch of charRes.items) {
-                                            if (!ch.image_url) {
-                                                missingImages = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch(e) {
-                                console.warn('[AutoPilot] Could not check missing images, will run extract:', e);
-                                missingImages = true;
-                            }
+                        const extractDone = !!epMeta.extract_completed;
+                        
+                        if (!extractDone || isRetry) {
+                            // Need to run extraction (text analysis)
+                            toast(`Running full Extract for ${currentEpisode.title}...`, "info");
+                            await doExtract();
+                            // doExtract() now sets extract_completed=true on success
+                            // Re-read epMeta after doExtract
+                            try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                        } else {
+                            toast(`⏭️ Extract already completed for ${currentEpisode.title}`, "info");
                         }
                         
-                        if (hasExtractData && !missingImages && !isRetry) {
-                            toast(`Skipping Extract for ${currentEpisode.title} (already completed & all images ready)`, "info");
+                        // Now check for missing reference images (regardless of whether we just extracted or skipped)
+                        let allScenes = [];
+                        let allChars = [];
+                        try {
+                            const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                            allScenes = (sceneRes && sceneRes.items) ? sceneRes.items : [];
+                            const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
+                            allChars = (charRes && charRes.items) ? charRes.items : [];
+                        } catch(e) {
+                            console.warn('[AutoPilot] Could not fetch chars/scenes:', e);
+                        }
+                        
+                        let missingScenes = allScenes.filter(sc => !sc.image_url);
+                        let missingChars = allChars.filter(ch => !ch.image_url);
+                        const totalMissing = missingScenes.length + missingChars.length;
+                        
+                        if (totalMissing === 0) {
+                            toast(`✅ All ${allChars.length} chars + ${allScenes.length} scenes have images`, "info");
                         } else {
-                            const reason = !hasExtractData ? 'not extracted yet' : missingImages ? 'missing images' : 'retry';
-                            toast(`Running Extract for ${currentEpisode.title} (${reason})...`, "info");
-                            await doExtract();
+                            toast(`🎨 Generating ${totalMissing} missing images (${missingChars.length} chars, ${missingScenes.length} scenes)...`, "info");
+                            
+                            // Resolve browser profile + engine
+                            let imgProfile = '';
+                            let imgEngine = 'grok';
+                            try {
+                                const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
+                                imgProfile = dramaMeta.browser_profile_name || '';
+                                imgEngine = dramaMeta.video_engine || 'grok';
+                            } catch(e) {}
+                            if (!imgProfile) imgProfile = localStorage.getItem('cs_last_browser_profile') || '';
+                            
+                            if (!imgProfile) {
+                                toast(`⚠️ No browser profile — cannot generate images. Select a profile first.`, "warning");
+                            } else {
+                                // Generate missing character images sequentially
+                                for (let ci = 0; ci < missingChars.length; ci++) {
+                                    if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                                    const ch = missingChars[ci];
+                                    toast(`🎨 [${ci+1}/${totalMissing}] Generating char image: ${(ch.name || '').substring(0, 25)}...`, "info");
+                                    try {
+                                        const genRes = await apiFetch(`/characters/${ch.id}/generate-ref`, {
+                                            method: 'POST',
+                                            body: JSON.stringify({ profile_name: imgProfile, engine: imgEngine })
+                                        });
+                                        if (genRes.task_id) {
+                                            for (let poll = 0; poll < 60; poll++) {
+                                                await new Promise(r => setTimeout(r, 3000));
+                                                if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                                                try {
+                                                    const st = await apiFetch(`/generate-status/${genRes.task_id}`);
+                                                    if (st.status === 'done') {
+                                                        toast(`✅ Char image done: ${(ch.name || '').substring(0, 25)}`, "success");
+                                                        try { loadExtractData(); } catch(e) {}
+                                                        break;
+                                                    } else if (st.status === 'error') {
+                                                        toast(`⚠️ Char image error: ${st.message || 'unknown'}`, "warning");
+                                                        break;
+                                                    }
+                                                } catch(e) { break; }
+                                            }
+                                        }
+                                    } catch(e) {
+                                        toast(`⚠️ Failed to generate char image: ${e.message}`, "warning");
+                                    }
+                                }
+                                
+                                // Generate missing scene images sequentially
+                                for (let si = 0; si < missingScenes.length; si++) {
+                                    if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                                    const sc = missingScenes[si];
+                                    toast(`🎨 [${missingChars.length + si + 1}/${totalMissing}] Generating scene image: ${(sc.location || '').substring(0, 25)}...`, "info");
+                                    try {
+                                        const genRes = await apiFetch(`/scenes/${sc.id}/generate-ref`, {
+                                            method: 'POST',
+                                            body: JSON.stringify({ profile_name: imgProfile, engine: imgEngine })
+                                        });
+                                        if (genRes.task_id) {
+                                            for (let poll = 0; poll < 60; poll++) {
+                                                await new Promise(r => setTimeout(r, 3000));
+                                                if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                                                try {
+                                                    const st = await apiFetch(`/generate-status/${genRes.task_id}`);
+                                                    if (st.status === 'done') {
+                                                        toast(`✅ Scene image done: ${(sc.location || '').substring(0, 25)}`, "success");
+                                                        try { loadExtractData(); } catch(e) {}
+                                                        break;
+                                                    } else if (st.status === 'error') {
+                                                        toast(`⚠️ Scene image error: ${st.message || 'unknown'}`, "warning");
+                                                        break;
+                                                    }
+                                                } catch(e) { break; }
+                                            }
+                                        }
+                                    } catch(e) {
+                                        toast(`⚠️ Failed to generate scene image: ${e.message}`, "warning");
+                                    }
+                                }
+                                
+                                toast(`✅ Image generation complete for ${currentEpisode.title}`, "success");
+                            }
                         }
                     }
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
@@ -3012,13 +3109,18 @@ async function startRealtimeAutoPilot() {
                     await new Promise(r => setTimeout(r, 2000));
                     setStep('storyboard');
                     
+                    // Re-read episode metadata
+                    try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                    
                     let existingShots = [];
                     try {
                         const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
                         existingShots = sbRes.items || [];
                     } catch(e) {}
                     
-                    if ((existingShots.length > 0 || epMeta.storyboard_completed) && !isRetry) {
+                    const sbDone = !!epMeta.storyboard_completed;
+                    
+                    if ((existingShots.length > 0 || sbDone) && !isRetry) {
                         toast(`Skipping Storyboard for ${currentEpisode.title} (${existingShots.length} shots exist)`, "info");
                         if (existingShots.length > 0) renderStoryboard(existingShots);
                     } else if (existingShots.length > 0 && isRetry) {
@@ -3027,6 +3129,21 @@ async function startRealtimeAutoPilot() {
                     } else {
                         await doBreakdown(false);
                     }
+                    
+                    // Mark storyboard as completed in episode metadata
+                    try {
+                        let freshMeta = {};
+                        try { freshMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                        if (!freshMeta.storyboard_completed) {
+                            freshMeta.storyboard_completed = true;
+                            await apiFetch(`/episodes/${currentEpisode.id}`, {
+                                method: 'PUT',
+                                body: JSON.stringify({ metadata: JSON.stringify(freshMeta) })
+                            });
+                            currentEpisode.metadata = JSON.stringify(freshMeta);
+                            epMeta = freshMeta;
+                        }
+                    } catch(e) { console.warn('[AutoPilot] Could not save storyboard_completed flag', e); }
                     
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     }
@@ -4002,6 +4119,15 @@ async function loadEpisodeImages() {
         const shots = sbRes.items || [];
         const withImages = shots.filter(s => s.composed_image);
 
+        let arCss = '16/9';
+        if (currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const ar = meta.aspect_ratio || '16:9';
+                if (ar.includes(':')) arCss = ar.replace(':', '/');
+            } catch(e) {}
+        }
+
         const grid = document.getElementById('imageGrid');
         const empty = document.getElementById('imagesEmpty');
         const count = document.getElementById('imgCount');
@@ -4025,10 +4151,10 @@ async function loadEpisodeImages() {
             return `
                 <div style="border-radius:8px; overflow:hidden; background:var(--bg-1); border:1px solid var(--border); position:relative;">
                     <img src="${imgSrc}" alt="Shot ${s.storyboard_number}"
-                        style="width:100%; aspect-ratio:16/9; object-fit:cover; display:block;"
+                        style="width:100%; aspect-ratio:${arCss}; object-fit:cover; display:block;"
                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                     />
-                    <div style="display:none; width:100%; aspect-ratio:16/9; align-items:center; justify-content:center; color:var(--text-3); font-size:11px;">No image</div>
+                    <div style="display:none; width:100%; aspect-ratio:${arCss}; align-items:center; justify-content:center; color:var(--text-3); font-size:11px;">No image</div>
                     <div style="padding:6px 8px; font-size:11px; color:var(--text-2);">
                         <strong>Shot #${s.storyboard_number}</strong>${s.title ? ' — ' + esc(s.title) : ''}
                     </div>
@@ -4111,7 +4237,32 @@ async function openGenVideosDialog() {
         const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
         const shots = sbRes.items || [];
         const pending = shots.filter(s => s.image_prompt && !s.video_url);
-        document.getElementById('genVidShotCount').textContent = `${pending.length} shots pending (${shots.length} total)`;
+        // Count characters
+        let totalChars = 0, shotsWithChars = 0;
+        shots.filter(s => s.image_prompt).forEach(s => {
+            let charNames = s.character_names;
+            if (typeof charNames === 'string') try { charNames = JSON.parse(charNames); } catch(e) { charNames = []; }
+            if (Array.isArray(charNames) && charNames.length > 0) { shotsWithChars++; totalChars += charNames.length; }
+        });
+        const totalVideoShots = shots.filter(s => s.image_prompt).length;
+        
+        // Get aspect ratio and gallery info
+        let ar = '16:9';
+        let hasGallery = false;
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            ar = meta.aspect_ratio || '16:9';
+            hasGallery = !!meta.gallery_category_id;
+        } catch(e) {}
+        
+        const parts = [];
+        if (shotsWithChars > 0) parts.push(`${shotsWithChars}/${totalVideoShots} shots có chars`);
+        if (hasGallery) parts.push('Gallery ✓');
+        const refStr = parts.length > 0 ? parts.join(' · ') : 'No refs';
+        
+        document.getElementById('genVidShotCount').innerHTML = `<strong>${pending.length} shots</strong> pending (${totalVideoShots} total) · 
+            <span style="color:rgb(129,140,248);">${ar}</span> · 
+            <span style="color:${(shotsWithChars > 0 || hasGallery) ? 'rgb(52,211,153)' : 'rgb(251,191,36)'};">🖼 ${refStr}</span>`;
     } catch(e) {
         document.getElementById('genVidShotCount').textContent = '?? shots';
     }
@@ -4236,6 +4387,30 @@ function onVideoEngineChange() {
             : '\ud83c\udf10 Browser Profiles (Grok Gen)';
     }
     localStorage.setItem('cs_video_engine', engine);
+}
+
+function onVideoLengthChange() {
+    const sel = document.getElementById('wizVideoLength');
+    const hint = document.getElementById('wizVideoLengthHint');
+    const arSel = document.getElementById('wizAspectRatio');
+    const epSel = document.getElementById('wizEpisodes');
+    if (!sel) return;
+    const v = sel.value;
+    if (v === 'short_60s') {
+        if (arSel) arSel.value = '9:16';
+        if (epSel) epSel.value = '1';
+        if (hint) hint.textContent = '⚡ Auto: 9:16, 1 tập, < 60s, hook cực mạnh 3 giây đầu';
+    } else if (v === 'short_3m') {
+        if (arSel) arSel.value = '9:16';
+        if (epSel) epSel.value = '1';
+        if (hint) hint.textContent = '📱 Auto: 9:16, 1 tập, < 3 phút, nội dung súc tích có chiều sâu';
+    } else if (v === 'long_10m') {
+        if (arSel) arSel.value = '16:9';
+        if (epSel) epSel.value = '0';
+        if (hint) hint.textContent = '📺 Auto: 16:9, auto tập, > 10 phút, nội dung chuyên sâu chi tiết';
+    } else {
+        if (hint) hint.textContent = '';
+    }
 }
 
 function onGenVidEngineChange() {
@@ -4486,6 +4661,15 @@ async function loadEpisodeVideos(progressMap = null) {
         // Target shots are ones with an image_prompt
         const videoShots = shots.filter(s => s.image_prompt);
         
+        let arCss = '16/9';
+        if (currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const ar = meta.aspect_ratio || '16:9';
+                if (ar.includes(':')) arCss = ar.replace(':', '/');
+            } catch(e) {}
+        }
+        
         const grid = document.getElementById('videoGrid');
         const empty = document.getElementById('videosEmpty');
         const count = document.getElementById('vidCount');
@@ -4521,10 +4705,10 @@ async function loadEpisodeVideos(progressMap = null) {
                         card.innerHTML = `
                             <div style="border-radius:8px; overflow:hidden; background:var(--bg-1); border:1px solid var(--border); position:relative;">
                                 <video src="${vidSrc}" controls loop muted preload="metadata"
-                                    style="width:100%; aspect-ratio:16/9; object-fit:cover; display:block;"
+                                    style="width:100%; aspect-ratio:${arCss}; object-fit:cover; display:block;"
                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                                 ></video>
-                                <div style="display:none; width:100%; aspect-ratio:16/9; align-items:center; justify-content:center; color:var(--text-3); font-size:11px;">No video</div>
+                                <div style="display:none; width:100%; aspect-ratio:${arCss}; align-items:center; justify-content:center; color:var(--text-3); font-size:11px;">No video</div>
                                 <div style="padding:6px 8px; font-size:11px; color:var(--text-2); display:flex; justify-content:space-between; align-items:center; gap:8px;">
                                     <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><strong>Shot #${s.storyboard_number}</strong>${s.title ? ' — ' + esc(s.title) : ''}</div>
                                     <button class="btn btn-sm btn-danger" onclick="clearSingleVideo(${s.id})" title="Clear this video" style="padding:2px 6px; min-height:0; flex-shrink:0;">
@@ -4556,7 +4740,7 @@ async function loadEpisodeVideos(progressMap = null) {
                     card.dataset.src = '';
                     card.innerHTML = `
                         <div style="border-radius:8px; overflow:hidden; background:var(--bg-1); border:1px dashed var(--border); position:relative; display:flex; flex-direction:column;">
-                            <div style="width:100%; aspect-ratio:16/9; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--bg-2);">
+                            <div style="width:100%; aspect-ratio:${arCss}; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--bg-2);">
                                 ${indicatorHTML}
                             </div>
                             <div style="padding:6px 8px; font-size:11px; color:var(--text-2); border-top:1px solid var(--border);">
@@ -4576,7 +4760,161 @@ async function loadEpisodeVideos(progressMap = null) {
         }
 
         count.textContent = `${completedVideosCount} / ${videoShots.length} videos`;
+
+        // Update aspect ratio badge
+        const arBadge = document.getElementById('vidAspectBadge');
+        if (arBadge && currentDrama) {
+            try {
+                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const ar = meta.aspect_ratio || '16:9';
+                arBadge.textContent = ar;
+                arBadge.style.display = videoShots.length > 0 ? '' : 'none';
+            } catch(e) { arBadge.style.display = 'none'; }
+        }
+
+        // Update ref images badge — compute from character_names (ref_images are computed at gen-time)
+        const refBadge = document.getElementById('vidRefBadge');
+        if (refBadge) {
+            let shotsWithChars = 0;
+            let totalChars = 0;
+            videoShots.forEach(s => {
+                let charNames = s.character_names;
+                if (typeof charNames === 'string') try { charNames = JSON.parse(charNames); } catch(e) { charNames = []; }
+                if (Array.isArray(charNames) && charNames.length > 0) {
+                    shotsWithChars++;
+                    totalChars += charNames.length;
+                }
+            });
+            // Also check if gallery is configured
+            let hasGallery = false;
+            if (currentDrama) {
+                try {
+                    const meta = JSON.parse(currentDrama.metadata || '{}');
+                    hasGallery = !!meta.gallery_category_id;
+                } catch(e) {}
+            }
+            
+            if (shotsWithChars > 0 || hasGallery) {
+                const parts = [];
+                if (shotsWithChars > 0) parts.push(`${shotsWithChars} shots có chars`);
+                if (hasGallery) parts.push('Gallery ✓');
+                refBadge.textContent = `🖼 ${parts.join(' · ')}`;
+                refBadge.style.display = '';
+                refBadge.style.background = 'rgba(245,158,11,0.12)';
+                refBadge.style.color = 'rgb(251,191,36)';
+                refBadge.style.borderColor = 'rgba(245,158,11,0.25)';
+            } else {
+                refBadge.textContent = '🖼 No refs';
+                refBadge.style.display = videoShots.length > 0 ? '' : 'none';
+                refBadge.style.background = 'rgba(239,68,68,0.1)';
+                refBadge.style.color = 'rgb(252,165,165)';
+                refBadge.style.borderColor = 'rgba(239,68,68,0.2)';
+            }
+            // Store for detail dialog
+            window._videoShotsRefData = videoShots.map(s => {
+                let charNames = s.character_names;
+                if (typeof charNames === 'string') try { charNames = JSON.parse(charNames); } catch(e) { charNames = []; }
+                return { id: s.id, num: s.storyboard_number, title: s.title || '', chars: Array.isArray(charNames) ? charNames : [] };
+            });
+        }
     } catch(e) { console.error('loadEpisodeVideos error', e); }
+}
+
+// ── Show Ref Images Detail Dialog ──
+function showRefImagesDetail() {
+    const data = window._videoShotsRefData || [];
+    if (data.length === 0) { toast('Chưa có shot data', 'warning'); return; }
+
+    // Create or reuse modal
+    let modal = document.getElementById('refImagesDetailModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'refImagesDetailModal';
+        modal.className = 'modal-overlay';
+        modal.style.cssText = 'display:none; z-index:10001; align-items:center; justify-content:center; padding:20px;';
+        modal.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+        document.body.appendChild(modal);
+    }
+
+    let hasGallery = false;
+    if (currentDrama) {
+        try {
+            const meta = JSON.parse(currentDrama.metadata || '{}');
+            hasGallery = !!meta.gallery_category_id;
+        } catch(e) {}
+    }
+
+    const shotsWithChars = data.filter(s => s.chars.length > 0);
+    const shotsNoChars = data.filter(s => s.chars.length === 0);
+    const totalChars = data.reduce((sum, s) => sum + s.chars.length, 0);
+
+    let content = `
+        <div class="modal" style="width:600px; max-height:80vh; display:flex; flex-direction:column;">
+            <div class="modal-header">
+                <h2 class="modal-title">🖼 Tham Chiếu Nhân Vật (Reference Data)</h2>
+            </div>
+            <div style="padding:16px 20px; overflow-y:auto; flex:1;">
+                <div style="margin-bottom:16px; padding:10px; border-radius:6px; background:var(--bg-2); border:1px solid var(--border); display:flex; gap:10px; align-items:center;">
+                    <div style="padding:4px 8px; border-radius:4px; font-size:11px; font-weight:600; 
+                        background:${hasGallery ? 'rgba(52,211,153,0.12)' : 'rgba(239,68,68,0.1)'}; 
+                        color:${hasGallery ? 'rgb(52,211,153)' : 'rgb(252,165,165)'}; border:1px solid ${hasGallery ? 'rgba(52,211,153,0.3)' : 'rgba(239,68,68,0.3)'};">
+                        ${hasGallery ? '✅ Đã cài đặt Gallery' : '❌ Chưa có Gallery Fallback'}
+                    </div>
+                    <div style="font-size:11px; color:var(--text-2);">Nếu shot không có nhân vật, ảnh từ Gallery sẽ được dùng làm backup (nếu có).</div>
+                </div>
+                <div style="display:flex; gap:12px; margin-bottom:16px;">
+                    <div style="flex:1; padding:12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); text-align:center;">
+                        <div style="font-size:24px; font-weight:700; color:var(--primary);">${totalChars}</div>
+                        <div style="font-size:11px; color:var(--text-3);">Tổng số nhân vật</div>
+                    </div>
+                    <div style="flex:1; padding:12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); text-align:center;">
+                        <div style="font-size:24px; font-weight:700; color:rgb(52,211,153);">${shotsWithChars.length}</div>
+                        <div style="font-size:11px; color:var(--text-3);">Shots có nhân vật</div>
+                    </div>
+                    <div style="flex:1; padding:12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border); text-align:center;">
+                        <div style="font-size:24px; font-weight:700; color:${shotsNoChars.length > 0 ? 'rgb(251,191,36)' : 'var(--text-3)'};">${shotsNoChars.length}</div>
+                        <div style="font-size:11px; color:var(--text-3);">Shots trống nhân vật</div>
+                    </div>
+                </div>`;
+
+    if (shotsNoChars.length > 0) {
+        content += `<div style="margin-bottom:12px; padding:10px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:6px; font-size:11px; color:rgb(251,191,36);">
+            ⚠️ ${shotsNoChars.length} shots không có nhân vật: ${shotsNoChars.map(s => `#${s.num}`).join(', ')}
+        </div>`;
+    }
+
+    content += `<div style="display:flex; flex-direction:column; gap:8px;">`;
+    data.forEach(s => {
+        const hasChars = s.chars.length > 0;
+        let charListHtml = '';
+        if (hasChars) {
+            charListHtml = `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">` + 
+                s.chars.map(c => `<span style="padding:2px 6px; background:var(--bg-2); border:1px solid var(--border); border-radius:4px; font-size:10px; color:var(--text-2);">${esc(c)}</span>`).join('') + 
+                `</div>`;
+        }
+
+        content += `
+            <div style="display:flex; flex-direction:column; padding:8px 12px; background:var(--bg-1); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-weight:600; min-width:60px; color:var(--text-1);">Shot #${s.num}</span>
+                    <span style="flex:1; color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(s.title)}</span>
+                    <span style="padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; 
+                        background:${hasChars ? 'rgba(52,211,153,0.12)' : (hasGallery ? 'rgba(129,140,248,0.15)' : 'rgba(239,68,68,0.1)')}; 
+                        color:${hasChars ? 'rgb(52,211,153)' : (hasGallery ? 'rgb(129,140,248)' : 'rgb(252,165,165)')};">
+                        ${hasChars ? `👤 ${s.chars.length} nhân vật` : (hasGallery ? '🖼 Dùng Gallery' : '❌ Không có ref')}
+                    </span>
+                </div>
+                ${charListHtml}
+            </div>`;
+    });
+    content += `</div></div>
+            <div class="modal-actions" style="padding:12px 20px; border-top:1px solid var(--border);">
+                <button class="btn" onclick="document.getElementById('refImagesDetailModal').style.display='none'">Close</button>
+            </div>
+        </div>`;
+
+    modal.innerHTML = content;
+    modal.style.display = 'flex';
 }
 
 // ── Copy All Narration Text ─────────────────────────────────
@@ -4594,7 +4932,7 @@ async function copyAllAudioText() {
         
         if (!lines.length) { toast('Không có narration text', 'warning'); return; }
         
-        const allText = lines.join('\n\n');
+        const allText = lines.join(' ');
         await navigator.clipboard.writeText(allText);
         toast(`📋 Đã copy ${lines.length} đoạn narration (${allText.length} chars)`, 'success');
     } catch (e) {
@@ -4700,7 +5038,13 @@ async function loadEpisodeAudio() {
         const cardClass = hasAudio ? 'audio-shot-card has-audio' : 'audio-shot-card';
         const charCount = narration.length;
         
-        const isLong = charCount > 80;
+        // Whisper content check: flag if narration is suspiciously short or empty
+        let whisperWarning = '';
+        if (hasAudio && charCount < 10) {
+            whisperWarning = '<span style="color:#ef4444;font-size:10px;font-weight:600;" title="Nội dung quá ngắn hoặc thiếu — kiểm tra lại Whisper">⚠️ Thiếu nội dung</span>';
+        } else if (hasAudio && charCount < 30) {
+            whisperWarning = '<span style="color:#f59e0b;font-size:10px;font-weight:600;" title="Nội dung ngắn — có thể Whisper tách thiếu">⚠️ Nội dung ngắn</span>';
+        }
         
         return `
             <div class="${cardClass}" id="audioCard_${shot.id}">
@@ -4710,9 +5054,11 @@ async function loadEpisodeAudio() {
                         ${esc(shot.title || 'Shot ' + (idx + 1))}
                         ${hasAudio ? '<span style="color:#22c55e;font-size:11px;">\u2705</span>' : '<span style="color:var(--text-3);font-size:11px;">\u23f3</span>'}
                         <span style="font-size:10px;color:var(--text-3);font-weight:400">${charCount} chars</span>
-                        ${isLong ? '<button onclick="toggleAudioText(this)" style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg-3);border:1px solid var(--border);color:var(--text-2);cursor:pointer;margin-left:auto;">\u25bc Xem</button>' : ''}
+                        ${hasAudio ? `<span class="audio-duration-badge" id="durBadge_${shot.id}" style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--bg-3);color:var(--text-3);">0:00</span>` : ''}
+                        ${whisperWarning}
+                        <button onclick="toggleAudioText(this)" style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg-3);border:1px solid var(--border);color:var(--text-2);cursor:pointer;margin-left:auto;">▼ Xem</button>
                     </div>
-                    <div class="audio-shot-text" id="audioText_${shot.id}">${esc(narration) || '<i style="color:var(--text-3)">No narration text</i>'}</div>
+                    <div class="audio-shot-text" id="audioText_${shot.id}" onclick="toggleAudioTextByClick(this)">${esc(narration) || '<i style="color:var(--text-3)">No narration text</i>'}</div>
                     <div id="audioEdit_${shot.id}" style="display:none;margin-top:8px;">
                         <textarea id="audioEditTA_${shot.id}" class="input" style="width:100%;min-height:80px;font-size:12px;line-height:1.6;resize:vertical;">${esc(narration)}</textarea>
                         <div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">
@@ -4728,7 +5074,7 @@ async function loadEpisodeAudio() {
                             <div class="mp-progress" id="mpProg_${shot.id}"></div>
                         </div>
                         <span class="mp-time" id="mpTime_${shot.id}">0:00</span>
-                        <audio id="mpAudio_${shot.id}" preload="none" src="${shot.tts_audio_url}" 
+                        <audio id="mpAudio_${shot.id}" preload="metadata" src="${shot.tts_audio_url}" 
                             ontimeupdate="updateMiniPlayer(${shot.id})" 
                             onended="endMiniPlayer(${shot.id})"
                             onloadedmetadata="initMiniPlayer(${shot.id})"></audio>
@@ -4736,6 +5082,7 @@ async function loadEpisodeAudio() {
                 </div>
                 <div class="audio-shot-actions">
                     <button class="btn btn-sm btn-ghost" onclick="toggleEditNarration(${shot.id})" title="Edit text" style="font-size:13px;">\u270f\ufe0f</button>
+                    ${hasAudio ? `<button class="btn btn-sm btn-ghost" style="color:var(--red);" onclick="deleteShotAudio(${shot.id})" title="Xóa audio"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>` : ''}
                     <button class="btn btn-sm ${hasAudio ? 'btn-ghost' : 'btn-primary'}" onclick="generateShotAudio(${shot.id}, ${idx})" id="btnGenShot_${shot.id}" title="${hasAudio ? 'Regenerate' : 'Generate TTS'}">
                         ${hasAudio ? '\ud83d\udd04' : '\ud83c\udf99'}
                     </button>
@@ -4748,6 +5095,11 @@ async function loadEpisodeAudio() {
         if (player) player.style.display = 'flex';
         document.getElementById('audioStepPlayer').src = currentEpisode.audio_url;
         document.getElementById('audioStepDownload').href = currentEpisode.audio_url;
+    }
+    
+    // Add total duration summary after all audio metadata loads
+    if (withAudio > 0) {
+        setTimeout(() => _updateAudioDurationSummary(shots), 2000);
     }
 }
 
@@ -4771,6 +5123,130 @@ function _cleanNarration(text) {
 }
 
 
+// ── Audio Duration Summary ──
+function _updateAudioDurationSummary(shots) {
+    const statusEl = document.getElementById('audioStatus');
+    if (!statusEl) return;
+    
+    let totalSplitDuration = 0;
+    let zeroCount = 0;
+    let shortCount = 0;
+    let zeroWithTextShots = [];
+    const withAudio = shots.filter(s => s.tts_audio_url && s.tts_audio_url.trim());
+    
+    for (const shot of withAudio) {
+        const audioEl = document.getElementById(`mpAudio_${shot.id}`);
+        const dur = (audioEl && audioEl.duration && !isNaN(audioEl.duration)) ? audioEl.duration : 0;
+        totalSplitDuration += dur;
+        
+        if (dur < 0.5) {
+            zeroCount++;
+            // Check if this shot has narration text but 0s audio
+            const narration = (shot.narration_text || shot.dialogue || shot.description || '').trim();
+            if (narration.length > 10) {
+                zeroWithTextShots.push(shot.storyboard_number || shot.id);
+            }
+        } else if (dur < 5) {
+            shortCount++;
+        }
+    }
+    
+    const totalFmt = _fmtTime(totalSplitDuration);
+    
+    // Try to get original audio duration
+    const _showSummary = (originalDuration) => {
+        let summaryParts = [`${withAudio.length}/${shots.length} audio ready`, `Tổng cắt: ${totalFmt}`];
+        
+        if (originalDuration > 0) {
+            const origFmt = _fmtTime(originalDuration);
+            const diff = Math.abs(totalSplitDuration - originalDuration);
+            const diffPct = originalDuration > 0 ? (diff / originalDuration * 100).toFixed(1) : 0;
+            
+            summaryParts.push(`Gốc: ${origFmt}`);
+            if (diff < 2) {
+                summaryParts.push(`<span style="color:#22c55e;">✅ Khớp</span>`);
+            } else {
+                summaryParts.push(`<span style="color:#f59e0b;">⚠️ Lệch ${_fmtTime(diff)} (${diffPct}%)</span>`);
+            }
+        }
+        
+        if (zeroCount > 0) {
+            let zeroMsg = `<span style="color:#ef4444;">🔴 ${zeroCount} lỗi 0s</span>`;
+            if (zeroWithTextShots.length > 0) {
+                zeroMsg += ` <span style="color:#ef4444;font-size:10px;">(Shot ${zeroWithTextShots.slice(0, 5).join(', ')}${zeroWithTextShots.length > 5 ? '...' : ''})</span>`;
+            }
+            summaryParts.push(zeroMsg);
+        }
+        if (shortCount > 0) summaryParts.push(`<span style="color:#f59e0b;">🟠 ${shortCount} ngắn &lt;5s</span>`);
+        
+        // Add Fix button if there are 0-duration or mismatch issues
+        if (zeroCount > 0 || (originalDuration > 0 && Math.abs(totalSplitDuration - originalDuration) >= 2)) {
+            summaryParts.push(`<button onclick="resplitAudio()" style="font-size:10px;padding:2px 8px;border-radius:4px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;color:#fff;cursor:pointer;font-weight:600;" id="btnResplit">🔧 Fix Audio</button>`);
+        }
+        
+        statusEl.innerHTML = summaryParts.map((p, i) => {
+            if (i === 0) return p;
+            return `<span style="margin-left:8px;padding-left:8px;border-left:1px solid var(--border);">${p}</span>`;
+        }).join('');
+    };
+    
+    // Load original episode audio to get its duration
+    if (currentEpisode && currentEpisode.audio_url) {
+        const probeAudio = new Audio();
+        probeAudio.preload = 'metadata';
+        probeAudio.onloadedmetadata = () => {
+            _showSummary(probeAudio.duration || 0);
+            probeAudio.src = ''; // cleanup
+        };
+        probeAudio.onerror = () => {
+            _showSummary(0);
+        };
+        // Timeout fallback
+        setTimeout(() => {
+            if (!probeAudio.duration) _showSummary(0);
+        }, 5000);
+        probeAudio.src = currentEpisode.audio_url;
+    } else {
+        _showSummary(0);
+    }
+}
+
+// ── Resplit Audio Fix ──
+async function resplitAudio() {
+    if (!currentEpisode) { toast('No episode selected', 'error'); return; }
+    
+    const btn = document.getElementById('btnResplit');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Đang xử lý...';
+    }
+    
+    try {
+        toast('🔧 Đang re-split audio với thuật toán mới...', 'info');
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/resplit-audio`, {
+            method: 'POST'
+        });
+        
+        if (res.success) {
+            const okCount = res.results.filter(r => r.status === 'ok').length;
+            const errCount = res.results.filter(r => r.status === 'error').length;
+            toast(`✅ Re-split xong: ${okCount} thành công${errCount > 0 ? `, ${errCount} lỗi` : ''}`, 'success');
+            
+            // Reload audio panel
+            await loadEpisodeAudio();
+        } else {
+            toast(`❌ Re-split thất bại: ${res.message || 'unknown'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Lỗi: ${e.message}`, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🔧 Fix Audio';
+        }
+    }
+}
+
 // ── Audio Card Expand/Edit Functions ──
 
 function toggleAudioText(btn) {
@@ -4781,6 +5257,17 @@ function toggleAudioText(btn) {
     if (!textEl) return;
     textEl.classList.toggle('expanded');
     btn.textContent = textEl.classList.contains('expanded') ? '\u25b2 Thu' : '\u25bc Xem';
+}
+
+function toggleAudioTextByClick(textEl) {
+    if (!textEl) return;
+    textEl.classList.toggle('expanded');
+    // Also update the button text if it exists
+    const body = textEl.closest('.audio-shot-body');
+    if (body) {
+        const btn = body.querySelector('.audio-shot-title button');
+        if (btn) btn.textContent = textEl.classList.contains('expanded') ? '\u25b2 Thu' : '\u25bc Xem';
+    }
 }
 
 function toggleEditNarration(shotId) {
@@ -4884,8 +5371,29 @@ function updateMiniPlayer(shotId) {
 function initMiniPlayer(shotId) {
     const audio = document.getElementById(`mpAudio_${shotId}`);
     const timeEl = document.getElementById(`mpTime_${shotId}`);
+    const badge = document.getElementById(`durBadge_${shotId}`);
+    
     if (audio && timeEl) {
-        timeEl.textContent = `0:00/${_fmtTime(audio.duration || 0)}`;
+        const dur = audio.duration || 0;
+        timeEl.textContent = `0:00/${_fmtTime(dur)}`;
+        
+        // Update duration badge with color coding
+        if (badge) {
+            badge.textContent = _fmtTime(dur);
+            if (dur === 0 || isNaN(dur)) {
+                badge.style.background = 'rgba(239,68,68,0.2)';
+                badge.style.color = '#ef4444';
+                badge.title = 'Thời lượng 0s — audio có thể bị lỗi';
+            } else if (dur < 5) {
+                badge.style.background = 'rgba(245,158,11,0.2)';
+                badge.style.color = '#f59e0b';
+                badge.title = `Thời lượng ngắn (${dur.toFixed(1)}s) — kiểm tra lại`;
+            } else {
+                badge.style.background = 'rgba(34,197,94,0.2)';
+                badge.style.color = '#22c55e';
+                badge.title = `${dur.toFixed(1)}s`;
+            }
+        }
     }
 }
 
@@ -4943,6 +5451,29 @@ async function generateShotAudio(shotId, idx) {
 async function generateAllShotAudio() {
     if (!currentEpisode) return;
     
+    // Load voices if not loaded
+    if (document.getElementById('batchAudioVoice').options.length <= 1) {
+        populateVoicesDropdown('batchAudioVoice');
+    }
+    document.getElementById('batchAudioGenModal').style.display = 'flex';
+}
+
+async function confirmBatchAudioGen() {
+    if (!currentEpisode) return;
+    
+    const select = document.getElementById('batchAudioVoice');
+    const selectedOption = select.options[select.selectedIndex];
+    
+    if (!selectedOption || !selectedOption.value) {
+        toast("Please select a valid voice.", "error");
+        return;
+    }
+    
+    const voiceId = selectedOption.value;
+    const engine = selectedOption.getAttribute('data-engine') || 'edge';
+    
+    document.getElementById('batchAudioGenModal').style.display = 'none';
+
     const btn = document.getElementById('btnGenAllAudio');
     const statusEl = document.getElementById('audioStatus');
     if (btn) btn.disabled = true;
@@ -4978,7 +5509,13 @@ async function generateAllShotAudio() {
     
     try {
         // Fire background batch TTS
-        const res = await apiFetch(`/episodes/${currentEpisode.id}/batch-tts`, { method: 'POST' });
+        const res = await apiFetch(`/episodes/${currentEpisode.id}/batch-tts`, { 
+            method: 'POST',
+            body: JSON.stringify({
+                voice_id: voiceId,
+                engine: engine
+            })
+        });
         if (!res.success || !res.task_id) throw new Error('Failed to start batch TTS');
         
         const taskId = res.task_id;
@@ -5059,6 +5596,30 @@ async function generateAllShotAudio() {
         if (statusEl) statusEl.textContent = '❌ TTS failed';
         const pc = document.getElementById('ttsProgressContainer');
         if (pc) pc.style.display = 'none';
+    }
+}
+
+async function deleteShotAudio(shotId) {
+    if (!confirm("Bạn có chắc muốn xoá audio của shot này không?")) return;
+    
+    const btn = document.getElementById(`btnGenShot_${shotId}`);
+    if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+    
+    try {
+        const res = await apiFetch(`/storyboards/${shotId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ tts_audio_url: "" })
+        });
+        if (res.success || res.id) {
+            toast('Đã xoá audio thành công', 'success');
+            await loadEpisodeAudio();
+        } else {
+            toast('Lỗi khi xoá audio', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '🗑️'; }
+        }
+    } catch(e) {
+        toast('Lỗi: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️'; }
     }
 }
 
@@ -6315,6 +6876,7 @@ async function submitBatchQueue() {
         max_episodes: parseInt(document.getElementById('apMaxEpisodes')?.value || presetData?.wizEpisodes) || 1,
         aspect_ratio: presetData?.wizAspectRatio || '16:9',
         narration_source: presetData?.wizNarrationSource || 'prose',
+        video_length: presetData?.wizVideoLength || 'standard',
         seo_mode: seoMode,
         seo_tags: seoTags,
         upload_targets: uploadTargets,

@@ -128,7 +128,7 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
             try {
                 fs.mkdirSync(path.dirname(currentOutput), { recursive: true });
                 await download.saveAs(currentOutput);
-                if (fs.existsSync(currentOutput) && fs.statSync(currentOutput).size > 5000) {
+                if (fs.existsSync(currentOutput) && fs.statSync(currentOutput).size > 50000) {
                     currentSaved = true;
                     log(`Saved via download: ${currentOutput}`);
                 }
@@ -200,38 +200,213 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
         } catch(e) { log('Project creation: ' + e.message); }
 
         // ── Switch to Image mode + Set aspect ratio (ONCE) ──
+        // Uses settings chip approach (same as veo3_video.js) for robustness
         log('Setting Image mode + aspect ratio (once for all jobs)...');
+        
+        // Wait for prompt area to load first
         try {
-            const modeBtn = page.locator('button:has-text("Video"):has(i.google-symbols), button:has-text("Hình ảnh"):has(i.google-symbols)').first();
-            if (await modeBtn.isVisible({ timeout: 5000 })) {
-                await modeBtn.click(); await sleep(1500);
+            const taLocator = page.locator('textarea, div[contenteditable="true"]').last();
+            await taLocator.waitFor({ state: 'visible', timeout: 8000 });
+        } catch(e) { log('Wait for textarea timeout'); }
+        await sleep(1000);
 
-                // Select Image mode
-                const imgOpt = page.locator('text="Hình ảnh"').first();
-                if (await imgOpt.isVisible({ timeout: 3000 })) {
-                    await imgOpt.click(); await sleep(1000);
-                    log('✅ Image mode selected');
-                }
-
-                // Select aspect ratio
-                const arText = page.locator(`text="${aspectRatio}"`).first();
+        // ── Step 1: Find the settings chip button ──
+        // The chip shows current mode info like "🍌 Nano Banana 2 □ 1x" (image mode)
+        // or "Veo 2 crop_9_16 5s" (video mode)
+        let settingsChip = null;
+        
+        // Method A: Find button with aria-haspopup="menu" containing model info
+        try {
+            const chips = page.locator('button[aria-haspopup="menu"]');
+            const count = await chips.count();
+            log(`Found ${count} buttons with aria-haspopup="menu"`);
+            
+            for (let i = count - 1; i >= 0; i--) {
+                const chip = chips.nth(i);
                 try {
-                    if (await arText.isVisible({ timeout: 2000 })) {
-                        await arText.click(); await sleep(500);
-                        log(`✅ Aspect ratio: ${aspectRatio}`);
-                    } else {
-                        const arMap = { '16:9': 'crop_16_9', '9:16': 'crop_9_16', '1:1': 'crop_square' };
-                        const arIcon = arMap[aspectRatio];
-                        if (arIcon) {
-                            const arBtn = page.locator(`i:text("${arIcon}")`).first();
-                            if (await arBtn.isVisible({ timeout: 2000 })) { await arBtn.click(); await sleep(500); }
-                        }
+                    const text = await chip.textContent({ timeout: 1000 });
+                    const lower = (text || '').toLowerCase();
+                    if (lower.includes('banana') || lower.includes('imagen') || 
+                        lower.includes('veo') || lower.includes('1x') || 
+                        lower.includes('5s') || lower.includes('crop_')) {
+                        settingsChip = chip;
+                        log(`Found settings chip (Method A): "${text.trim().substring(0, 60)}"`);
+                        break;
                     }
                 } catch(e) {}
-
-                await page.keyboard.press('Escape'); await sleep(500);
             }
-        } catch(e) { log('Mode/ratio setup: ' + e.message); }
+        } catch(e) {}
+        
+        // Method B: Walk up from textarea to find the chip
+        if (!settingsChip) {
+            try {
+                const found = await page.evaluate(() => {
+                    const ta = document.querySelector('textarea, div[contenteditable="true"]');
+                    if (!ta) return null;
+                    let container = ta.parentElement;
+                    for (let i = 0; i < 5 && container; i++) {
+                        const buttons = Array.from(container.querySelectorAll('button[aria-haspopup="menu"]'));
+                        if (buttons.length > 0) {
+                            return buttons[buttons.length - 1].textContent.trim().substring(0, 80);
+                        }
+                        container = container.parentElement;
+                    }
+                    return null;
+                });
+                if (found) {
+                    settingsChip = page.locator('button[aria-haspopup="menu"]').last();
+                    log(`Found settings chip (Method B): "${found}"`);
+                }
+            } catch(e) {}
+        }
+        
+        if (!settingsChip) {
+            log('⚠️ Could not find settings chip — will try legacy mode switching');
+        } else {
+            // ── Step 2: Check current mode ──
+            let currentText = '';
+            try { currentText = (await settingsChip.textContent({ timeout: 2000 })).toLowerCase(); } catch(e) {}
+            
+            const isCurrentlyImage = currentText.includes('banana') || currentText.includes('imagen') || currentText.includes('1x');
+            const isCurrentlyVideo = currentText.includes('veo') || currentText.includes('5s') || currentText.includes('8s');
+            log(`Current mode: ${isCurrentlyImage ? 'IMAGE' : isCurrentlyVideo ? 'VIDEO' : 'UNKNOWN'} (text: "${currentText.trim().substring(0, 50)}")`);
+            
+            // ── Step 3: Open popup ──
+            await settingsChip.click();
+            await sleep(2000);
+            
+            // ── Step 4: Switch to Image tab ──
+            log('Selecting Image mode...');
+            let imageClicked = false;
+            
+            // Method 1: Radix ID selector (most reliable)
+            try {
+                const imageTab = page.locator('button[role="tab"][id*="trigger-IMAGE"], button[role="tab"][id*="IMAGE"]').first();
+                if (await imageTab.isVisible({ timeout: 2000 })) {
+                    const state = await imageTab.getAttribute('data-state');
+                    log(`Image tab found, state: ${state}`);
+                    if (state !== 'active') {
+                        await imageTab.click();
+                        imageClicked = true;
+                        log('✅ Clicked Image tab via Radix ID');
+                    } else {
+                        imageClicked = true;
+                        log('✅ Image tab already active');
+                    }
+                }
+            } catch(e) { log('Image tab Method 1: ' + e.message); }
+            
+            // Method 2: Find tab with "image" or "photo" icon
+            if (!imageClicked) {
+                try {
+                    const imageTab = page.locator('button[role="tab"]:has(i:text("image")), button[role="tab"]:has(i:text("photo"))').first();
+                    if (await imageTab.isVisible({ timeout: 1500 })) {
+                        await imageTab.click();
+                        imageClicked = true;
+                        log('✅ Clicked Image tab via icon');
+                    }
+                } catch(e) {}
+            }
+            
+            // Method 3: Text-based (Vietnamese + English)
+            if (!imageClicked) {
+                try {
+                    const imageTab = page.locator('button[role="tab"]:has-text("Hình ảnh"), button[role="tab"]:has-text("Image")').first();
+                    if (await imageTab.isVisible({ timeout: 1500 })) {
+                        await imageTab.click();
+                        imageClicked = true;
+                        log('✅ Clicked Image tab via text match');
+                    }
+                } catch(e) {}
+            }
+            
+            log(imageClicked ? '✅ Image mode selected' : '⚠️ Could not select Image mode');
+            await sleep(1500);
+            
+            // ── Step 5: Set Aspect Ratio ──
+            const arMap = { '4:3': '16:9', '3:4': '9:16' };
+            const ar = arMap[aspectRatio] || aspectRatio || '1:1';
+            let arClicked = false;
+            
+            // Method 1: Radix ID for aspect ratio
+            const arId = ar.replace(':', '_'); // "9:16" → "9_16"
+            try {
+                const arTab = page.locator(`button[role="tab"][id*="${arId}"], button[role="tab"][id*="${ar}"]`).first();
+                if (await arTab.isVisible({ timeout: 1500 })) {
+                    const state = await arTab.getAttribute('data-state');
+                    if (state !== 'active') {
+                        await arTab.click();
+                        arClicked = true;
+                        log(`✅ Set AR to ${ar} via Radix ID`);
+                    } else {
+                        arClicked = true;
+                        log(`✅ AR ${ar} already active`);
+                    }
+                }
+            } catch(e) {}
+            
+            // Method 2: Find by crop icon
+            if (!arClicked) {
+                const cropIcon = ar === '9:16' ? 'crop_9_16' : ar === '16:9' ? 'crop_16_9' : ar === '1:1' ? 'crop_square' : `crop_${arId}`;
+                try {
+                    const arTab = page.locator(`button[role="tab"]:has(i:text("${cropIcon}"))`).first();
+                    if (await arTab.isVisible({ timeout: 1500 })) {
+                        await arTab.click();
+                        arClicked = true;
+                        log(`✅ Set AR to ${ar} via crop icon`);
+                    }
+                } catch(e) {}
+            }
+            
+            // Method 3: Text-based
+            if (!arClicked) {
+                try {
+                    const arTab = page.locator(`button[role="tab"]:has-text("${ar}")`).first();
+                    if (await arTab.isVisible({ timeout: 1500 })) {
+                        await arTab.click();
+                        arClicked = true;
+                        log(`✅ Set AR to ${ar} via text`);
+                    }
+                } catch(e) {}
+            }
+            
+            log(arClicked ? `✅ Aspect ratio ${ar} set` : `⚠️ Could not set AR ${ar}`);
+            await sleep(500);
+            
+            // Close the settings popup
+            await page.keyboard.press('Escape'); await sleep(500);
+        }
+        
+        // ── VERIFICATION: Confirm correct mode is active ──
+        try {
+            await sleep(1000);
+            const verifyChips = page.locator('button[aria-haspopup="menu"]');
+            const vCount = await verifyChips.count();
+            for (let vi = vCount - 1; vi >= 0; vi--) {
+                try {
+                    const vText = await verifyChips.nth(vi).textContent({ timeout: 1000 });
+                    const lower = (vText || '').toLowerCase();
+                    if (lower.includes('banana') || lower.includes('imagen') || lower.includes('1x')) {
+                        log(`✅ VERIFIED: Image mode active — "${vText.trim().substring(0, 50)}"`);
+                        break;
+                    }
+                    if (lower.includes('veo') || lower.includes('5s')) {
+                        log(`⚠️ VERIFY FAILED: Still in VIDEO mode! "${vText.trim().substring(0, 50)}". Retrying...`);
+                        // One more attempt
+                        await verifyChips.nth(vi).click(); await sleep(2000);
+                        try {
+                            const imgTab = page.locator('button[role="tab"][id*="IMAGE"], button[role="tab"]:has-text("Hình ảnh"), button[role="tab"]:has-text("Image")').first();
+                            if (await imgTab.isVisible({ timeout: 2000 })) {
+                                await imgTab.click(); await sleep(1000);
+                                log('✅ Retry: Image tab clicked');
+                            }
+                        } catch(e2) {}
+                        await page.keyboard.press('Escape'); await sleep(500);
+                        break;
+                    }
+                } catch(e) {}
+            }
+        } catch(e) { log('Verification: ' + e.message); }
 
         // ── Process each job ──
         for (let ji = 0; ji < jobs.length; ji++) {
@@ -239,6 +414,7 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
             log(`\n--- Job ${ji+1}/${jobs.length}: ${job.id} ---`);
             currentOutput = job.output;
             currentSaved = false;
+            let newTileFirstSeen = 0; // Timestamp when new tile was first detected
 
             try {
                 // Find prompt input
@@ -260,12 +436,19 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                     failCount++; continue;
                 }
 
-                let prevTileId = null;
+                // Count existing tiles BEFORE submitting
+                let prevTileCount = 0;
+                let prevTileIds = [];
                 try {
-                    prevTileId = await page.evaluate(() => {
-                        const t = document.querySelector('[data-tile-id]');
-                        return t ? t.getAttribute('data-tile-id') : null;
+                    const tileInfo = await page.evaluate(() => {
+                        const tiles = document.querySelectorAll('[data-tile-id]');
+                        return {
+                            count: tiles.length,
+                            ids: Array.from(tiles).map(t => t.getAttribute('data-tile-id'))
+                        };
                     });
+                    prevTileCount = tileInfo.count;
+                    prevTileIds = tileInfo.ids;
                 } catch(e) {}
 
                 // Type prompt
@@ -276,66 +459,206 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                 await sleep(500);
 
                 // Submit
+                let submitted = false;
+                // Method 1: arrow_forward submit button (same as veo3_video.js)
                 try {
-                    const submitBtn = page.locator('button[type="submit"], button:has(svg):near(textarea), button[aria-label*="Tạo"], button[aria-label*="Generate"]').last();
-                    if (await submitBtn.isVisible({ timeout: 3000 })) { await submitBtn.click(); }
-                    else { await page.keyboard.press('Enter'); }
-                } catch(e) { await page.keyboard.press('Enter'); }
+                    const submitBtn = page.locator('button:has(i:text("arrow_forward"))').last();
+                    if (await submitBtn.isVisible({ timeout: 2000 })) {
+                        await submitBtn.click();
+                        submitted = true;
+                        log('Submitted via arrow_forward button');
+                    }
+                } catch(e) {}
+                // Method 2: Tạo (Create) button
+                if (!submitted) {
+                    try {
+                        const createBtn = page.locator('button[aria-label*="Tạo"], button[aria-label*="Create"], button[aria-label*="Generate"]').last();
+                        if (await createBtn.isVisible({ timeout: 1500 })) {
+                            await createBtn.click();
+                            submitted = true;
+                            log('Submitted via Create button');
+                        }
+                    } catch(e) {}
+                }
+                // Method 3: Enter key
+                if (!submitted) {
+                    await page.keyboard.press('Enter');
+                    log('Submitted via Enter key');
+                }
 
                 log('Prompt submitted. Waiting for generation...');
-                await sleep(3500); // Give UI time to spawn the new loading tile
+                await sleep(5000); // Give UI time to spawn the new loading tile
 
                 // Wait for generation + download
                 const jobDeadline = Date.now() + perJobTimeout;
                 while (Date.now() < jobDeadline && !currentSaved) {
-                    await sleep(3500);
+                    await sleep(4000);
 
                     // Check rate limit
                     try {
                         const rl = await page.evaluate(() => document.body.innerText.toLowerCase().includes('rate limit') || document.body.innerText.toLowerCase().includes('giới hạn'));
                         if (rl) {
                             console.log(JSON.stringify({ status: 'error', id: job.id, message: 'RATE_LIMIT' }));
-                            // Save cookies and exit
                             try { fs.writeFileSync(cookiesPath, JSON.stringify(await context.cookies(), null, 2)); } catch(e) {}
                             console.log(JSON.stringify({ status: 'batch_done', total: jobs.length, success: successCount, failed: failCount + (jobs.length - ji) }));
                             await context.close(); process.exit(1);
                         }
                     } catch(e) {}
 
-                    // Check generating state
-                    let generating = false;
+                    // Check if NEW tile has appeared (tile count increased)
+                    let currentTileCount = 0;
+                    let currentTileIds = [];
+                    let newTileId = null;
                     try {
-                        generating = await page.evaluate(() => {
-                            const s = document.querySelectorAll('[class*="spinner"], [class*="loading"], [class*="progress"]');
-                            if (s.length > 0) return true;
-                            const t = document.body.innerText;
-                            return t.includes('Đang tạo') || t.includes('Generating') || t.includes('Processing');
+                        const tileInfo = await page.evaluate(() => {
+                            const tiles = document.querySelectorAll('[data-tile-id]');
+                            return {
+                                count: tiles.length,
+                                ids: Array.from(tiles).map(t => t.getAttribute('data-tile-id'))
+                            };
                         });
-                    } catch(e) {}
-                    if (generating) { log('Generating...'); continue; }
-
-                    // Check if tile has actually changed
-                    let currentTileId = null;
-                    try {
-                        currentTileId = await page.evaluate(() => {
-                            const t = document.querySelector('[data-tile-id]');
-                            return t ? t.getAttribute('data-tile-id') : null;
-                        });
+                        currentTileCount = tileInfo.count;
+                        currentTileIds = tileInfo.ids;
+                        // Find the new tile ID (one that wasn't in prevTileIds)
+                        for (const tid of currentTileIds) {
+                            if (!prevTileIds.includes(tid)) { newTileId = tid; break; }
+                        }
                     } catch(e) {}
 
-                    if (prevTileId && currentTileId === prevTileId) {
-                        log('New image has not appeared yet. Still waiting...');
+                    if (currentTileCount <= prevTileCount && !newTileId) {
+                        log('New tile has not appeared yet. Still waiting...');
                         continue;
                     }
 
-                    // Strategy 1: Right-click → Tải xuống → 1K
+                    // Track when new tile first appeared
+                    if (newTileId && !newTileFirstSeen) {
+                        newTileFirstSeen = Date.now();
+                        log(`New tile first detected at ${new Date().toISOString()}`);
+                    }
+
+                    // ── Check for generation error (Không thành công) ──
+                    let tileHasError = false;
+                    try {
+                        tileHasError = await page.evaluate((targetTileId) => {
+                            const body = document.body.innerText;
+                            if (body.includes('Không thành công') || body.includes('could not be generated') || body.includes('không thể tạo')) {
+                                return true;
+                            }
+                            if (targetTileId) {
+                                const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
+                                if (tile) {
+                                    const tileText = tile.innerText || '';
+                                    if (tileText.includes('Không thành công') || tileText.includes('error')) return true;
+                                }
+                            }
+                            return false;
+                        }, newTileId);
+                    } catch(e) {}
+
+                    if (tileHasError) {
+                        log('⚠️ Generation error detected! Clicking retry...');
+                        // Find and click the refresh button (same pattern as veo3_video.js)
+                        let retryClicked = false;
+                        try {
+                            retryClicked = await page.evaluate(() => {
+                                const allDivs = document.querySelectorAll('div');
+                                for (const div of allDivs) {
+                                    const buttons = div.querySelectorAll(':scope > button');
+                                    if (buttons.length !== 3) continue;
+                                    const iconTexts = [];
+                                    let refreshBtn = null;
+                                    for (const btn of buttons) {
+                                        const icon = btn.querySelector('i');
+                                        const iconText = icon ? icon.textContent.trim() : '';
+                                        iconTexts.push(iconText);
+                                        if (iconText === 'refresh') refreshBtn = btn;
+                                    }
+                                    if (iconTexts.includes('refresh') && iconTexts.includes('undo') && iconTexts.includes('delete_forever') && refreshBtn) {
+                                        refreshBtn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            });
+                        } catch(e) {}
+                        
+                        if (retryClicked) {
+                            log('✅ Clicked retry button. Waiting for regeneration...');
+                            prevTileCount = currentTileCount; // Reset tile tracking
+                            prevTileIds = currentTileIds;
+                            await sleep(5000);
+                        } else {
+                            log('❌ Could not find retry button — skipping this job');
+                            break;
+                        }
+                        continue;
+                    }
+
+                    // New tile detected! Now check if it's still generating (percentage overlay)
+                    let stillGenerating = false;
+                    try {
+                        stillGenerating = await page.evaluate((targetTileId) => {
+                            // Check for percentage text on tiles (e.g. "30%", "99%")
+                            const allText = document.body.innerText;
+                            const percentMatch = allText.match(/(\d{1,3})%/);
+                            if (percentMatch) {
+                                const pct = parseInt(percentMatch[1]);
+                                if (pct > 0 && pct < 100) return true;
+                            }
+                            
+                            // Check specific tile if we found it
+                            if (targetTileId) {
+                                const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
+                                if (tile) {
+                                    const tileText = tile.innerText || '';
+                                    if (tileText.match(/\d{1,3}%/)) return true;
+                                    // Check for loading indicators within the tile
+                                    const hasSpinner = tile.querySelector('[class*="spinner"], [class*="loading"], [class*="progress"], [role="progressbar"]');
+                                    if (hasSpinner) return true;
+                                    // Check if tile has a real finished image (not just a placeholder)
+                                    const img = tile.querySelector('img');
+                                    if (!img || !img.src || img.naturalWidth < 500) return true;
+                                }
+                            }
+                            
+                            // Global checks
+                            const spinners = document.querySelectorAll('[class*="spinner"], [class*="loading"], [role="progressbar"]');
+                            if (spinners.length > 0) return true;
+                            if (allText.includes('Đang tạo') || allText.includes('Generating') || allText.includes('Processing')) return true;
+                            
+                            return false;
+                        }, newTileId);
+                    } catch(e) {}
+
+                    // Enforce minimum wait time: at least 15s after new tile appears
+                    // This prevents downloading a low-res preview before the full image is ready
+                    const elapsedSinceNewTile = newTileFirstSeen ? (Date.now() - newTileFirstSeen) / 1000 : 0;
+                    if (newTileFirstSeen && elapsedSinceNewTile < 15) {
+                        log(`New tile appeared ${Math.round(elapsedSinceNewTile)}s ago — waiting at least 15s before download...`);
+                        stillGenerating = true;
+                    }
+
+                    if (stillGenerating) {
+                        log('New tile found but still generating...');
+                        continue;
+                    }
+
+                    log(`New tile ready! ID: ${newTileId || 'unknown'}, Count: ${prevTileCount} → ${currentTileCount}`);
+
+                    // Strategy 1: Right-click the NEW tile → Tải xuống → 1K
                     if (!currentSaved) {
                         try {
+                            // Target the specific new tile, or the first tile (newest)
                             let tile = null;
-                            for (const sel of ['[data-tile-id]', '[class*="tile"]']) {
-                                const el = page.locator(sel).first();
-                                try { if (await el.isVisible({ timeout: 1000 })) { tile = el; break; } } catch(e) {}
+                            if (newTileId) {
+                                tile = page.locator(`[data-tile-id="${newTileId}"]`).first();
+                                try { if (!(await tile.isVisible({ timeout: 2000 }))) tile = null; } catch(e) { tile = null; }
                             }
+                            if (!tile) {
+                                tile = page.locator('[data-tile-id]').first();
+                                try { if (!(await tile.isVisible({ timeout: 1000 }))) tile = null; } catch(e) { tile = null; }
+                            }
+                            
                             if (tile) {
                                 let dlUrl = null;
                                 const dlHandler = async (r) => {
@@ -366,7 +689,7 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                                         } else { await dlItem.click(); }
                                     } catch(e) { await dlItem.click(); }
 
-                                    for (let w = 0; w < 30 && !currentSaved && !dlUrl; w++) await sleep(1000);
+                                    for (let w = 0; w < 45 && !currentSaved && !dlUrl; w++) await sleep(1000);
 
                                     if (!currentSaved && dlUrl) {
                                         try {
@@ -374,7 +697,7 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                                             const resp = await page.request.get(dlUrl);
                                             if (resp.ok()) {
                                                 fs.writeFileSync(currentOutput, await resp.body());
-                                                if (fs.statSync(currentOutput).size > 5000) { currentSaved = true; log('Downloaded from network!'); }
+                                                if (fs.statSync(currentOutput).size > 50000) { currentSaved = true; log('Downloaded from network!'); }
                                             }
                                         } catch(e) {}
                                     }
@@ -388,23 +711,32 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                         }
                     }
 
-                    // Strategy 2: Direct DOM img src download
+                    // Strategy 2: Direct DOM img src download from the NEW tile
                     if (!currentSaved) {
                         try {
-                            const imgUrl = await page.evaluate(() => {
+                            const imgUrl = await page.evaluate((targetTileId) => {
+                                // Try to get image from the specific new tile first
+                                if (targetTileId) {
+                                    const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
+                                    if (tile) {
+                                        const img = tile.querySelector('img');
+                                        if (img && img.src && img.naturalWidth > 500) return img.src;
+                                    }
+                                }
+                                // Fallback: first tile
                                 const tiles = document.querySelectorAll('[data-tile-id]');
                                 for (const t of tiles) {
                                     const img = t.querySelector('img');
-                                    if (img && img.src && img.naturalWidth > 100) return img.src;
+                                    if (img && img.src && img.naturalWidth > 500) return img.src;
                                 }
                                 return null;
-                            });
+                            }, newTileId);
                             if (imgUrl) {
                                 const resp = await page.request.get(imgUrl);
                                 if (resp.ok()) {
                                     fs.mkdirSync(path.dirname(currentOutput), { recursive: true });
                                     fs.writeFileSync(currentOutput, await resp.body());
-                                    if (fs.statSync(currentOutput).size > 5000) { currentSaved = true; log('Strategy 2: DOM download OK!'); }
+                                    if (fs.statSync(currentOutput).size > 50000) { currentSaved = true; log('Strategy 2: DOM download OK!'); }
                                 }
                             }
                         } catch(e) {}

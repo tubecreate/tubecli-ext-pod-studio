@@ -1,0 +1,648 @@
+/* ═══════════════════════════════════════════════════════════
+   Storyboard Flowchart — Node Graph Visualization
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Overlay ────────────────────────────────────────────── */
+.flowchart-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: hsla(220, 20%, 8%, 0.97);
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+.flowchart-overlay.visible {
+    opacity: 1;
+}
+
+/* ── Toolbar ────────────────────────────────────────────── */
+.fc-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: hsla(220, 18%, 12%, 0.95);
+    border-bottom: 1px solid hsla(220, 15%, 22%, 0.6);
+    flex-shrink: 0;
+    backdrop-filter: blur(12px);
+}
+.fc-toolbar-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: hsla(0, 0%, 92%, 0.95);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.fc-toolbar-title .fc-icon {
+    font-size: 16px;
+}
+.fc-toolbar-sep {
+    width: 1px;
+    height: 20px;
+    background: hsla(220, 15%, 28%, 0.5);
+}
+.fc-toolbar-zoom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: hsla(0, 0%, 70%, 0.9);
+}
+.fc-toolbar-zoom button {
+    width: 26px;
+    height: 26px;
+    border: 1px solid hsla(220, 15%, 28%, 0.5);
+    border-radius: 6px;
+    background: hsla(220, 18%, 16%, 0.8);
+    color: hsla(0, 0%, 80%, 0.9);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+.fc-toolbar-zoom button:hover {
+    background: hsla(220, 18%, 22%, 0.9);
+}
+.fc-toolbar-zoom .fc-zoom-label {
+    min-width: 40px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+}
+.fc-toolbar-filters {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: 8px;
+}
+.fc-toolbar-filters label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: hsla(0, 0%, 65%, 0.9);
+    cursor: pointer;
+    user-select: none;
+}
+.fc-toolbar-filters input[type="checkbox"] {
+    accent-color: hsl(210, 80%, 55%);
+}
+.fc-toolbar-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: hsla(0, 0%, 55%, 0.9);
+    font-family: 'JetBrains Mono', monospace;
+}
+.fc-toolbar-stats .fc-stat {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.fc-stat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.fc-stat-dot--char { background: hsl(210, 80%, 55%); }
+.fc-stat-dot--scene { background: hsl(30, 85%, 55%); }
+.fc-stat-dot--shot { background: hsl(270, 60%, 60%); }
+.fc-stat-dot--video { background: hsl(145, 65%, 45%); }
+
+.fc-close-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid hsla(220, 15%, 28%, 0.5);
+    border-radius: 8px;
+    background: hsla(0, 70%, 40%, 0.15);
+    color: hsla(0, 70%, 70%, 0.9);
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    margin-left: 8px;
+}
+.fc-close-btn:hover {
+    background: hsla(0, 70%, 40%, 0.35);
+    color: hsl(0, 80%, 75%);
+}
+
+/* ── Canvas Area ────────────────────────────────────────── */
+.fc-canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    cursor: grab;
+}
+.fc-canvas-wrap:active {
+    cursor: grabbing;
+}
+.fc-canvas-wrap canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+}
+.fc-nodes-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+}
+
+/* ── Column Headers ─────────────────────────────────────── */
+.fc-col-header {
+    position: absolute;
+    top: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: hsla(0, 0%, 50%, 0.7);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+/* ── Node Base ──────────────────────────────────────────── */
+.fc-node {
+    position: absolute;
+    border-radius: 10px;
+    background: hsla(220, 18%, 14%, 0.92);
+    border: 1px solid hsla(220, 15%, 24%, 0.6);
+    backdrop-filter: blur(8px);
+    overflow: hidden;
+    cursor: pointer;
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.1s;
+    user-select: none;
+}
+.fc-node:hover {
+    border-color: hsla(220, 15%, 35%, 0.8);
+    box-shadow: 0 4px 20px hsla(0, 0%, 0%, 0.4);
+    transform: translateY(-1px);
+}
+.fc-node.fc-dimmed {
+    opacity: 0.2;
+    filter: grayscale(0.5);
+    pointer-events: none;
+}
+.fc-node.fc-highlighted {
+    border-color: hsl(210, 80%, 55%);
+    box-shadow: 0 0 20px hsla(210, 80%, 55%, 0.3), 0 4px 24px hsla(0, 0%, 0%, 0.5);
+}
+
+/* ── Node Thumbnails ────────────────────────────────────── */
+.fc-node-img {
+    width: 100%;
+    display: block;
+    object-fit: cover;
+    background: hsla(220, 15%, 10%, 0.6);
+}
+.fc-node-img-placeholder {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: hsla(220, 15%, 10%, 0.6);
+    color: hsla(0, 0%, 40%, 0.7);
+    font-size: 20px;
+}
+
+/* ── Node Body ──────────────────────────────────────────── */
+.fc-node-body {
+    padding: 8px 10px;
+}
+.fc-node-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: hsla(0, 0%, 88%, 0.95);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
+}
+.fc-node-subtitle {
+    font-size: 10px;
+    color: hsla(0, 0%, 55%, 0.85);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+    line-height: 1.3;
+}
+.fc-node-prompt {
+    font-size: 9px;
+    color: hsla(0, 0%, 50%, 0.75);
+    line-height: 1.35;
+    margin-top: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ── Node Badges ────────────────────────────────────────── */
+.fc-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1.3;
+    z-index: 2;
+}
+.fc-badge--char {
+    background: hsla(210, 80%, 55%, 0.2);
+    color: hsl(210, 80%, 65%);
+    border: 1px solid hsla(210, 80%, 55%, 0.3);
+}
+.fc-badge--scene {
+    background: hsla(30, 85%, 55%, 0.2);
+    color: hsl(30, 85%, 65%);
+    border: 1px solid hsla(30, 85%, 55%, 0.3);
+}
+.fc-badge--shot {
+    background: hsla(270, 60%, 60%, 0.2);
+    color: hsl(270, 60%, 72%);
+    border: 1px solid hsla(270, 60%, 60%, 0.3);
+}
+.fc-badge--video {
+    background: hsla(145, 65%, 45%, 0.2);
+    color: hsl(145, 65%, 58%);
+    border: 1px solid hsla(145, 65%, 45%, 0.3);
+}
+.fc-badge--ref {
+    background: hsla(320, 70%, 55%, 0.2);
+    color: hsl(320, 70%, 68%);
+    border: 1px solid hsla(320, 70%, 55%, 0.3);
+}
+.fc-badge--warn {
+    background: hsla(45, 90%, 50%, 0.2);
+    color: hsl(45, 90%, 65%);
+    border: 1px solid hsla(45, 90%, 50%, 0.3);
+}
+
+/* ── Node Connectors (anchor dots) ──────────────────────── */
+.fc-anchor {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid;
+    background: hsla(220, 18%, 14%, 1);
+    z-index: 3;
+}
+.fc-anchor--out {
+    right: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+.fc-anchor--in {
+    left: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+.fc-anchor--char {
+    border-color: hsl(210, 80%, 55%);
+}
+.fc-anchor--scene {
+    border-color: hsl(30, 85%, 55%);
+}
+.fc-anchor--shot {
+    border-color: hsl(270, 60%, 60%);
+}
+.fc-anchor--video {
+    border-color: hsl(145, 65%, 45%);
+}
+.fc-anchor--ref {
+    border-color: hsl(320, 70%, 55%);
+}
+
+/* ── Node Variants ──────────────────────────────────────── */
+.fc-node--char {
+    width: 130px;
+}
+.fc-node--char .fc-node-img,
+.fc-node--char .fc-node-img-placeholder {
+    height: 100px;
+}
+
+.fc-node--scene {
+    width: 150px;
+}
+.fc-node--scene .fc-node-img,
+.fc-node--scene .fc-node-img-placeholder {
+    height: 90px;
+}
+
+.fc-node--shot {
+    width: 180px;
+}
+.fc-node--shot .fc-node-img,
+.fc-node--shot .fc-node-img-placeholder {
+    height: 100px;
+}
+
+.fc-node--video {
+    width: 160px;
+}
+.fc-node--video .fc-node-img,
+.fc-node--video video {
+    height: 90px;
+    width: 100%;
+    object-fit: cover;
+    display: block;
+    background: #000;
+}
+.fc-node--video .fc-node-img-placeholder {
+    height: 90px;
+}
+
+.fc-node--ref {
+    width: 120px;
+    border-color: hsla(320, 70%, 55%, 0.3);
+}
+.fc-node--ref .fc-node-img {
+    height: 80px;
+}
+.fc-node--ref:hover {
+    border-color: hsl(320, 70%, 55%);
+}
+
+/* ── Empty State ────────────────────────────────────────── */
+.fc-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    color: hsla(0, 0%, 50%, 0.7);
+}
+.fc-empty-icon {
+    font-size: 48px;
+    opacity: 0.4;
+}
+.fc-empty-text {
+    font-size: 14px;
+}
+
+/* ── Legend ──────────────────────────────────────────────── */
+.fc-legend {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    display: flex;
+    gap: 16px;
+    font-size: 10px;
+    color: hsla(0, 0%, 55%, 0.8);
+    background: hsla(220, 18%, 10%, 0.8);
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid hsla(220, 15%, 22%, 0.4);
+    backdrop-filter: blur(8px);
+    z-index: 5;
+}
+.fc-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.fc-legend-line {
+    width: 20px;
+    height: 2px;
+    border-radius: 1px;
+}
+.fc-legend-line--char { background: hsl(210, 80%, 55%); }
+.fc-legend-line--scene { background: hsl(30, 85%, 55%); }
+.fc-legend-line--ref { background: hsl(320, 70%, 55%); }
+.fc-legend-line--video { background: hsl(145, 65%, 45%); }
+
+/* ── Narration Text ─────────────────────────────────── */
+.fc-narration {
+    font-size: 9px;
+    color: hsl(200, 60%, 65%);
+    background: hsla(200, 40%, 20%, 0.4);
+    border-radius: 4px;
+    padding: 4px 6px;
+    margin-top: 4px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ── Custom Audio Progress ──────────────────────────── */
+.fc-audio-bar {
+    height: 3px;
+    background: hsla(220, 15%, 28%, 0.5);
+    border-radius: 2px;
+    margin-top: 6px;
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+}
+.fc-audio-progress {
+    height: 100%;
+    width: 0%;
+    background: hsl(210, 80%, 65%);
+    transition: width 0.1s linear;
+}
+
+/* ── Action Buttons ─────────────────────────────────── */
+.fc-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+}
+.fc-act-btn {
+    flex: 1;
+    padding: 3px 6px;
+    font-size: 10px;
+    border: 1px solid hsla(220, 15%, 30%, 0.5);
+    border-radius: 5px;
+    background: hsla(220, 18%, 18%, 0.8);
+    color: hsla(0, 0%, 75%, 0.9);
+    cursor: pointer;
+    transition: background 0.15s;
+    text-align: center;
+}
+.fc-act-btn:hover {
+    background: hsla(220, 18%, 28%, 0.9);
+    color: #fff;
+}
+
+/* ── Video Player (inline) ──────────────────────────── */
+.fc-node-video {
+    width: 100%;
+    height: 100px;
+    object-fit: cover;
+    display: block;
+    background: #000;
+    border-radius: 10px 10px 0 0;
+}
+
+/* ── Dragging state ─────────────────────────────────── */
+.fc-node:active {
+    cursor: grabbing;
+    z-index: 100;
+}
+
+/* ── Expanded Node ──────────────────────────────────── */
+.fc-node.fc-expanded {
+    z-index: 50;
+    box-shadow: 0 8px 40px hsla(0, 0%, 0%, 0.6), 0 0 0 2px hsla(210, 80%, 55%, 0.4);
+    border-color: hsla(210, 80%, 55%, 0.5);
+    transition: width 0.25s ease, box-shadow 0.2s;
+}
+.fc-node--char.fc-expanded {
+    width: 220px !important;
+}
+.fc-node--char.fc-expanded .fc-node-img,
+.fc-node--char.fc-expanded .fc-node-img-placeholder {
+    height: 180px !important;
+}
+.fc-node--scene.fc-expanded {
+    width: 260px !important;
+}
+.fc-node--scene.fc-expanded .fc-node-img,
+.fc-node--scene.fc-expanded .fc-node-img-placeholder {
+    height: 160px !important;
+}
+.fc-node--shot.fc-expanded {
+    width: 380px !important;
+    min-height: 440px;
+}
+.fc-node--shot.fc-expanded .fc-node-prompt,
+.fc-node--shot.fc-expanded .fc-narration {
+    display: none;
+}
+.fc-node--shot.fc-expanded .fc-edit-area {
+    display: block;
+}
+/* Editable textareas inside expanded shot */
+.fc-edit-area {
+    display: none;
+    margin-top: 6px;
+}
+.fc-edit-area label {
+    font-size: 9px;
+    color: hsla(0, 0%, 55%, 0.8);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 2px;
+    display: block;
+}
+.fc-edit-area textarea {
+    width: 100%;
+    border: 1px solid hsla(220, 15%, 28%, 0.5);
+    border-radius: 6px;
+    background: hsla(220, 18%, 10%, 0.8);
+    color: hsla(0, 0%, 85%, 0.95);
+    font-size: 11px;
+    font-family: inherit;
+    padding: 6px 8px;
+    resize: vertical;
+    line-height: 1.4;
+    margin-bottom: 6px;
+    transition: border-color 0.15s;
+    box-sizing: border-box;
+}
+.fc-edit-area textarea:focus {
+    outline: none;
+    border-color: hsl(210, 80%, 55%);
+}
+.fc-edit-area textarea.fc-ta-prompt {
+    height: 100px;
+}
+.fc-edit-area textarea.fc-ta-narration {
+    height: 70px;
+}
+.fc-node--ref.fc-expanded {
+    width: 220px !important;
+}
+.fc-node--ref.fc-expanded .fc-node-img {
+    height: 160px !important;
+}
+.fc-node--video.fc-expanded {
+    width: 320px !important;
+}
+.fc-node--video.fc-expanded .fc-node-video {
+.fc-node--video.fc-expanded .fc-video-wrapper video,
+.fc-node--video.fc-expanded .fc-video-wrapper {
+    height: 180px !important;
+}
+
+/* ── Modern Video Player ────────────────────────────── */
+.fc-video-wrapper {
+    position: relative;
+    width: 100%;
+    height: 90px;
+    cursor: pointer;
+    overflow: hidden;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    background: #000;
+}
+.fc-video-wrapper video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.fc-video-play-btn {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 40px;
+    background: hsla(0, 0%, 0%, 0.6);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    opacity: 1;
+    transition: opacity 0.2s, background 0.2s;
+    pointer-events: none;
+}
+.fc-video-wrapper:hover .fc-video-play-btn {
+    background: hsla(210, 80%, 55%, 0.7);
+}
+.fc-video-play-btn svg {
+    width: 20px;
+    height: 20px;
+    margin-left: 3px;
+}
+.fc-video-wrapper.playing .fc-video-play-btn {
+    opacity: 0;
+}
+.fc-video-progress-bg {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: hsla(0, 0%, 100%, 0.3);
+}
+.fc-video-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: hsl(210, 80%, 65%);
+    transition: width 0.1s linear;
+}
+
