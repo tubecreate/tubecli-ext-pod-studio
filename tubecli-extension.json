@@ -1,7 +1,7 @@
 {
   "name": "content_studio",
   "display_name": "Content Studio",
-  "version": "2026.05.01.065518",
+  "version": "2026.05.06.032354",
   "description": "AI Content Studio — Drama/Novel script writing, character extraction, storyboard breaking, multi-language",
   "author": "TubeCreate",
   "entry": "extension.py",
