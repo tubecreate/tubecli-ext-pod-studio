@@ -1,11 +1,11 @@
 import sqlite3, json, sys, os
 sys.stdout.reconfigure(encoding='utf-8')
-db_path = r'C:\tubecreate-vue\tubecli\data\content_studio\content_studio.db'
+db_path = r'C:\tubecreate-vue\tubecli\data\pod_studio\pod_studio.db'
 conn = sqlite3.connect(db_path)
 
 # Check characters with image_url
-chars = conn.execute("SELECT id, name, image_url FROM characters WHERE drama_id=113").fetchall()
-print(f"Characters ({len(chars)}):")
+chars = conn.execute("SELECT id, name, image_url FROM characters WHERE campaign_id=113").fetchall()
+print(f"Models & Products ({len(chars)}):")
 broken = []
 for c in chars:
     img = c[2] or ''
@@ -17,7 +17,7 @@ for c in chars:
     print(f"  ID={c[0]} name='{c[1][:30]}' status={status} size={size} path='{img[:80]}'")
 
 # Check scenes with image_url
-scenes = conn.execute("SELECT id, location, image_url FROM scenes WHERE drama_id=113").fetchall()
+scenes = conn.execute("SELECT id, location, image_url FROM scenes WHERE campaign_id=113").fetchall()
 print(f"\nScenes ({len(scenes)}):")
 for s in scenes:
     img = s[2] or ''

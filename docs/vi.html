@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Content Studio AI - Hướng dẫn sử dụng</title>
+    <title>POD Studio AI - Hướng dẫn sử dụng</title>
     <style>
         :root {
             --bg-body: #0c0e14;
@@ -79,12 +79,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>Content Studio AI</h1>
+        <h1>POD Studio AI</h1>
         <p style="text-align: center; font-size: 1.1rem;">Quy trình sản xuất kịch bản và phân cảnh bằng AI hiện đại.</p>
 
         <div class="card">
             <h2>Tổng quan</h2>
-            <p>Content Studio là một extension AI chuyên sâu tích hợp trong TubeCLI, được thiết kế để tự động hóa quá trình chuyển thể nội dung thô (tiểu thuyết, ý tưởng) thành kịch bản phim ảnh chuyên nghiệp và phân cảnh (storyboard). Extension sử dụng hệ thống Đa Tác Vụ (AI Agents) để viết lại nội dung, phân tích nhân vật, và xuất prompts tạo video AI.</p>
+            <p>POD Studio là một extension AI chuyên sâu tích hợp trong TubeCLI, được thiết kế để tự động hóa quá trình chuyển thể nội dung thô (tiểu thuyết, ý tưởng) thành kịch bản phim ảnh chuyên nghiệp và phân cảnh (storyboard). Extension sử dụng hệ thống Đa Tác Vụ (AI Agents) để viết lại nội dung, phân tích nhân vật, và xuất prompts tạo video AI.</p>
         </div>
 
         <h2>Quy Tình Thực Hiện (Pipeline)</h2>
@@ -110,7 +110,7 @@
                 <div class="step-number">3</div>
                 <div class="step-content">
                     <h3>Trích xuất Nhân vật & Bối cảnh (Extract)</h3>
-                    <p>Tại tab <span class="highlight">03 Extract</span>, bấm <b>Extract Characters & Scenes</b>. AI sẽ quét kịch bản và bóc tách ra mọi nhân vật xuất hiện (với tuổi tác, ngoại hình, tính cách) cùng địa điểm. Hệ thống tự động khử trùng lặp (dedup) các nhân vật cũ để giữ tính liền mạch giữa các tập.</p>
+                    <p>Tại tab <span class="highlight">03 Extract</span>, bấm <b>Extract Models & Products & Scenes</b>. AI sẽ quét kịch bản và bóc tách ra mọi nhân vật xuất hiện (với tuổi tác, ngoại hình, tính cách) cùng địa điểm. Hệ thống tự động khử trùng lặp (dedup) các nhân vật cũ để giữ tính liền mạch giữa các tập.</p>
                 </div>
             </div>
 
@@ -125,7 +125,7 @@
 
         <h2>Thiết Lập & Cấu Hình (Settings)</h2>
         <div class="card">
-            <p>Content Studio yêu cầu API của AI Provider để hoạt động. Mặc dù nó sẽ tự kế thừa mã khóa (API Key) từ tính năng Cloud API của TubeCLI, bạn vẫn có thể tùy biến riêng:</p>
+            <p>POD Studio yêu cầu API của AI Provider để hoạt động. Mặc dù nó sẽ tự kế thừa mã khóa (API Key) từ tính năng Cloud API của TubeCLI, bạn vẫn có thể tùy biến riêng:</p>
             <ul>
                 <li>Bấm vào biểu tượng <b>Bánh răng (Settings)</b> ở góc trên bên phải.</li>
                 <li><b>Ngôn ngữ:</b> Đặt ngôn ngữ đầu ra cho kịch bản của bạn (vi, en, ko, ja...).</li>
@@ -141,7 +141,7 @@
                 <li><b>Bước 1:</b> Tại cột bên trái, bấm nút <code>+ Add Episode</code> dưới tên dự án của bạn để tạo <b>Ep 2</b>. Bấm vào Ep 2 để chọn tập này.</li>
                 <li><b>Bước 2:</b> Dán nội dung thô (nếu có) vào tab <b>01 Raw Content</b>. Nếu bạn không có nội dung thô mà muốn AI tự sáng tác tiếp, hãy để trống.</li>
                 <li><b>Bước 3:</b> Chuyển sang tab <b>02 AI Rewrite</b>. Nhập vào ô chat ở cột bên phải nội dung như: <i>"Đây là tập 2. Dựa vào các nhân vật đã có, hãy viết tiếp câu chuyện từ đoạn kết của tập 1. Nam chính sẽ phát hiện ra sự thật..."</i></li>
-                <li><b>Bước 4:</b> Hệ thống sẽ tự động cung cấp cho AI danh sách các nhân vật và bối cảnh (Characters & Scenes) từ tập 1. AI sẽ vận dụng chúng để viết tiếp kịch bản tập 2 mà không bị lệch cốt truyện.</li>
+                <li><b>Bước 4:</b> Hệ thống sẽ tự động cung cấp cho AI danh sách các nhân vật và bối cảnh (Models & Products & Scenes) từ tập 1. AI sẽ vận dụng chúng để viết tiếp kịch bản tập 2 mà không bị lệch cốt truyện.</li>
             </ul>
         </div>
         

@@ -1,7 +1,7 @@
 """Patch studio2.js to add video engine selection (Grok/Veo3) support"""
 import re
 
-filepath = r'c:\tubecreate-vue\tubecli\data\extensions_external\content_studio\static\studio2.js'
+filepath = r'c:\tubecreate-vue\tubecli\data\extensions_external\pod_studio\static\studio2.js'
 
 with open(filepath, 'r', encoding='utf-8') as f:
     content = f.read()
@@ -50,7 +50,7 @@ function onGenVidEngineChange() {
 }
 
 function _getVideoEngine() {
-    // Priority: wizard dropdown > modal dropdown > drama metadata > localStorage > default
+    // Priority: wizard dropdown > modal dropdown > campaign metadata > localStorage > default
     const wizEl = document.getElementById('wizVideoEngine');
     if (wizEl && wizEl.value) return wizEl.value;
     const genEl = document.getElementById('genVidEngine');
@@ -59,11 +59,11 @@ function _getVideoEngine() {
 }
 
 function _restoreVideoEngine() {
-    // Restore engine selection from drama metadata or localStorage
+    // Restore engine selection from campaign metadata or localStorage
     let engine = 'grok';
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.video_engine) engine = meta.video_engine;
         } catch(e) {}
     }
@@ -109,7 +109,7 @@ if old_label in content:
 
 # ── 4. Update auto-pilot gen-videos API call to send engine ──
 old_autopilot = "body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false })"
-new_autopilot = "body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false, engine: dramaMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok' })"
+new_autopilot = "body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false, engine: campaignMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok' })"
 if old_autopilot in content:
     content = content.replace(old_autopilot, new_autopilot, 1)
     changes_made += 1
@@ -117,19 +117,19 @@ if old_autopilot in content:
 else:
     print("WARNING: Could not find auto-pilot gen-videos body")
 
-# ── 5. Save video_engine to drama metadata in startRealtimeAutoPilot ──
+# ── 5. Save video_engine to campaign metadata in startRealtimeAutoPilot ──
 # Find where browser_profile_names_video is saved and add video_engine
 old_meta_save = "if (selectedProfile) meta.browser_profile_name = selectedProfile;"
 new_meta_save = "if (selectedProfile) meta.browser_profile_name = selectedProfile;\n            meta.video_engine = _getVideoEngine();"
 if old_meta_save in content:
     content = content.replace(old_meta_save, new_meta_save, 1)
     changes_made += 1
-    print("DONE: Added video_engine to drama metadata save")
+    print("DONE: Added video_engine to campaign metadata save")
 
 # ── 6. Update auto-pilot toast to show engine name ──
 old_toast = "toast(`\\ud83c\\udf9e Auto Grok video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, \"info\");"
 if old_toast in content:
-    new_toast = "toast(`\\ud83c\\udf9e Auto ${(dramaMeta.video_engine || 'grok') === 'veo3' ? 'Veo3' : 'Grok'} video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, \"info\");"
+    new_toast = "toast(`\\ud83c\\udf9e Auto ${(campaignMeta.video_engine || 'grok') === 'veo3' ? 'Veo3' : 'Grok'} video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, \"info\");"
     content = content.replace(old_toast, new_toast, 1)
     changes_made += 1
     print("DONE: Updated auto-pilot toast")

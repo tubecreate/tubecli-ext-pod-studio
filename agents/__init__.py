@@ -1,1 +1,1 @@
-# Content Studio Agents package
+# POD Studio Agents package

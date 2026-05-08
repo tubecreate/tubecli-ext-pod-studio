@@ -1,7 +1,7 @@
 /**
- * Content Studio — Settings Logic
+ * POD Studio — Settings Logic
  */
-const API = '/api/v1/studio';
+const API = '/api/v1/pod_studio';
 let settings = {};
 
 const AGENTS = [

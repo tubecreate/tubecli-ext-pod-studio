@@ -1,6 +1,6 @@
 """
-Content Studio API Routes
-FastAPI router for drama CRUD, AI agent streaming, settings, and export.
+POD Studio API Routes
+FastAPI router for campaign CRUD, AI agent streaming, settings, and export.
 """
 import os
 import sys
@@ -9,10 +9,10 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 
-logger = logging.getLogger("ContentStudio.Routes")
+logger = logging.getLogger("PodStudio.Routes")
 
 router = APIRouter()
 
@@ -79,7 +79,7 @@ async def _send_telegram(text: str, video_path: str = None):
         return False
 
 
-@router.post("/api/v1/studio/notify-telegram")
+@router.post("/api/v1/pod_studio/notify-telegram")
 async def notify_telegram(request: Request):
     """Send a notification to Telegram. Supports text and optional video attachment."""
     data = await request.json()
@@ -175,7 +175,7 @@ def _repair_json(text: str) -> dict:
 
 
 def _db():
-    from db.json_store import JsonStore
+    from pod_db.json_store import JsonStore
     return JsonStore.get_instance()
 
 def _find_shot_start_time(segments, shot_text, search_from_idx=0):
@@ -337,8 +337,8 @@ def _clean_appearance_for_ref(appearance: str) -> str:
     return cleaned
 
 
-def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Realistic", aspect_ratio: str = "1:1") -> str:
-    """Build a neutral face-only reference prompt (like an ID photo) in the project's visual style."""
+def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Realistic", aspect_ratio: str = "1:1", ethnicity: str = "Default", role: str = "presenter") -> str:
+    """Build a reference prompt — human character sheet OR product/prop reference depending on role."""
     clean_app = _clean_appearance_for_ref(appearance)
     
     # Map project style to prompt style descriptor
@@ -350,35 +350,62 @@ def _build_char_ref_prompt(name: str, appearance: str, visual_style: str = "Real
         "chibi": "Chibi art style, cute proportions, simple shading",
         "3d cartoon": "3D Cartoon render, Pixar/Disney style, smooth shading",
         "stick figure": "Simple line drawing, minimalist style",
-        "dark fantasy": "Dark fantasy art style, dramatic shadows, gothic aesthetic",
+        "dark fantasy": "Dark fantasy art style, campaigntic shadows, gothic aesthetic",
         "hollywood cinematic": "Photorealistic, Hollywood cinematic lighting, studio quality",
     }
     # Use mapped style, or pass through the raw visual_style directly
     style_desc = style_map.get(visual_style.lower().strip(),
                                f"{visual_style.strip()} style, highly detailed, professional quality")
     
-    # Map aspect ratio to readable description for Grok
-    ar_map = {
-        "1:1": "1:1 square",
-        "16:9": "16:9 widescreen landscape",
-        "9:16": "9:16 vertical portrait",
-        "4:3": "4:3 landscape",
-        "3:4": "3:4 portrait",
+    # Character reference sheets always use 16:9 landscape for optimal multi-angle layout
+    ar_desc = "16:9 widescreen landscape"
+    
+    # ── PRODUCT / PROP reference sheet ──
+    role_lower = (role or "").lower().strip()
+    if role_lower in ("product", "prop", "item", "object", "artifact", "decoration", "furniture", "weapon"):
+        return (
+            f"Generate a comprehensive product reference sheet for '{name}' in {ar_desc} aspect ratio. "
+            f"Product details: {clean_app}. "
+            f"Layout: A multi-panel product design sheet containing the following views side-by-side: "
+            f"Front view (hero shot with dramatic lighting), Side view (profile), Back view, Top-down view, "
+            f"and Material/Texture detail close-up panel. "
+            f"Maintain strict 100% visual consistency of the product's shape, color, texture and proportions across all angles. "
+            f"IMPORTANT: This is a PRODUCT/OBJECT, NOT a human character. Do NOT include any human figures. "
+            f"Show ONLY the item itself against a clean background. "
+            f"{style_desc}, clean neutral dark background, professional product design sheet, 8K resolution, highly detailed."
+        )
+    
+    # ── HUMAN character reference sheet ──
+    # Map ethnicity to explicit appearance descriptors
+    ethnicity_map = {
+        "east asian": "East Asian ethnicity, with typical East Asian facial features, straight black hair, monolid or double-eyelid eyes, warm ivory skin tone",
+        "southeast asian": "Southeast Asian ethnicity, with Southeast Asian facial features, dark brown or black hair, tan to warm brown skin tone",
+        "european/caucasian": "European/Caucasian ethnicity, with Caucasian facial features",
+        "african/black": "African/Black ethnicity, with African facial features, dark skin tone, natural Black hair texture",
+        "middle eastern": "Middle Eastern ethnicity, with Middle Eastern facial features, olive to tan skin tone, dark hair",
+        "south asian": "South Asian/Indian ethnicity, with South Asian facial features, brown skin tone, dark hair",
     }
-    ar_desc = ar_map.get(aspect_ratio, aspect_ratio or "1:1 square")
+    ethnicity_desc = ""
+    if ethnicity and ethnicity.lower().strip() not in ("default", ""):
+        ethnicity_desc = ethnicity_map.get(ethnicity.lower().strip(), f"{ethnicity} ethnicity")
+    
+    # Build ethnicity clause
+    ethnicity_clause = f" IMPORTANT: This character MUST be {ethnicity_desc}. " if ethnicity_desc else ""
     
     return (
-        f"Generate in {ar_desc} aspect ratio: "
-        f"Close-up face portrait of {name}: {clean_app}. "
-        f"Neutral expression, like an ID photo. "
-        f"Focus on facial features only, no clothing, no emotions. "
-        f"{style_desc}, highly detailed face, neutral background, 4K."
+        f"Generate a comprehensive character reference sheet for {name} in {ar_desc} aspect ratio. "
+        f"Character details: {clean_app}. "
+        f"{ethnicity_clause}"
+        f"Layout: A multi-panel concept art layout containing the following views side-by-side: "
+        f"Face close-up (3/4 angle), Front full body, Side full body, Back full body, and Costume/Clothing detail panel. "
+        f"Maintain strict 100% visual consistency of the character's face, hair, and clothing across all angles. "
+        f"{style_desc}, clean neutral background, professional character design sheet, 8K resolution, highly detailed."
     )
 
 
-def _get_char_style(drama: dict) -> str:
-    """Extract Character Style from drama.style string like 'Visual Style: X | Character Style: Y'."""
-    style_str = drama.get("style", "") or ""
+def _get_char_style(campaign: dict) -> str:
+    """Extract Character Style from campaign.style string like 'Visual Style: X | Character Style: Y'."""
+    style_str = campaign.get("style", "") or ""
     if "Character Style:" in style_str:
         parts = style_str.split("Character Style:")
         if len(parts) > 1:
@@ -386,9 +413,9 @@ def _get_char_style(drama: dict) -> str:
     return "Realistic"
 
 
-def _get_visual_style(drama: dict) -> str:
-    """Extract Visual Style from drama.style string like 'Visual Style: X | Character Style: Y'."""
-    style_str = drama.get("style", "") or ""
+def _get_visual_style(campaign: dict) -> str:
+    """Extract Visual Style from campaign.style string like 'Visual Style: X | Character Style: Y'."""
+    style_str = campaign.get("style", "") or ""
     if "Visual Style:" in style_str:
         parts = style_str.split("Visual Style:")
         if len(parts) > 1:
@@ -409,7 +436,7 @@ def _build_scene_ref_prompt(location: str, time_of_day: str, description: str,
         "chibi": "Chibi world background, cute aesthetic, colorful simple environment",
         "3d cartoon": "3D Cartoon environment render, Pixar/Disney style, smooth shading",
         "stick figure": "Simple line drawing environment, minimalist style",
-        "dark fantasy": "Dark fantasy landscape, dramatic shadows, gothic atmospheric environment",
+        "dark fantasy": "Dark fantasy landscape, campaigntic shadows, gothic atmospheric environment",
         "hollywood cinematic": "Photorealistic, Hollywood cinematic lighting, professional cinematography",
     }
     # Use mapped style, or pass through the raw visual_style directly
@@ -448,32 +475,32 @@ def _build_scene_ref_prompt(location: str, time_of_day: str, description: str,
 def _settings():
     from tubecli.config import DATA_DIR
     from config.settings_manager import StudioSettings
-    data_dir = os.path.join(str(DATA_DIR), "content_studio")
+    data_dir = os.path.join(str(DATA_DIR), "pod_studio")
     return StudioSettings(data_dir)
 
 
 # ── Static Pages ────────────────────────────────────────────
 
-@router.get("/content-studio", include_in_schema=False, response_class=HTMLResponse)
+@router.get("/pod-studio", include_in_schema=False, response_class=HTMLResponse)
 async def studio_page():
-    """Serve the Content Studio HTML page."""
+    """Serve the POD Studio HTML page."""
     html_path = os.path.join(_ext_dir, "static", "studio.html")
     if os.path.exists(html_path):
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
-    return HTMLResponse("<h1>Content Studio – HTML not found</h1>", status_code=404)
+    return HTMLResponse("<h1>POD Studio – HTML not found</h1>", status_code=404)
 
 
-@router.get("/content-studio-static/{filepath:path}", include_in_schema=False)
-async def content_studio_static(filepath: str):
-    """Serve static files (CSS, JS) for the Content Studio UI."""
+@router.get("/pod-studio-static/{filepath:path}", include_in_schema=False)
+async def pod_studio_static(filepath: str):
+    """Serve static files (CSS, JS) for the POD Studio UI."""
     file_path = os.path.join(_ext_dir, "static", filepath)
     if os.path.exists(file_path) and os.path.isfile(file_path):
         return FileResponse(file_path)
     raise HTTPException(404, f"Static file not found: {filepath}")
 
 
-@router.get("/content-studio/settings", include_in_schema=False, response_class=HTMLResponse)
+@router.get("/pod-studio/settings", include_in_schema=False, response_class=HTMLResponse)
 async def settings_page():
     """Serve the Settings HTML page."""
     html_path = os.path.join(_ext_dir, "static", "settings.html")
@@ -485,18 +512,18 @@ async def settings_page():
 
 # ── Settings API ────────────────────────────────────────────
 
-@router.get("/api/v1/studio/settings")
+@router.get("/api/v1/pod_studio/settings")
 async def get_settings():
     return _settings().get_all()
 
 
-@router.put("/api/v1/studio/settings")
+@router.put("/api/v1/pod_studio/settings")
 async def update_settings(request: Request):
     data = await request.json()
     return _settings().update(data)
 
 
-@router.get("/api/v1/studio/settings/ai-providers")
+@router.get("/api/v1/pod_studio/settings/ai-providers")
 async def list_ai_providers():
     """List available AI providers (cloud + ollama)."""
     providers = []
@@ -544,7 +571,7 @@ async def list_ai_providers():
     return {"providers": providers}
 
 
-@router.post("/api/v1/studio/settings/ai-test")
+@router.post("/api/v1/pod_studio/settings/ai-test")
 async def test_ai_connection():
     """Test AI connection with current settings."""
     import httpx
@@ -577,7 +604,7 @@ async def test_ai_connection():
         return {"status": "error", "message": str(e)[:300]}
 
 
-@router.get("/api/v1/studio/settings/ai-info")
+@router.get("/api/v1/pod_studio/settings/ai-info")
 async def get_ai_info():
     """Return current AI model info for UI display."""
     s = _settings()
@@ -593,65 +620,104 @@ async def get_ai_info():
     }
 
 
-# ── Drama CRUD ──────────────────────────────────────────────
+# ── Ad Campaign CRUD ──────────────────────────────────────────────
 
-@router.get("/api/v1/studio/dramas")
-async def list_dramas():
-    return {"items": _db().list_dramas()}
+@router.get("/api/v1/pod_studio/campaigns")
+async def list_campaigns():
+    return {"items": _db().list_campaigns()}
 
 
-@router.post("/api/v1/studio/dramas")
-async def create_drama(request: Request):
+@router.post("/api/v1/pod_studio/campaigns")
+async def create_campaign(request: Request):
     data = await request.json()
     if not data.get("title"):
         raise HTTPException(400, "Title is required")
         
-    drama = _db().create_drama(data)
+    campaign = _db().create_campaign(data)
     
     # The gallery_category_id is stored in metadata, but we no longer auto-clone 
     # characters here. Instead, we let the AI Extractor agent intelligently 
     # select the most suitable characters from the gallery during the Extract step.
     
-    return drama
+    return campaign
 
 
-@router.get("/api/v1/studio/dramas/{drama_id}")
-async def get_drama(drama_id: int):
-    d = _db().get_drama_full(drama_id)
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: int):
+    d = _db().get_campaign_full(campaign_id)
     if not d:
-        raise HTTPException(404, "Drama not found")
+        raise HTTPException(404, "Ad Campaign not found")
     return d
 
 
-@router.put("/api/v1/studio/dramas/{drama_id}")
-async def update_drama(drama_id: int, request: Request):
+@router.put("/api/v1/pod_studio/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: int, request: Request):
     data = await request.json()
-    result = _db().update_drama(drama_id, data)
+    result = _db().update_campaign(campaign_id, data)
     if not result:
-        raise HTTPException(404, "Drama not found")
+        raise HTTPException(404, "Ad Campaign not found")
     return result
 
 
-@router.delete("/api/v1/studio/dramas/{drama_id}")
-async def delete_drama(drama_id: int):
-    _db().delete_drama(drama_id)
+@router.delete("/api/v1/pod_studio/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: int):
+    _db().delete_campaign(campaign_id)
     return {"status": "ok"}
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/generate-outline")
-async def generate_outline(drama_id: int, request: Request):
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/generate-outline")
+async def generate_outline(campaign_id: int, request: Request):
     data = await request.json()
     premise = data.get("premise", "")
     episode_count = data.get("episode_count", 5)
 
     if not premise:
-        raise HTTPException(400, "Premise is required")
+        # Auto-generate premise from gallery items + campaign settings
+        try:
+            campaign_doc_pre = _db().get_campaign(campaign_id)
+            if campaign_doc_pre:
+                cmeta = json.loads(campaign_doc_pre.get("metadata", "{}") or "{}")
+                gallery_cat_id = cmeta.get("gallery_category_id")
+                if gallery_cat_id:
+                    gallery_items = _db().list_gallery_items(gallery_cat_id)
+                    if gallery_items:
+                        content_format = cmeta.get("content_format", "Ad Campaign")
+                        ethnicity = cmeta.get("ethnicity", "Default")
+                        aspect_ratio = cmeta.get("aspect_ratio", "9:16")
+                        
+                        products = []
+                        models = []
+                        for gi in gallery_items:
+                            primary_tag = " ⭐ PRIMARY PRODUCT" if gi.get("is_primary") else ""
+                            desc = gi.get("appearance", "") or gi.get("description", "")
+                            fabric = f", Material: {gi.get('fabric_material')}" if gi.get("fabric_material") else ""
+                            acc = f", Accessories: {gi.get('accessory_material')}" if gi.get("accessory_material") else ""
+                            if gi.get("role_type") == "presenter" or gi.get("char_type") == "individual":
+                                models.append(f"- Model{primary_tag}: {gi.get('name', '')} ({gi.get('gender', '')}, {gi.get('age_range', '')}). {desc}")
+                            else:
+                                products.append(f"- Product{primary_tag}: {gi.get('name', '')}. {desc}{fabric}{acc}")
+                        
+                        eth_line = f"\nCharacter ethnicity: {ethnicity}" if ethnicity != "Default" else ""
+                        premise = f"Auto-generate an optimized {content_format} video script for these products/models:\n\n"
+                        if products:
+                            premise += f"PRODUCTS:\n" + "\n".join(products) + "\n\n"
+                        if models:
+                            premise += f"MODELS:\n" + "\n".join(models) + "\n\n"
+                        premise += f"Format: {content_format}\nAspect ratio: {aspect_ratio}{eth_line}\n\n"
+                        premise += "Requirements: Create an engaging ad script optimized for the above products. Focus on the PRIMARY product (⭐). Keep it concise for short video format."
+                        
+                        logger.info(f"Auto-generated premise from {len(gallery_items)} gallery items")
+        except Exception as e:
+            logger.warning(f"Failed to auto-generate premise: {e}")
+    
+    if not premise:
+        raise HTTPException(400, "Premise is required. Either enter text or add products to Gallery.")
 
     s = _settings()
     base_url, api_key, model, temp = s.get_ai_client_params()
     
-    drama_doc = _db().get_drama(drama_id)
-    language = drama_doc.get("language") if drama_doc and drama_doc.get("language") else s.get_script_language()
+    campaign_doc = _db().get_campaign(campaign_id)
+    language = campaign_doc.get("language") if campaign_doc and campaign_doc.get("language") else s.get_script_language()
     
     agent_cfg = s.get_agent_config("series_planner")
     agent_temp = agent_cfg.get("temperature", 0.7)
@@ -660,11 +726,11 @@ async def generate_outline(drama_id: int, request: Request):
         raise HTTPException(400, "No API key configured.")
 
     # Get content_format override if any
-    content_format = "Drama / Narrative"
-    if drama_doc:
+    content_format = "Ad Campaign / Narrative"
+    if campaign_doc:
         try:
-            d_meta = json.loads(drama_doc.get("metadata", "{}") or "{}")
-            content_format = d_meta.get("content_format", "Drama / Narrative")
+            d_meta = json.loads(campaign_doc.get("metadata", "{}") or "{}")
+            content_format = d_meta.get("content_format", "Ad Campaign / Narrative")
         except:
             pass
 
@@ -682,9 +748,9 @@ async def generate_outline(drama_id: int, request: Request):
     agent_context = {"content_format": content_format}
     
     # Inject video_length for short mode awareness
-    if drama_doc:
+    if campaign_doc:
         try:
-            d_meta_outline = json.loads(drama_doc.get("metadata", "{}") or "{}")
+            d_meta_outline = json.loads(campaign_doc.get("metadata", "{}") or "{}")
             vl = d_meta_outline.get("video_length", "standard")
             if vl:
                 agent_context["video_length"] = vl
@@ -710,12 +776,12 @@ async def generate_outline(drama_id: int, request: Request):
         logger.error(f"Failed to parse series outline JSON: {e}")
         raise HTTPException(500, f"Failed to parse series outline JSON. AI Output:\n{full_text[:500]}")
 
-    # Save outline into drama metadata
-    drama = _db().get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found.")
+    # Save outline into campaign metadata
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found.")
     
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
     if isinstance(meta, str):
         try:
             meta = json.loads(meta)
@@ -723,23 +789,23 @@ async def generate_outline(drama_id: int, request: Request):
             meta = {}
 
     meta["series_outline"] = parsed
-    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
     return {"status": "ok", "outline": parsed}
 
 
-async def _autopilot_runner(drama_id: int):
+async def _autopilot_runner(campaign_id: int):
     try:
-        drama = _db().get_drama(drama_id)
-        if not drama: return
+        campaign = _db().get_campaign(campaign_id)
+        if not campaign: return
 
-        meta = json.loads(drama.get("metadata", "{}") or "{}")
+        meta = json.loads(campaign.get("metadata", "{}") or "{}")
         outline = meta.get("series_outline", {})
         episodes_plan = outline.get("episodes", [])
 
         if not episodes_plan:
             meta["autopilot_status"] = "failed: no outline"
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
             return
 
         s = _settings()
@@ -748,7 +814,7 @@ async def _autopilot_runner(drama_id: int):
 
         if not api_key:
             meta["autopilot_status"] = "failed: no api key"
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
             return
 
         # Initialize Agents
@@ -760,7 +826,7 @@ async def _autopilot_runner(drama_id: int):
         a_novel = NovelWriterAgent()
         a_script = ScriptRewriterAgent()
         a_extract = ExtractorAgent()
-        a_storybd = StoryboardBreakerAgent()
+        a_storybd = StoryboardBreakerAgent(scene_gen_mode=meta.get("scene_gen_mode", "per_shot"))
 
         total = len(episodes_plan)
         
@@ -772,23 +838,24 @@ async def _autopilot_runner(drama_id: int):
             # Update status
             meta["autopilot_status"] = f"running {idx+1}/{total} - {title}"
             meta["autopilot_progress"] = int((idx / total) * 100)
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
             # 1. Create Episode in DB or use existing
             # For simplicity, we just create new ones during autopilot
-            new_ep = _db().create_episode(drama_id, {
+            new_ep = _db().create_episode(campaign_id, {
                 "episode_number": ep_num,
                 "title": title
             })
             ep_id = new_ep["id"]
 
             # Context for continuity and visual styles
-            content_format = meta.get("content_format", "Drama / Narrative")
+            content_format = meta.get("content_format", "Ad Campaign / Narrative")
             video_length = meta.get("video_length", "standard")
             context = {
-                "visual_style": drama.get("style", "realistic") if drama else "realistic",
+                "visual_style": campaign.get("style", "realistic") if campaign else "realistic",
                 "content_format": content_format,
-                "video_length": video_length
+                "video_length": video_length,
+                "scene_gen_mode": meta.get("scene_gen_mode", "per_shot"),
             }
             # Inject gallery items into context when gallery category is assigned
             gallery_cat_id = meta.get("gallery_category_id")
@@ -813,7 +880,7 @@ async def _autopilot_runner(drama_id: int):
                     logger.warning(f"Failed to load gallery items for autopilot context: {e}")
             if idx > 0:
                 # Fetch prev ep
-                eps = _db().list_episodes(drama_id)
+                eps = _db().list_episodes(campaign_id)
                 eps = sorted(eps, key=lambda x: x.get("episode_number", x["id"]))
                 if eps:
                     prev = eps[-2] # Current one is last (-1), so previous is (-2)
@@ -865,8 +932,8 @@ async def _autopilot_runner(drama_id: int):
             _db().update_episode(ep_id, {"script_content": script})
 
             # 4. Flow: Extractor
-            chars = _db().list_characters(drama_id)
-            scenes = _db().list_scenes(drama_id)
+            chars = _db().list_characters(campaign_id)
+            scenes = _db().list_scenes(campaign_id)
             context["existing_characters"] = [{"name": c["name"], "role": c["role"]} for c in chars]
             context["existing_scenes"] = [{"location": s["location"], "time": s["time"]} for s in scenes]
             
@@ -882,6 +949,7 @@ async def _autopilot_runner(drama_id: int):
             # Parse extracted JSON loosely
             try:
                 extracted = _repair_json(extract_json_str)
+                logger.info(f"Autopilot: Extracted {len(extracted.get('characters',[]))} chars, {len(extracted.get('scenes',[]))} scenes")
                 
                 # ── Gallery matching for autopilot (same logic as manual extract) ──
                 _ap_chars = extracted.get("characters", [])
@@ -962,8 +1030,8 @@ async def _autopilot_runner(drama_id: int):
                     except Exception as gme:
                         logger.warning(f"Autopilot gallery matching error: {gme}")
                 
-                _db().save_characters_dedup(drama_id, ep_id, extracted.get("characters", []))
-                _db().save_scenes_dedup(drama_id, ep_id, extracted.get("scenes", []))
+                _db().save_characters_dedup(campaign_id, ep_id, extracted.get("characters", []))
+                _db().save_scenes_dedup(campaign_id, ep_id, extracted.get("scenes", []))
             except Exception as e:
                 logger.error(f"Autopilot Extractor error: {e}")
 
@@ -977,24 +1045,24 @@ async def _autopilot_runner(drama_id: int):
             
             if not _skip_ref_images:
               meta["autopilot_status"] = f"running {idx+1}/{total} - generating character refs"
-              _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+              _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
             
               try:
-                # Re-read drama metadata from DB to get latest engine setting saved by wizard
-                _fresh_drama = _db().get_drama(drama_id)
-                if _fresh_drama:
-                    _fresh_meta = json.loads(_fresh_drama.get("metadata", "{}") or "{}")
+                # Re-read campaign metadata from DB to get latest engine setting saved by wizard
+                _fresh_campaign = _db().get_campaign(campaign_id)
+                if _fresh_campaign:
+                    _fresh_meta = json.loads(_fresh_campaign.get("metadata", "{}") or "{}")
                     # Merge fresh settings into current meta (keep autopilot_status etc.)
                     for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video"):
                         if _fk in _fresh_meta:
                             meta[_fk] = _fresh_meta[_fk]
                 
-                # Get browser profile, aspect ratio, and engine from drama metadata
+                # Get browser profile, aspect ratio, and engine from campaign metadata
                 char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 char_aspect_ratio = meta.get("aspect_ratio", "16:9")
                 image_engine = meta.get("video_engine", "grok")  # Use same engine as video
                 logger.info(f"Autopilot image engine from metadata: '{image_engine}'")
-                all_chars = _db().list_characters(drama_id)
+                all_chars = _db().list_characters(campaign_id)
                 def _has_real_image(url):
                     """Check if image_url is a real file on disk or a valid gallery API reference."""
                     if not url or not url.strip():
@@ -1008,8 +1076,8 @@ async def _autopilot_runner(drama_id: int):
                 chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
                 
                 # Also collect scenes needing images for batch mode
-                scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
-                all_scenes = _db().list_scenes(drama_id)
+                scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
+                all_scenes = _db().list_scenes(campaign_id)
                 scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
                 total_images_needed = len(chars_needing_images) + len(scenes_needing_images)
                 
@@ -1026,7 +1094,7 @@ async def _autopilot_runner(drama_id: int):
                     # ─── VEO3 BATCH MODE: 1 browser, 1 project, all images ───
                     logger.info(f"Autopilot: BATCH generating {total_images_needed} images via Veo3")
                     meta["autopilot_status"] = f"running {idx+1}/{total} - batch gen {total_images_needed} images (Veo3)"
-                    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                     
                     from pathlib import Path
                     batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
@@ -1040,7 +1108,7 @@ async def _autopilot_runner(drama_id: int):
                     
                     ref_dir = _get_ref_dir()
                     from datetime import datetime as _dt
-                    char_style = _get_char_style(drama) if drama else "Realistic"
+                    char_style = _get_char_style(campaign) if campaign else "Realistic"
                     
                     # Build batch jobs: chars + scenes
                     batch_jobs = []
@@ -1051,7 +1119,7 @@ async def _autopilot_runner(drama_id: int):
                         cid = char_obj["id"]
                         cname = char_obj.get("name", "Unknown")
                         cappearance = char_obj.get("appearance", "")
-                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio)
+                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio, meta.get("ethnicity", "Default"), role=char_obj.get("role", "presenter"))
                         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                         out_path = os.path.join(ref_dir, f"char_{cid}_ai_{ts}.png")
                         job_id = f"char_{cid}"
@@ -1149,9 +1217,9 @@ async def _autopilot_runner(drama_id: int):
                         cname = char_obj.get("name", "Unknown")
                         cappearance = char_obj.get("appearance", "")
                         meta["autopilot_status"] = f"running {idx+1}/{total} - char ref {ci+1}/{len(chars_needing_images)}: {cname}"
-                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
-                        char_style = _get_char_style(drama) if drama else "Realistic"
-                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio)
+                        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                        char_style = _get_char_style(campaign) if campaign else "Realistic"
+                        char_prompt = _build_char_ref_prompt(cname, cappearance, char_style, char_aspect_ratio, meta.get("ethnicity", "Default"), role=char_obj.get("role", "presenter"))
                         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                         out_path = os.path.join(ref_dir, f"char_{cid}_ai_{ts}.png")
                         cmd = ["node", gen_script, "--profile", char_profile, "--prompt", char_prompt, "--output", out_path, "--profiles-dir", profiles_dir, "--timeout", "120"]
@@ -1189,22 +1257,22 @@ async def _autopilot_runner(drama_id: int):
 
               # 4c. Flow: Check for remaining scenes without images (handles batch failures)
               meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
-              _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+              _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
             
               try:
                 scene_engine = meta.get("video_engine", "grok")
                 scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
-                scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+                scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
                 
                 # Re-check scenes from DB (batch may have partially completed)
-                all_scenes = _db().list_scenes(drama_id)
+                all_scenes = _db().list_scenes(campaign_id)
                 remaining_scenes = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
                 
                 if remaining_scenes:
                     logger.info(f"Autopilot: {len(remaining_scenes)} scenes still need images after batch (engine={scene_engine})")
                     meta["autopilot_status"] = f"running {idx+1}/{total} - gen remaining {len(remaining_scenes)} scene images"
-                    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                     
                     from pathlib import Path
                     top_dir = Path(_ext_dir).parents[2]
@@ -1271,7 +1339,7 @@ async def _autopilot_runner(drama_id: int):
                             stime = scene_obj.get("time", "")
                             sdesc = scene_obj.get("description", "")
                             meta["autopilot_status"] = f"running {idx+1}/{total} - scene ref {si+1}/{len(remaining_scenes)}: {slocation[:30]}"
-                            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                             scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
                             ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                             out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
@@ -1342,11 +1410,66 @@ async def _autopilot_runner(drama_id: int):
             )
             try:
                 import re
-                match = re.search(r'\[[\s\S]*\]', sb_json_str)
-                if match:
-                    parsed_array = json.loads(match.group())
-                    if isinstance(parsed_array, list):
-                        _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
+                sb_parsed = None
+                parsed_array = None
+                
+                # Strip markdown fences
+                _clean = sb_json_str.strip()
+                if '```' in _clean:
+                    _clean = re.sub(r'```(?:json)?\s*', '', _clean).strip()
+                    if _clean.endswith('```'):
+                        _clean = _clean[:-3].strip()
+                
+                # Try 1: parse as complete JSON object
+                try:
+                    sb_parsed = json.loads(_clean)
+                except Exception:
+                    # Try 2: find JSON object with regex
+                    try:
+                        obj_match = re.search(r'\{[\s\S]*\}', _clean)
+                        if obj_match:
+                            sb_parsed = json.loads(obj_match.group())
+                    except Exception:
+                        pass
+                
+                # Extract master_grid_prompt if present
+                if isinstance(sb_parsed, dict) and "master_grid_prompt" in sb_parsed:
+                    try:
+                        ep_meta2 = json.loads((_db().get_episode(ep_id) or {}).get("metadata", "{}") or "{}")
+                        ep_meta2["master_grid_prompt"] = sb_parsed["master_grid_prompt"]
+                        _db().update_episode(ep_id, {"metadata": json.dumps(ep_meta2, ensure_ascii=False)})
+                        logger.info(f"Autopilot: Saved master_grid_prompt for episode {ep_id}")
+                    except Exception as mgpe:
+                        logger.error(f"Autopilot: Failed to save master_grid_prompt: {mgpe}")
+                
+                # Extract storyboard shots array from dict
+                if isinstance(sb_parsed, dict):
+                    for pk in ["storyboards", "storyboard", "shots", "shot", "scenes", "data"]:
+                        if pk in sb_parsed and isinstance(sb_parsed[pk], list):
+                            parsed_array = sb_parsed[pk]
+                            break
+                    if not parsed_array:
+                        for k, v in sb_parsed.items():
+                            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                                parsed_array = v
+                                break
+                elif isinstance(sb_parsed, list):
+                    parsed_array = sb_parsed
+                
+                # Fallback: find bare JSON array
+                if not parsed_array:
+                    try:
+                        arr_match = re.search(r'\[[\s\S]*\]', _clean)
+                        if arr_match:
+                            parsed_array = json.loads(arr_match.group())
+                    except Exception:
+                        pass
+                
+                if isinstance(parsed_array, list) and len(parsed_array) > 0:
+                    _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
+                    logger.info(f"Autopilot: Saved {len(parsed_array)} storyboard shots for episode {ep_id}")
+                else:
+                    logger.error(f"Autopilot: Could not parse storyboard shots. First 500 chars: {sb_json_str[:500]}")
             except Exception as e:
                 logger.error(f"Autopilot Storyboard error: {e}")
 
@@ -1366,7 +1489,7 @@ async def _autopilot_runner(drama_id: int):
                         image_engine = meta.get("video_engine", "grok")
                         meta["autopilot_status"] = f"running {idx+1}/{total} - generating {len(screen_pending)} screens ({image_engine})"
                         meta["autopilot_progress"] = int(((idx + 0.7) / total) * 100)
-                        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                         
                         if image_engine == "veo3":
                             # ─── VEO3: Use veo3_batch_images.js (sequential, one-by-one) ───
@@ -1443,7 +1566,7 @@ async def _autopilot_runner(drama_id: int):
                                                     screen_ok += 1
                                                     logger.info(f"  ✓ Screen saved: shot {info['shot']['id']}")
                                                 meta["autopilot_status"] = f"running {idx+1}/{total} - screen {screen_ok}/{len(screen_pending)}"
-                                                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                                                _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                                             elif res.get("status") == "error" and res.get("message") == "RATE_LIMIT":
                                                 logger.error("Veo3 rate limit during screen gen")
                                                 break
@@ -1473,7 +1596,7 @@ async def _autopilot_runner(drama_id: int):
                                 if path:
                                     _db().update_storyboard(shot_id, {"composed_image": path, "status": "image_done"})
                                 meta["autopilot_status"] = f"running {idx+1}/{total} - screen {done}/{total_s}"
-                                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                                _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                             
                             screen_results = await screen_batch_generate(
                                 shots=screen_pending,
@@ -1502,14 +1625,14 @@ async def _autopilot_runner(drama_id: int):
             if upload_targets:
                 meta["autopilot_status"] = f"publishing to platforms"
                 meta["autopilot_progress"] = 92
-                _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+                _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
                 try:
                     # Step 8b: Publish each episode to each platform
-                    eps = _db().list_episodes(drama_id)
+                    eps = _db().list_episodes(campaign_id)
                     for ep in eps:
                         ep_id = ep["id"]
-                        video_path = _find_episode_video(drama_id, ep_id)
+                        video_path = _find_episode_video(campaign_id, ep_id)
                         if not video_path:
                             logger.warning(f"Autopilot: No video found for ep {ep_id}, skipping publish")
                             continue
@@ -1520,11 +1643,11 @@ async def _autopilot_runner(drama_id: int):
                             content_summary = ep.get("script_content", "") or ep.get("content", "")
                             if not content_summary:
                                 outline = meta.get("series_outline", {})
-                                content_summary = outline.get("overview", drama.get("title", "")) if isinstance(outline, dict) else str(outline)[:3000]
+                                content_summary = outline.get("overview", campaign.get("title", "")) if isinstance(outline, dict) else str(outline)[:3000]
 
                             ep_seo_publish = {}
-                            language = drama.get("language", "vi")
-                            ep_title = ep.get("title", "") or drama.get("title", "")
+                            language = campaign.get("language", "vi")
+                            ep_title = ep.get("title", "") or campaign.get("title", "")
                             platforms_set = set(t.get("provider", "youtube") for t in upload_targets)
                             for plat in platforms_set:
                                 try:
@@ -1545,7 +1668,7 @@ async def _autopilot_runner(drama_id: int):
                             seo = ep_meta.get("seo_publish", {}).get(platform, {})
                             if not seo:
                                 seo = meta.get("seo_publish", {}).get(platform, {})
-                            upload_title = seo.get("title", drama.get("title", ""))
+                            upload_title = seo.get("title", campaign.get("title", ""))
                             upload_desc = seo.get("description", "")
                             upload_tags = seo.get("tags", [])
                             category_id = seo.get("category_id", "22")
@@ -1587,40 +1710,40 @@ async def _autopilot_runner(drama_id: int):
         # Completed
         meta["autopilot_status"] = "completed"
         meta["autopilot_progress"] = 100
-        _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
     except Exception as e:
         logger.error(f"Autopilot Error: {e}")
         try:
-            drama = _db().get_drama(drama_id)
-            meta = json.loads(drama.get("metadata", "{}") or "{}")
+            campaign = _db().get_campaign(campaign_id)
+            meta = json.loads(campaign.get("metadata", "{}") or "{}")
             meta["autopilot_status"] = f"error: {str(e)}"
-            _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
         except:
             pass
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/start-autopilot")
-async def start_autopilot(drama_id: int, background_tasks: BackgroundTasks):
-    drama = _db().get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/start-autopilot")
+async def start_autopilot(campaign_id: int, background_tasks: BackgroundTasks):
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
         
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
     meta["autopilot_status"] = "starting"
     meta["autopilot_progress"] = 0
-    _db().update_drama(drama_id, {"metadata": json.dumps(meta)})
+    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
-    background_tasks.add_task(_autopilot_runner, drama_id)
+    background_tasks.add_task(_autopilot_runner, campaign_id)
     return {"status": "started"}
 
 
-@router.get("/api/v1/studio/dramas/{drama_id}/autopilot-status")
-async def get_autopilot_status(drama_id: int):
-    drama = _db().get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}/autopilot-status")
+async def get_autopilot_status(campaign_id: int):
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
     return {
         "status": meta.get("autopilot_status", "idle"),
         "progress": meta.get("autopilot_progress", 0),
@@ -1630,18 +1753,18 @@ async def get_autopilot_status(drama_id: int):
 
 # ── Episode CRUD ────────────────────────────────────────────
 
-@router.get("/api/v1/studio/dramas/{drama_id}/episodes")
-async def list_episodes(drama_id: int):
-    return {"items": _db().list_episodes(drama_id)}
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}/episodes")
+async def list_episodes(campaign_id: int):
+    return {"items": _db().list_episodes(campaign_id)}
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/episodes")
-async def create_episode(drama_id: int, request: Request):
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes")
+async def create_episode(campaign_id: int, request: Request):
     data = await request.json()
-    return _db().create_episode(drama_id, data)
+    return _db().create_episode(campaign_id, data)
 
 
-@router.get("/api/v1/studio/episodes/{episode_id}")
+@router.get("/api/v1/pod_studio/episodes/{episode_id}")
 async def get_episode(episode_id: int):
     ep = _db().get_episode(episode_id)
     if not ep:
@@ -1649,7 +1772,7 @@ async def get_episode(episode_id: int):
     return ep
 
 
-@router.put("/api/v1/studio/episodes/{episode_id}")
+@router.put("/api/v1/pod_studio/episodes/{episode_id}")
 async def update_episode(episode_id: int, request: Request):
     data = await request.json()
     result = _db().update_episode(episode_id, data)
@@ -1660,18 +1783,18 @@ async def update_episode(episode_id: int, request: Request):
 
 # ── Character CRUD ──────────────────────────────────────────
 
-@router.get("/api/v1/studio/dramas/{drama_id}/characters")
-async def list_characters(drama_id: int):
-    return {"items": _db().list_characters(drama_id)}
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}/characters")
+async def list_characters(campaign_id: int):
+    return {"items": _db().list_characters(campaign_id)}
 
 
-@router.put("/api/v1/studio/characters/{char_id}")
+@router.put("/api/v1/pod_studio/characters/{char_id}")
 async def update_character(char_id: int, request: Request):
     data = await request.json()
     return _db().update_character(char_id, data)
 
 
-@router.delete("/api/v1/studio/characters/{char_id}")
+@router.delete("/api/v1/pod_studio/characters/{char_id}")
 async def delete_character(char_id: int):
     _db().delete_character(char_id)
     return {"status": "ok"}
@@ -1681,14 +1804,14 @@ def _get_ref_dir():
     """Get the directory for storing reference images."""
     try:
         from tubecli.config import DATA_DIR
-        ref_dir = os.path.join(str(DATA_DIR), "content_studio", "references")
+        ref_dir = os.path.join(str(DATA_DIR), "pod_studio", "references")
     except Exception:
         ref_dir = os.path.join(_ext_dir, "outputs", "references")
     os.makedirs(ref_dir, exist_ok=True)
     return ref_dir
 
 
-@router.post("/api/v1/studio/characters/{char_id}/upload-ref")
+@router.post("/api/v1/pod_studio/characters/{char_id}/upload-ref")
 async def upload_character_ref(char_id: int, request: Request):
     """Upload a reference image for a character (multipart/form-data)."""
     import shutil
@@ -1726,10 +1849,56 @@ async def upload_character_ref(char_id: int, request: Request):
     return {"status": "ok", "path": filepath, "filename": filename}
 
 
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/upload-panorama")
+async def upload_panorama(episode_id: int, request: Request):
+    """Upload a panoramic scene image for an episode (spatial map)."""
+    from datetime import datetime
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+
+    ref_dir = _get_ref_dir()
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"panorama_ep{episode_id}_{timestamp}{ext}"
+    filepath = os.path.join(ref_dir, filename)
+
+    with open(filepath, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    # Update episode metadata
+    meta = json.loads(ep.get("metadata", "{}") or "{}")
+    meta["panorama_image_url"] = f"/api/v1/pod_studio/references/{filename}"
+    meta["panorama_image_path"] = filepath
+    meta["scene_mode"] = True
+
+    # Auto-bind first scene location if available
+    campaign_id = ep["campaign_id"]
+    scenes = _db().list_scenes(campaign_id)
+    if scenes:
+        meta["scene_location"] = scenes[0].get("location", "")
+
+    _db().update_episode(episode_id, {"metadata": json.dumps(meta)})
+    logger.info(f"Panorama uploaded for episode {episode_id}: {filename}")
+
+    return {
+        "success": True,
+        "panorama_url": meta["panorama_image_url"],
+        "scene_location": meta.get("scene_location", "")
+    }
+
+
 # Background task storage for generation status
 _gen_tasks = {}
 
-@router.post("/api/v1/studio/characters/{char_id}/generate-ref")
+@router.post("/api/v1/pod_studio/characters/{char_id}/generate-ref")
 async def generate_character_ref(char_id: int, request: Request, background_tasks: BackgroundTasks):
     """Generate a character reference image using Grok Imagine or Veo3."""
     data = await request.json()
@@ -1750,20 +1919,23 @@ async def generate_character_ref(char_id: int, request: Request, background_task
     if not appearance:
         raise HTTPException(400, f"Character '{name}' has no appearance description. Please fill in the Appearance field first.")
     
-    # Get visual style from drama
-    drama = db.get_drama(char.get("drama_id")) if char.get("drama_id") else None
-    char_style = _get_char_style(drama) if drama else "Realistic"
+    # Get visual style from campaign
+    campaign = db.get_campaign(char.get("campaign_id")) if char.get("campaign_id") else None
+    char_style = _get_char_style(campaign) if campaign else "Realistic"
     
-    # Get aspect ratio from drama metadata
-    char_aspect_ratio = "1:1"
-    if drama:
+    # Character reference sheets ALWAYS use 16:9 landscape for optimal multi-angle layout
+    # This overrides the campaign video aspect ratio — reference sheets are for consistency, not output
+    char_ref_aspect_ratio = "16:9"
+    
+    # Get ethnicity from campaign metadata
+    char_ethnicity = "Default"
+    if campaign:
         try:
-            drama_meta = json.loads(drama.get("metadata", "{}") or "{}")
-            char_aspect_ratio = drama_meta.get("aspect_ratio", "1:1")
+            _cmeta = json.loads(campaign.get("metadata", "{}") or "{}")
+            char_ethnicity = _cmeta.get("ethnicity", "Default")
         except:
             pass
-    
-    prompt = _build_char_ref_prompt(name, appearance, char_style, char_aspect_ratio)
+    prompt = _build_char_ref_prompt(name, appearance, char_style, char_ref_aspect_ratio, char_ethnicity, role=char.get("role", "presenter"))
     
     ref_dir = _get_ref_dir()
     from datetime import datetime
@@ -1801,7 +1973,7 @@ async def generate_character_ref(char_id: int, request: Request, background_task
                 "--timeout", "120"
             ]
             if engine == 'veo3':
-                cmd.extend(["--aspect-ratio", char_aspect_ratio])
+                cmd.extend(["--aspect-ratio", char_ref_aspect_ratio])
             
             env = os.environ.copy()
             env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
@@ -1859,7 +2031,7 @@ async def generate_character_ref(char_id: int, request: Request, background_task
     return {"status": "started", "task_id": task_id}
 
 
-@router.post("/api/v1/studio/scenes/{scene_id}/generate-ref")
+@router.post("/api/v1/pod_studio/scenes/{scene_id}/generate-ref")
 async def generate_scene_ref(scene_id: int, request: Request, background_tasks: BackgroundTasks):
     """Generate a scene reference image using Grok Imagine or Veo3."""
     data = await request.json()
@@ -1878,16 +2050,16 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
     if not location:
         raise HTTPException(400, "Scene has no location description.")
     
-    # Get visual style from drama
-    drama = db.get_drama(scene.get("drama_id")) if scene.get("drama_id") else None
-    scene_visual_style = _get_visual_style(drama) if drama else "Realistic"
+    # Get visual style from campaign
+    campaign = db.get_campaign(scene.get("campaign_id")) if scene.get("campaign_id") else None
+    scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
     
-    # Get aspect ratio from drama metadata
+    # Get aspect ratio from campaign metadata
     scene_aspect_ratio = "16:9"
-    if drama:
+    if campaign:
         try:
-            drama_meta = json.loads(drama.get("metadata", "{}") or "{}")
-            scene_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+            campaign_meta = json.loads(campaign.get("metadata", "{}") or "{}")
+            scene_aspect_ratio = campaign_meta.get("aspect_ratio", "16:9")
         except:
             pass
     
@@ -1980,7 +2152,7 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
     return {"status": "started", "task_id": task_id}
 
 
-@router.get("/api/v1/studio/browser-profiles")
+@router.get("/api/v1/pod_studio/browser-profiles")
 async def list_browser_profiles():
     """List available browser profiles from data/browser_profiles directory."""
     try:
@@ -2005,7 +2177,7 @@ async def list_browser_profiles():
     return {"profiles": profiles, "profiles_dir": profiles_dir}
 
 
-@router.get("/api/v1/studio/generate-status/{task_id}")
+@router.get("/api/v1/pod_studio/generate-status/{task_id}")
 async def get_gen_status(task_id: str):
     task = _gen_tasks.get(task_id)
     if not task:
@@ -2013,7 +2185,7 @@ async def get_gen_status(task_id: str):
     return task
 
 
-@router.get("/api/v1/studio/references/{filename}")
+@router.get("/api/v1/pod_studio/references/{filename}")
 async def serve_reference(filename: str):
     """Serve a reference image file."""
     ref_dir = _get_ref_dir()
@@ -2023,7 +2195,7 @@ async def serve_reference(filename: str):
     raise HTTPException(404, "Reference image not found")
 
 
-@router.post("/api/v1/studio/scenes/{scene_id}/upload-ref")
+@router.post("/api/v1/pod_studio/scenes/{scene_id}/upload-ref")
 async def upload_scene_ref(scene_id: int, request: Request):
     """Upload a reference image for a scene."""
     from datetime import datetime
@@ -2049,12 +2221,12 @@ async def upload_scene_ref(scene_id: int, request: Request):
 
 # ── Scene CRUD ──────────────────────────────────────────────
 
-@router.get("/api/v1/studio/dramas/{drama_id}/scenes")
-async def list_scenes(drama_id: int):
-    return {"items": _db().list_scenes(drama_id)}
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}/scenes")
+async def list_scenes(campaign_id: int):
+    return {"items": _db().list_scenes(campaign_id)}
 
 
-@router.put("/api/v1/studio/scenes/{scene_id}")
+@router.put("/api/v1/pod_studio/scenes/{scene_id}")
 async def update_scene(scene_id: int, request: Request):
     data = await request.json()
     return _db().update_scene(scene_id, data)
@@ -2062,29 +2234,29 @@ async def update_scene(scene_id: int, request: Request):
 
 # ── Storyboard CRUD ─────────────────────────────────────────
 
-@router.get("/api/v1/studio/episodes/{episode_id}/storyboards")
+@router.get("/api/v1/pod_studio/episodes/{episode_id}/storyboards")
 async def list_storyboards(episode_id: int):
     db = _db()
     items = db.list_storyboards(episode_id)
     # Resolve character_ids → character_names for UI display
     if items:
         ep = db.get_episode(episode_id)
-        drama_id = ep.get("drama_id") if ep else None
-        if drama_id:
-            all_chars = {c["id"]: c["name"] for c in db.list_characters(drama_id)}
+        campaign_id = ep.get("campaign_id") if ep else None
+        if campaign_id:
+            all_chars = {c["id"]: c["name"] for c in db.list_characters(campaign_id)}
             for item in items:
                 char_ids = item.get("character_ids", [])
                 item["character_names"] = [all_chars[cid] for cid in char_ids if cid in all_chars]
     return {"items": items}
 
 
-@router.put("/api/v1/studio/storyboards/{sb_id}")
+@router.put("/api/v1/pod_studio/storyboards/{sb_id}")
 async def update_storyboard(sb_id: int, request: Request):
     data = await request.json()
     return _db().update_storyboard(sb_id, data)
 
 
-@router.post("/api/v1/studio/storyboards/{sb_id}/upload-ref")
+@router.post("/api/v1/pod_studio/storyboards/{sb_id}/upload-ref")
 async def upload_storyboard_ref(sb_id: int, request: Request):
     """Upload an extra reference image for a storyboard shot and append to reference_images."""
     from datetime import datetime
@@ -2110,10 +2282,10 @@ async def upload_storyboard_ref(sb_id: int, request: Request):
         refs = []
     refs.append(fpath)
     db.update_storyboard(sb_id, {"reference_images": json.dumps(refs)})
-    return {"ok": True, "path": fpath, "url": f"/api/v1/studio/references/{fname}", "total_refs": len(refs)}
+    return {"ok": True, "path": fpath, "url": f"/api/v1/pod_studio/references/{fname}", "total_refs": len(refs)}
 
 
-@router.put("/api/v1/studio/episodes/{episode_id}/flowchart-layout")
+@router.put("/api/v1/pod_studio/episodes/{episode_id}/flowchart-layout")
 async def save_flowchart_layout(episode_id: int, request: Request):
     """Save flowchart node positions into episode metadata."""
     data = await request.json()
@@ -2130,7 +2302,7 @@ async def save_flowchart_layout(episode_id: int, request: Request):
     return {"ok": True}
 
 
-@router.get("/api/v1/studio/episodes/{episode_id}/flowchart-layout")
+@router.get("/api/v1/pod_studio/episodes/{episode_id}/flowchart-layout")
 async def get_flowchart_layout(episode_id: int):
     """Get saved flowchart layout from episode metadata."""
     db = _db()
@@ -2146,7 +2318,7 @@ async def get_flowchart_layout(episode_id: int):
 
 # ── AI Agent Chat (SSE) ────────────────────────────────────
 
-@router.get("/api/v1/studio/agent/types")
+@router.get("/api/v1/pod_studio/agent/types")
 async def agent_types():
     return {
         "types": [
@@ -2164,14 +2336,14 @@ async def agent_types():
     }
 
 
-@router.post("/api/v1/studio/agent/chat")
+@router.post("/api/v1/pod_studio/agent/chat")
 async def agent_chat(request: Request):
     """Chat with AI agent. SSE streaming response."""
     data = await request.json()
     agent_type = data.get("agent_type", "script_rewriter")
     message = data.get("message", "")
     episode_id = data.get("episode_id")
-    drama_id = data.get("drama_id")
+    campaign_id = data.get("campaign_id")
 
     if not message:
         raise HTTPException(400, "Message is required")
@@ -2181,14 +2353,14 @@ async def agent_chat(request: Request):
     base_url, api_key, model, temp = s.get_ai_client_params()
     
     language = s.get_script_language()
-    if drama_id:
-        d = _db().get_drama(drama_id)
+    if campaign_id:
+        d = _db().get_campaign(campaign_id)
         if d and d.get("language"):
             language = d["language"]
     elif episode_id:
         ep = _db().get_episode(episode_id)
-        if ep and ep.get("drama_id"):
-            d = _db().get_drama(ep["drama_id"])
+        if ep and ep.get("campaign_id"):
+            d = _db().get_campaign(ep["campaign_id"])
             if d and d.get("language"):
                 language = d["language"]
 
@@ -2212,20 +2384,20 @@ async def agent_chat(request: Request):
                 "content": ep["content"][:3000] if ep.get("content") else "",
                 "script_content": ep["script_content"][:3000] if ep.get("script_content") else "",
             }
-    if drama_id:
-        drama = _db().get_drama(drama_id)
-        chars = _db().list_characters(drama_id)
-        scenes = _db().list_scenes(drama_id)
-        drama_meta_chat = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
-        context["visual_style"] = drama.get("style", "realistic") if drama else "realistic"
-        context["content_format"] = drama_meta_chat.get("content_format", "Drama / Narrative")
-        context["video_length"] = drama_meta_chat.get("video_length", "standard")
+    if campaign_id:
+        campaign = _db().get_campaign(campaign_id)
+        chars = _db().list_characters(campaign_id)
+        scenes = _db().list_scenes(campaign_id)
+        campaign_meta_chat = json.loads(campaign.get("metadata", "{}") or "{}") if campaign else {}
+        context["visual_style"] = campaign.get("style", "realistic") if campaign else "realistic"
+        context["content_format"] = campaign_meta_chat.get("content_format", "Ad Campaign / Narrative")
+        context["video_length"] = campaign_meta_chat.get("video_length", "standard")
         context["characters"] = [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c.get("appearance", ""), "personality": c.get("personality", "")} for c in chars]
         context["scenes"] = [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s.get("description", "")} for s in scenes]
 
         # ── Inject gallery character roster for Script Rewriter ──
         # So the AI can reference gallery characters by name tag in the script
-        gallery_cat_id_chat = drama_meta_chat.get("gallery_category_id")
+        gallery_cat_id_chat = campaign_meta_chat.get("gallery_category_id")
         if gallery_cat_id_chat and agent_type == "script_rewriter":
             try:
                 gallery_items_chat = _db().list_gallery_items(gallery_cat_id_chat)
@@ -2248,7 +2420,7 @@ async def agent_chat(request: Request):
                 logger.warning(f"Failed to inject gallery roster for script_rewriter: {e}")
 
         # Auto-fetch previous episode for continuity context
-        eps = _db().list_episodes(drama_id)
+        eps = _db().list_episodes(campaign_id)
         eps = sorted(eps, key=lambda x: x.get("episode_number", x["id"]))
         curr_idx = next((i for i, e in enumerate(eps) if e["id"] == episode_id), -1)
         if curr_idx > 0:
@@ -2297,7 +2469,7 @@ async def agent_chat(request: Request):
     )
 
 
-def _get_agent(agent_type: str):
+def _get_agent(agent_type: str, **kwargs):
     """Get agent instance by type."""
     if agent_type == "script_rewriter":
         from agents.script_rewriter import ScriptRewriterAgent
@@ -2307,7 +2479,7 @@ def _get_agent(agent_type: str):
         return ExtractorAgent()
     elif agent_type == "storyboard_breaker":
         from agents.storyboard_breaker import StoryboardBreakerAgent
-        return StoryboardBreakerAgent()
+        return StoryboardBreakerAgent(scene_gen_mode=kwargs.get("scene_gen_mode", "per_shot"))
     elif agent_type == "series_planner":
         from agents.series_planner import SeriesPlannerAgent
         return SeriesPlannerAgent()
@@ -2317,13 +2489,13 @@ def _get_agent(agent_type: str):
     return None
 
 
-# ── Extract Characters & Scenes ─────────────────────────────
+# ── Extract Models & Products & Scenes ─────────────────────────────
 
-@router.post("/api/v1/studio/episodes/{episode_id}/extract")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/extract")
 async def extract_characters_scenes(episode_id: int, request: Request):
     """AI extracts characters and scenes from script, saves to DB with dedup.
     Returns SSE stream with progress + final extracted data.
-    Optional body: { profile_name: str }  — overrides drama metadata browser_profile_name."""
+    Optional body: { profile_name: str }  — overrides campaign metadata browser_profile_name."""
     # Parse optional JSON body (profile_name override)
     _req_profile_name = ""
     try:
@@ -2337,7 +2509,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
     if not ep:
         raise HTTPException(404, "Episode not found")
 
-    drama_id = ep["drama_id"]
+    campaign_id = ep["campaign_id"]
     script = ep.get("script_content") or ep.get("content") or ""
     if not script.strip():
         raise HTTPException(400, "No script content to extract from. Please write or rewrite first.")
@@ -2345,8 +2517,8 @@ async def extract_characters_scenes(episode_id: int, request: Request):
     # Get settings
     s = _settings()
     base_url, api_key, model, temp = s.get_ai_client_params()
-    drama_doc2 = _db().get_drama(drama_id)
-    language = drama_doc2.get("language") if drama_doc2 and drama_doc2.get("language") else s.get_script_language()
+    campaign_doc2 = _db().get_campaign(campaign_id)
+    language = campaign_doc2.get("language") if campaign_doc2 and campaign_doc2.get("language") else s.get_script_language()
     agent_cfg = s.get_agent_config("extractor")
     agent_temp = agent_cfg.get("temperature", 0.3)
 
@@ -2354,20 +2526,20 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         raise HTTPException(400, "No AI API key configured. Please configure in Settings.")
 
     # Build context with existing data so AI doesn't re-extract
-    existing_chars = _db().list_characters(drama_id)
-    existing_scenes = _db().list_scenes(drama_id)
-    drama = _db().get_drama(drama_id)
-    drama_meta = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
+    existing_chars = _db().list_characters(campaign_id)
+    existing_scenes = _db().list_scenes(campaign_id)
+    campaign = _db().get_campaign(campaign_id)
+    campaign_meta = json.loads(campaign.get("metadata", "{}") or "{}") if campaign else {}
     context = {
-        "visual_style": drama.get("style", "realistic") if drama else "realistic",
-        "content_format": drama_meta.get("content_format", "Drama / Narrative"),
+        "visual_style": campaign.get("style", "realistic") if campaign else "realistic",
+        "content_format": campaign_meta.get("content_format", "Ad Campaign / Narrative"),
         "existing_characters": [{"name": c["name"], "role": c["role"]} for c in existing_chars],
         "existing_scenes": [{"location": s["location"], "time": s["time"]} for s in existing_scenes],
     }
 
     # Inject available gallery items for the AI to select from
-    gallery_category_id = drama_meta.get("gallery_category_id")
-    content_format = drama_meta.get("content_format", "Drama / Narrative")
+    gallery_category_id = campaign_meta.get("gallery_category_id")
+    content_format = campaign_meta.get("content_format", "Ad Campaign / Narrative")
     if gallery_category_id:
         try:
             gallery_items = _db().list_gallery_items(gallery_category_id)
@@ -2382,7 +2554,10 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                     "age_range": item.get("age_range", ""),
                     "role_type": item.get("role_type", ""),
                     "tags": item.get("tags", ""),
-                    "appearance_summary": item.get("appearance", "")[:200]
+                    "appearance_summary": item.get("appearance", "")[:200],
+                    "fabric_material": item.get("fabric_material", ""),
+                    "accessory_material": item.get("accessory_material", ""),
+                    "is_primary": item.get("is_primary", 0),
                 }
                 for item in gallery_items
             ]
@@ -2409,10 +2584,10 @@ async def extract_characters_scenes(episode_id: int, request: Request):
         yield f"data: {json.dumps({'event': 'status', 'message': 'Analyzing script...'})}\n\n"
 
         # Build extraction message based on content format
-        content_format = context.get("content_format", "Drama / Narrative")
-        is_drama = "Drama" in content_format or "Phim" in content_format or "Narrative" in content_format
+        content_format = context.get("content_format", "Ad Campaign / Narrative")
+        is_campaign = "Ad Campaign" in content_format or "Phim" in content_format or "Narrative" in content_format
 
-        if is_drama:
+        if is_campaign:
             extract_msg = (
                 "Extract ALL characters and scenes from this script. "
                 "Do NOT skip any named character even if minor. "
@@ -2509,7 +2684,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
             yield f"data: {json.dumps({'event': 'status', 'message': f'Matching {len(characters)} characters against gallery...'})}\n\n"
 
             _gallery_items_full = []
-            _gallery_cat_id = drama_meta.get("gallery_category_id")
+            _gallery_cat_id = campaign_meta.get("gallery_category_id")
             if _gallery_cat_id:
                 try:
                     _gallery_items_full = _db().list_gallery_items(_gallery_cat_id)
@@ -2714,12 +2889,12 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                         logger.error(f"Failed to merge gallery item {gid}: {e}")
 
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(characters)} characters...'})}\n\n"
-            saved_chars = _db().save_characters_dedup(drama_id, episode_id, characters)
+            saved_chars = _db().save_characters_dedup(campaign_id, episode_id, characters)
             yield f"data: {json.dumps({'event': 'chars_saved', 'count': len(saved_chars)})}\n\n"
 
         if scenes:
             yield f"data: {json.dumps({'event': 'status', 'message': f'Saving {len(scenes)} scenes...'})}\n\n"
-            saved_scenes = _db().save_scenes_dedup(drama_id, episode_id, scenes)
+            saved_scenes = _db().save_scenes_dedup(campaign_id, episode_id, scenes)
             yield f"data: {json.dumps({'event': 'scenes_saved', 'count': len(saved_scenes)})}\n\n"
 
 
@@ -2740,23 +2915,23 @@ async def extract_characters_scenes(episode_id: int, request: Request):
             return os.path.isfile(u)
 
         # --- Auto-generate AI reference images for new characters and scenes ---
-        all_drama_chars = _db().list_characters(drama_id)
-        chars_for_gen = [c for c in all_drama_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
+        all_campaign_chars = _db().list_characters(campaign_id)
+        chars_for_gen = [c for c in all_campaign_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
         
-        all_drama_scenes = _db().list_scenes(drama_id)
-        scenes_for_gen = [sc for sc in all_drama_scenes if sc.get("location", "").strip() and not _has_real_image(sc.get("image_url", ""))]
+        all_campaign_scenes = _db().list_scenes(campaign_id)
+        scenes_for_gen = [sc for sc in all_campaign_scenes if sc.get("location", "").strip() and not _has_real_image(sc.get("image_url", ""))]
         
         total_images_needed = len(chars_for_gen) + len(scenes_for_gen)
         
         if total_images_needed > 0:
-            drama_obj = _db().get_drama(drama_id)
-            char_style = _get_char_style(drama_obj) if drama_obj else "Realistic"
-            scene_visual_style = _get_visual_style(drama_obj) if drama_obj else "Realistic"
+            campaign_obj = _db().get_campaign(campaign_id)
+            char_style = _get_char_style(campaign_obj) if campaign_obj else "Realistic"
+            scene_visual_style = _get_visual_style(campaign_obj) if campaign_obj else "Realistic"
             
             _img_meta = {}
             try:
-                if drama_obj:
-                    _img_meta = json.loads(drama_obj.get("metadata", "{}") or "{}")
+                if campaign_obj:
+                    _img_meta = json.loads(campaign_obj.get("metadata", "{}") or "{}")
             except:
                 pass
                 
@@ -2765,7 +2940,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
             
             if _req_profile_name and not _img_meta.get("browser_profile_name"):
                 _img_meta["browser_profile_name"] = _req_profile_name
-                _db().update_drama(drama_id, {"metadata": json.dumps(_img_meta)})
+                _db().update_campaign(campaign_id, {"metadata": json.dumps(_img_meta)})
                 
             if not profile_name:
                 yield f'data: {json.dumps({"event": "status", "message": f"⚠️ Chưa chọn Browser Profile — bỏ qua tạo {total_images_needed} ảnh AI. Chọn profile rồi bấm AI Gen."})}\n\n'
@@ -2795,7 +2970,8 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                     _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                     
                     for c in chars_for_gen:
-                        cp = _build_char_ref_prompt(c.get("name", ""), c.get("appearance", ""), char_style, char_ar)
+                        _eth = _img_meta.get("ethnicity", "Default") if _img_meta else "Default"
+                        cp = _build_char_ref_prompt(c.get("name", ""), c.get("appearance", ""), char_style, char_ar, _eth, role=c.get("role", "presenter"))
                         cout = os.path.join(_rdir, f"char_{c['id']}_ai_{_ts}.png")
                         batch_jobs.append({"id": f"char_{c['id']}", "prompt": cp, "output": cout, "type": "character", "db_id": c['id']})
                         
@@ -2869,7 +3045,8 @@ async def extract_characters_scenes(episode_id: int, request: Request):
                         _ca = c.get("appearance", "")
                         yield f'data: {json.dumps({"event": "status", "message": f"🎨 [{_ci+1}/{len(chars_for_gen)}] Tạo ảnh nhân vật: {_cn[:30]}..."})}\n\n'
                         
-                        _cp = _build_char_ref_prompt(_cn, _ca, char_style, "1:1")
+                        _eth2 = _img_meta.get("ethnicity", "Default") if _img_meta else "Default"
+                        _cp = _build_char_ref_prompt(_cn, _ca, char_style, "1:1", _eth2, role=c.get("role", "presenter"))
                         _cout = os.path.join(_rdir, f"char_{_cid}_ai_{_ts}.png")
                         os.makedirs(os.path.dirname(_cout), exist_ok=True)
                         
@@ -2970,7 +3147,7 @@ async def extract_characters_scenes(episode_id: int, request: Request):
 
 # ── Storyboard Breakdown ───────────────────────────────
 
-@router.delete("/api/v1/studio/episodes/{episode_id}/storyboards")
+@router.delete("/api/v1/pod_studio/episodes/{episode_id}/storyboards")
 async def clear_storyboards(episode_id: int):
     """Clear (soft delete) all storyboards for an episode."""
     import datetime
@@ -2979,7 +3156,7 @@ async def clear_storyboards(episode_id: int):
     return {"status": "ok"}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/storyboard")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/storyboard")
 async def generate_storyboard(episode_id: int, request: Request):
     """AI breaks script into storyboard shots, saves to DB.
     Returns SSE stream with progress + final shot data."""
@@ -2990,7 +3167,7 @@ async def generate_storyboard(episode_id: int, request: Request):
     if not ep:
         raise HTTPException(404, "Episode not found")
 
-    drama_id = ep["drama_id"]
+    campaign_id = ep["campaign_id"]
     script = ep.get("script_content") or ep.get("content") or ""
     if not script.strip():
         raise HTTPException(400, "No script content. Please complete Rewrite first.")
@@ -3003,8 +3180,8 @@ async def generate_storyboard(episode_id: int, request: Request):
     # Get settings
     s = _settings()
     base_url, api_key, model, temp = s.get_ai_client_params()
-    drama_doc3 = _db().get_drama(drama_id)
-    language = drama_doc3.get("language") if drama_doc3 and drama_doc3.get("language") else s.get_script_language()
+    campaign_doc3 = _db().get_campaign(campaign_id)
+    language = campaign_doc3.get("language") if campaign_doc3 and campaign_doc3.get("language") else s.get_script_language()
     agent_cfg = s.get_agent_config("storyboard_breaker")
     agent_temp = agent_cfg.get("temperature", 0.5)
 
@@ -3012,31 +3189,32 @@ async def generate_storyboard(episode_id: int, request: Request):
         raise HTTPException(400, "No AI API key configured.")
 
     # Build context with characters and scenes
-    drama = _db().get_drama(drama_id)
-    characters = _db().list_characters(drama_id)
-    scenes = _db().list_scenes(drama_id)
-    drama_metadata = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
+    campaign = _db().get_campaign(campaign_id)
+    characters = _db().list_characters(campaign_id)
+    scenes = _db().list_scenes(campaign_id)
+    campaign_metadata = json.loads(campaign.get("metadata", "{}") or "{}") if campaign else {}
     
     context = {
-        "visual_style": drama.get("style", "realistic") if drama else "realistic",
-        "content_format": drama_metadata.get("content_format", "Drama / Narrative"),
-        "shot_density": drama_metadata.get("shot_density", "normal"),
-        "camera_angle": drama_metadata.get("camera_angle", "Default"),
-        "ethnicity": drama_metadata.get("ethnicity", "Default"),
-        "prompt_focus": drama_metadata.get("prompt_focus", "Default"),
-        "no_text_in_prompt": drama_metadata.get("no_text_in_prompt", False),
-        "text_in_video": drama_metadata.get("text_in_video", "notext" if drama_metadata.get("no_text_in_prompt", False) else "none"),
-        "narration_source": drama_metadata.get("narration_source", "prose"),
+        "visual_style": campaign.get("style", "realistic") if campaign else "realistic",
+        "content_format": campaign_metadata.get("content_format", "Ad Campaign / Narrative"),
+        "shot_density": campaign_metadata.get("shot_density", "normal"),
+        "camera_angle": campaign_metadata.get("camera_angle", "Default"),
+        "ethnicity": campaign_metadata.get("ethnicity", "Default"),
+        "prompt_focus": campaign_metadata.get("prompt_focus", "Default"),
+        "no_text_in_prompt": campaign_metadata.get("no_text_in_prompt", False),
+        "text_in_video": campaign_metadata.get("text_in_video", "notext" if campaign_metadata.get("no_text_in_prompt", False) else "none"),
+        "narration_source": campaign_metadata.get("narration_source", "prose"),
+        "scene_gen_mode": campaign_metadata.get("scene_gen_mode", "per_shot"),
         "characters": [{"id": c["id"], "name": c["name"], "role": c["role"], "appearance": c["appearance"], "personality": c["personality"]} for c in characters],
         "scenes": [{"id": s["id"], "location": s["location"], "time": s["time"], "description": s["description"]} for s in scenes],
     }
     # Provide raw prose content for narration extraction
     raw_content = ep.get("content") or ""
-    if drama_metadata.get("narration_source") == "prose" and raw_content.strip():
+    if campaign_metadata.get("narration_source") == "prose" and raw_content.strip():
         context["raw_prose_content"] = raw_content[:12000]
 
     # Inject gallery items into context — split by type for AI targeting
-    gallery_cat_id = drama_metadata.get("gallery_category_id")
+    gallery_cat_id = campaign_metadata.get("gallery_category_id")
     if gallery_cat_id:
         try:
             gallery_items = _db().list_gallery_items(gallery_cat_id)
@@ -3067,7 +3245,24 @@ async def generate_storyboard(episode_id: int, request: Request):
     # Build name-to-id map for character resolution
     char_name_map = {c["name"].lower().strip(): c["id"] for c in characters}
 
-    agent = _get_agent("storyboard_breaker")
+    # ── Panorama Mode Detection ──
+    ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+    panorama_image_path = ep_meta.get("panorama_image_path", "")
+    panorama_b64 = None
+    scene_mode = campaign_metadata.get("scene_gen_mode", "per_shot")
+
+    if ep_meta.get("scene_mode") and panorama_image_path and os.path.exists(panorama_image_path):
+        scene_mode = "panorama"
+        import base64
+        try:
+            with open(panorama_image_path, "rb") as _pf:
+                panorama_b64 = base64.b64encode(_pf.read()).decode("utf-8")
+            logger.info(f"Panorama mode: loaded image {panorama_image_path} ({len(panorama_b64)//1024}KB b64)")
+        except Exception as _pe:
+            logger.warning(f"Failed to load panorama image: {_pe}")
+            panorama_b64 = None
+
+    agent = _get_agent("storyboard_breaker", scene_gen_mode=scene_mode)
 
     async def generate():
         try:
@@ -3118,7 +3313,8 @@ async def generate_storyboard(episode_id: int, request: Request):
             # This way incremental saves per-chunk can always use append=True
             if not append_mode:
                 from datetime import datetime as _dt_sb
-                _db().clear_storyboards(episode_id)
+                _db().clear_storyboards(episode_id)
+
                 logger.info(f"Storyboard: cleared old shots for episode {episode_id} (fresh generation)")
 
             for idx in pending_chunk_indices:
@@ -3148,15 +3344,37 @@ async def generate_storyboard(episode_id: int, request: Request):
                 data_json = json.dumps({'event': 'progress', 'content': '\n\n---\n\n'})
                 yield f"data: {data_json}\n\n"
             
-                async for chunk in agent.chat_stream(
-                    prompt,
-                    language, base_url, api_key, model, agent_temp, context
-                ):
-                    if chunk == "\x00REASONING\x00":
-                        yield f"data: {json.dumps({'event': 'progress_reasoning'})}\n\n"
-                    else:
-                        full_response.append(chunk)
-                        yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
+                # Use vision mode if panorama image is available
+                if panorama_b64 and is_first:
+                    # Detect image MIME type
+                    _img_mime = "image/jpeg"
+                    if panorama_image_path.lower().endswith(".png"):
+                        _img_mime = "image/png"
+                    elif panorama_image_path.lower().endswith(".webp"):
+                        _img_mime = "image/webp"
+
+                    prompt = f"PANORAMA IMAGE ATTACHED: Analyze the attached panoramic scene image carefully. All shots MUST take place in this single location.\n\n{prompt}"
+
+                    async for chunk in agent.chat_stream_with_vision(
+                        prompt, panorama_b64,
+                        language, base_url, api_key, model, agent_temp, context,
+                        image_mime=_img_mime
+                    ):
+                        if chunk == "\x00REASONING\x00":
+                            yield f"data: {json.dumps({'event': 'progress_reasoning'})}\n\n"
+                        else:
+                            full_response.append(chunk)
+                            yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
+                else:
+                    async for chunk in agent.chat_stream(
+                        prompt,
+                        language, base_url, api_key, model, agent_temp, context
+                    ):
+                        if chunk == "\x00REASONING\x00":
+                            yield f"data: {json.dumps({'event': 'progress_reasoning'})}\n\n"
+                        else:
+                            full_response.append(chunk)
+                            yield f"data: {json.dumps({'event': 'progress', 'content': chunk})}\n\n"
 
                 full_text = "".join(full_response)
 
@@ -3220,7 +3438,11 @@ async def generate_storyboard(episode_id: int, request: Request):
                         parsed = {"storyboards": obj_candidates}
 
                 shots = []
+                master_grid_prompt = None
                 if parsed:
+                    if isinstance(parsed, dict) and "master_grid_prompt" in parsed:
+                        master_grid_prompt = parsed["master_grid_prompt"]
+                        
                     for possible_key in ["storyboards", "storyboard", "shots", "shot", "scenes", "data"]:
                         if possible_key in parsed and isinstance(parsed[possible_key], list):
                             shots = parsed[possible_key]
@@ -3272,6 +3494,15 @@ async def generate_storyboard(episode_id: int, request: Request):
                         yield f"data: {json.dumps({'event': 'status', 'message': f'⚠️ Chunk {idx+1}: {len(shots)}/{expected} shots'})}\n\n"
                     all_shots.extend(shots)
                     
+                    if master_grid_prompt:
+                        try:
+                            ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+                            ep_meta["master_grid_prompt"] = master_grid_prompt
+                            _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta, ensure_ascii=False)})
+                            yield f"data: {json.dumps({'event': 'status', 'message': f'🎨 Đã tạo Master Grid Prompt'})}\n\n"
+                        except Exception as meta_e:
+                            logger.error(f"Failed to save master grid prompt: {meta_e}")
+                            
                     # ── Incremental save: save this chunk's shots immediately ──
                     # So if a later chunk fails, these shots are already in DB
                     try:
@@ -3397,7 +3628,7 @@ async def generate_storyboard(episode_id: int, request: Request):
 
 # ── Export ──────────────────────────────────────────────────
 
-@router.post("/api/v1/studio/episodes/{episode_id}/export")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/export")
 async def export_episode(episode_id: int, request: Request):
     """Export episode content as markdown/txt/json."""
     data = await request.json()
@@ -3406,9 +3637,9 @@ async def export_episode(episode_id: int, request: Request):
     if not ep:
         raise HTTPException(404, "Episode not found")
 
-    drama = _db().get_drama(ep["drama_id"]) if ep.get("drama_id") else {}
+    campaign = _db().get_campaign(ep["campaign_id"]) if ep.get("campaign_id") else {}
 
-    title = drama.get("title", "Untitled") if drama else "Untitled"
+    title = campaign.get("title", "Untitled") if campaign else "Untitled"
     ep_title = ep.get("title", f"Episode {ep.get('episode_number', '')}".strip() or "Untitled")
 
     import re
@@ -3421,16 +3652,16 @@ async def export_episode(episode_id: int, request: Request):
             "format": "json",
             "filename": safe_filename,
             "data": {
-                "drama": drama,
+                "campaign": campaign,
                 "episode": ep,
-                "characters": _db().list_characters(ep["drama_id"]),
-                "scenes": _db().list_scenes(ep["drama_id"]),
+                "characters": _db().list_characters(ep["campaign_id"]),
+                "scenes": _db().list_scenes(ep["campaign_id"]),
                 "storyboards": _db().list_storyboards(episode_id),
             },
         }
 
     # MD/TXT format
-    title = drama.get("title", "Untitled") if drama else "Untitled"
+    title = campaign.get("title", "Untitled") if campaign else "Untitled"
     ep_title = ep.get("title", f"Episode {ep.get('episode_number', '?')}")
     content = ep.get("script_content") or ep.get("content", "")
 
@@ -3444,7 +3675,7 @@ async def export_episode(episode_id: int, request: Request):
 
 # ── Browser Profile Discovery (TubeCLI Browser Extension) ────
 
-@router.get("/api/v1/studio/browser-profiles")
+@router.get("/api/v1/pod_studio/browser-profiles")
 async def list_browser_profiles():
     """List available TubeCLI browser profiles from the browser extension."""
     try:
@@ -3477,7 +3708,7 @@ async def list_browser_profiles():
 _image_tasks: dict = {}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/gen-images")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/gen-images")
 async def start_gen_images(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start Grok image generation for an episode's storyboard shots using TubeCLI browser profile."""
     data = await request.json()
@@ -3591,7 +3822,7 @@ async def start_gen_images(episode_id: int, request: Request, background_tasks: 
     return {"success": True, "task_id": task_id, "total": len(pending)}
 
 
-@router.get("/api/v1/studio/gen-images/status/{task_id}")
+@router.get("/api/v1/pod_studio/gen-images/status/{task_id}")
 async def get_gen_images_status(task_id: str):
     """Poll image generation task status."""
     task = _image_tasks.get(task_id)
@@ -3607,7 +3838,7 @@ _gen_cancel_events: dict = {}  # task_id -> asyncio.Event
 _gen_processes: dict = {}  # task_id -> list of asyncio.subprocess.Process
 
 
-@router.post("/api/v1/studio/gen-videos/cancel/{task_id}")
+@router.post("/api/v1/pod_studio/gen-videos/cancel/{task_id}")
 async def cancel_gen_videos(task_id: str):
     """Cancel an in-progress video generation task and kill browser processes."""
     task = _video_tasks.get(task_id)
@@ -3632,7 +3863,7 @@ async def cancel_gen_videos(task_id: str):
     return {"success": True, "message": "Cancellation requested"}
 
 
-@router.post("/api/v1/studio/gen-images/cancel/{task_id}")
+@router.post("/api/v1/pod_studio/gen-images/cancel/{task_id}")
 async def cancel_gen_images(task_id: str):
     """Cancel an in-progress image generation task and kill browser processes."""
     task = _image_tasks.get(task_id)
@@ -3778,7 +4009,7 @@ def _generate_fallback_slide(shot, episode_id, aspect_ratio="16:9", engines_dir=
     # Save image
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
+        out_dir = os.path.join(str(DATA_DIR), "pod_studio", "grok_videos")
     except:
         out_dir = str(Path(__file__).parent / "outputs" / "grok_videos")
     os.makedirs(out_dir, exist_ok=True)
@@ -3807,7 +4038,7 @@ def _generate_fallback_slide(shot, episode_id, aspect_ratio="16:9", engines_dir=
     return img_path
 
 
-@router.delete("/api/v1/studio/episodes/{episode_id}/storyboards/{shot_id}/video")
+@router.delete("/api/v1/pod_studio/episodes/{episode_id}/storyboards/{shot_id}/video")
 async def clear_single_video(episode_id: int, shot_id: int):
     """Delete the generated video for a specific shot and clear video_url in DB."""
     db = _db()
@@ -3829,7 +4060,7 @@ async def clear_single_video(episode_id: int, shot_id: int):
     return {"success": True, "message": "Video cleared"}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/clear-videos")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/clear-videos")
 async def clear_episode_videos(episode_id: int):
     """Delete all generated videos for an episode and clear video_url in DB."""
     db = _db()
@@ -3854,7 +4085,7 @@ async def clear_episode_videos(episode_id: int):
     return {"success": True, "deleted": deleted, "total": len(shots)}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/gen-videos")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/gen-videos")
 async def start_gen_videos(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start video generation for an episode's storyboard shots. Supports engine: 'grok' (default) or 'veo3'."""
     data = await request.json()
@@ -3886,8 +4117,8 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
 
     # --- Inject character reference images into each shot ---
     db = _db()
-    drama_id = ep.get("drama_id")
-    all_chars = {c["id"]: c for c in db.list_characters(drama_id)} if drama_id else {}
+    campaign_id = ep.get("campaign_id")
+    all_chars = {c["id"]: c for c in db.list_characters(campaign_id)} if campaign_id else {}
 
     # Helper: resolve image_url (web URL or file path) to absolute file path
     _gallery_dir_cache = _get_gallery_dir()
@@ -3896,9 +4127,9 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
         """Convert web URL or file path to absolute path. Returns path if file exists, else None."""
         if not url:
             return None
-        # Gallery web URL: /api/v1/studio/gallery/image/filename
-        if url.startswith("/api/v1/studio/gallery/image/"):
-            fname = url.replace("/api/v1/studio/gallery/image/", "", 1)
+        # Gallery web URL: /api/v1/pod_studio/gallery/image/filename
+        if url.startswith("/api/v1/pod_studio/gallery/image/"):
+            fname = url.replace("/api/v1/pod_studio/gallery/image/", "", 1)
             fpath = os.path.join(_gallery_dir_cache, fname)
             if os.path.isfile(fpath):
                 return fpath
@@ -3916,7 +4147,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     # Check if this is a Presentation format — Presenter must NOT be skipped
     _is_presentation = False
     try:
-        _dm = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
+        _dm = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
         _is_presentation = (_dm.get("content_format") == "Presentation / Screen")
     except:
         pass
@@ -3969,52 +4200,66 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
             logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
         elif char_ids:
             logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
-    # --- Inject gallery reference images ONLY for shots with characters but missing refs ---
+    # --- Inject gallery reference images: PRIMARY products → ALL shots, others → fallback only ---
     try:
-        drama_meta = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
-        gallery_cat_id = drama_meta.get("gallery_category_id")
+        campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
+        gallery_cat_id = campaign_meta.get("gallery_category_id")
         if gallery_cat_id:
             gallery_items = db.list_gallery_items(gallery_cat_id)
-            gallery_ref_images = []
+            
+            # Separate PRIMARY product images from regular gallery images
+            primary_ref_images = []
+            fallback_ref_images = []
             for gi in gallery_items:
                 resolved = _resolve_image_path(gi.get("image_url", ""))
-                if resolved:
-                    gallery_ref_images.append(resolved)
-                else:
+                if not resolved:
                     try:
                         gi_refs = json.loads(gi.get("reference_images") or "[]")
                         for r in gi_refs:
                             rp = _resolve_image_path(r)
                             if rp:
-                                gallery_ref_images.append(rp)
+                                resolved = rp
                                 break
                     except:
                         pass
-            if gallery_ref_images:
-                for shot in shots:
-                    existing_refs = shot.get("ref_images", [])
-                    # Only inject gallery refs if:
-                    # 1. Shot has NO character ref images already
-                    # 2. Shot actually has characters assigned (not an empty/scenery shot)
-                    char_names = shot.get("character_names", [])
-                    if isinstance(char_names, str):
-                        try:
-                            char_names = json.loads(char_names)
-                        except:
-                            char_names = []
-                    if not existing_refs and char_names:
-                        # Shot has characters but no ref images — use gallery as fallback
-                        shot["ref_images"] = gallery_ref_images[:3]
-                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(shot['ref_images'])} gallery ref images (fallback)")
-                    # Do NOT merge gallery images into shots that already have character refs
-                    # The character-specific refs are more accurate than generic gallery images
-                logger.info(f"Gallery ref injection: {len(gallery_ref_images)} gallery images available from category {gallery_cat_id}")
+                if resolved:
+                    if gi.get("is_primary"):
+                        primary_ref_images.append(resolved)
+                    else:
+                        fallback_ref_images.append(resolved)
+            
+            if primary_ref_images:
+                logger.info(f"Gallery: {len(primary_ref_images)} PRIMARY product images will be injected into ALL shots")
+            
+            for shot in shots:
+                existing_refs = shot.get("ref_images", [])
+                char_names = shot.get("character_names", [])
+                if isinstance(char_names, str):
+                    try:
+                        char_names = json.loads(char_names)
+                    except:
+                        char_names = []
+                
+                # PRIMARY product images → ALWAYS inject into every shot
+                if primary_ref_images:
+                    existing_refs = list(existing_refs) + [p for p in primary_ref_images if p not in existing_refs]
+                    if not existing_refs:
+                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(primary_ref_images)} PRIMARY product ref images")
+                
+                # Non-primary gallery images (scenes, props) → inject if we still have room (max 3)
+                if len(existing_refs) < 3 and fallback_ref_images:
+                    existing_refs = list(existing_refs) + [p for p in fallback_ref_images if p not in existing_refs]
+                    
+                if existing_refs:
+                    shot["ref_images"] = existing_refs[:3]
+            
+            logger.info(f"Gallery ref injection: {len(primary_ref_images)} primary + {len(fallback_ref_images)} fallback images from category {gallery_cat_id}")
     except Exception as e:
         logger.warning(f"Failed to inject gallery ref images: {e}")
 
     # --- Inject scene images as ref_images for shots with scene_id ---
     try:
-        all_scenes = {s["id"]: s for s in db.list_scenes(drama_id)} if drama_id else {}
+        all_scenes = {s["id"]: s for s in db.list_scenes(campaign_id)} if campaign_id else {}
         scene_injected_count = 0
         scene_skipped_count = 0
         
@@ -4120,19 +4365,19 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     except Exception as e:
         logger.warning(f"Failed to inject composed_image ref: {e}")
 
-    # Inject aspect ratio from drama metadata
+    # Inject aspect ratio from campaign metadata
     try:
-        drama_meta = json.loads(db.get_drama(drama_id).get("metadata") or "{}")
-        video_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+        campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
+        video_aspect_ratio = campaign_meta.get("aspect_ratio", "16:9")
     except:
         video_aspect_ratio = "16:9"
     for shot in shots:
         shot["aspect_ratio"] = video_aspect_ratio
 
     # Inject text_in_video constraint suffix into prompts for Grok
-    text_in_video = drama_meta.get("text_in_video", "")
+    text_in_video = campaign_meta.get("text_in_video", "")
     # Backward compat: old boolean field
-    if not text_in_video and drama_meta.get("no_text_in_prompt"):
+    if not text_in_video and campaign_meta.get("no_text_in_prompt"):
         text_in_video = "notext"
     if text_in_video == "notext":
         notext_suffix = ". IMPORTANT: no text, no letters, no words, no typography in the video."
@@ -4150,7 +4395,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     # Special handling for Presentation format: 
     # Do not send image content description (which contains text) to video AI.
     # Only send the motion/animation instructions.
-    if drama_meta.get("content_format") == "Presentation / Screen":
+    if campaign_meta.get("content_format") == "Presentation / Screen":
         for shot in shots:
             vp = shot.get("video_prompt", "").strip()
             if vp:
@@ -4432,7 +4677,7 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     return {"success": True, "task_id": task_id, "total": len(pending)}
 
 
-@router.get("/api/v1/studio/gen-videos/status/{task_id}")
+@router.get("/api/v1/pod_studio/gen-videos/status/{task_id}")
 async def get_gen_videos_status(task_id: str):
     """Poll video generation task status."""
     task = _video_tasks.get(task_id)
@@ -4441,7 +4686,7 @@ async def get_gen_videos_status(task_id: str):
     return {"success": True, **task}
 
 
-@router.post("/api/v1/studio/storyboards/{shot_id}/generate-tts")
+@router.post("/api/v1/pod_studio/storyboards/{shot_id}/generate-tts")
 async def generate_shot_tts(shot_id: int, request: Request):
     """Generate TTS audio for a single storyboard shot using its narration_text."""
     shot = _db().get_storyboard(shot_id)
@@ -4474,9 +4719,9 @@ async def generate_shot_tts(shot_id: int, request: Request):
         # Try project metadata
         ep = _db().get_episode(shot.get("episode_id"))
         if ep:
-            drama = _db().get_drama(ep["drama_id"])
-            if drama and drama["metadata"]:
-                meta = json.loads(drama["metadata"])
+            campaign = _db().get_campaign(ep["campaign_id"])
+            if campaign and campaign["metadata"]:
+                meta = json.loads(campaign["metadata"])
                 if not voice_id:
                     voice_id = meta.get("tts_voice", "vi-VN-HoaiMyNeural")
                 if not engine:
@@ -4531,7 +4776,7 @@ async def generate_shot_tts(shot_id: int, request: Request):
 
 # ── Batch TTS (Background) ────────────────────────────────
 
-@router.post("/api/v1/studio/episodes/{episode_id}/batch-tts")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/batch-tts")
 async def start_batch_tts(episode_id: int, request: Request):
     """Start batch TTS for all shots missing audio. Runs in background."""
     import uuid
@@ -4554,12 +4799,12 @@ async def start_batch_tts(episode_id: int, request: Request):
     voice_id = req_data.get("voice_id") or "vi-VN-HoaiMyNeural"
     engine = req_data.get("engine") or "edge"
     browser_profile = None
-    drama_id = ep.get("drama_id")
-    if drama_id:
-        drama = _db().get_drama(drama_id)
-        if drama and drama.get("metadata"):
+    campaign_id = ep.get("campaign_id")
+    if campaign_id:
+        campaign = _db().get_campaign(campaign_id)
+        if campaign and campaign.get("metadata"):
             try:
-                meta = json.loads(drama["metadata"])
+                meta = json.loads(campaign["metadata"])
                 if not req_data.get("voice_id"):
                     voice_id = meta.get("tts_voice", voice_id)
                 if not req_data.get("engine"):
@@ -4998,7 +5243,7 @@ async def _batch_tts_worker_gemini(task_id, episode_id, shots, voice_id, engine,
     logger.info(f"Gemini Batch TTS {task_id}: {task['success']}/{task['total']} success, {task['failed']} failed")
 
 
-@router.get("/api/v1/studio/batch-tts/{task_id}")
+@router.get("/api/v1/pod_studio/batch-tts/{task_id}")
 async def get_batch_tts_status(task_id: str):
     """Poll batch TTS task status."""
     task = _tts_tasks.get(task_id)
@@ -5007,7 +5252,7 @@ async def get_batch_tts_status(task_id: str):
     return {"success": True, **task}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/upload-audio")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/upload-audio")
 async def upload_audio_and_split(episode_id: int, request: Request):
     """
     Upload a full audio file, run Whisper alignment, split by shot with FFmpeg,
@@ -5122,7 +5367,7 @@ async def upload_audio_and_split(episode_id: int, request: Request):
     return {"success": True, "message": f"Successfully split and assigned {len(valid_shots)} shots"}
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/resplit-audio")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/resplit-audio")
 async def resplit_audio(episode_id: int, request: Request):
     """
     Smart re-split: only Whisper the gap segments where 0-duration shots exist.
@@ -5449,7 +5694,7 @@ async def resplit_audio(episode_id: int, request: Request):
     }
 
 
-@router.post("/api/v1/studio/episodes/{episode_id}/export-ffmpeg")
+@router.post("/api/v1/pod_studio/episodes/{episode_id}/export-ffmpeg")
 async def start_export_ffmpeg(episode_id: int, request: Request, background_tasks: BackgroundTasks):
     """Start FFmpeg video assembly."""
     ep = _db().get_episode(episode_id)
@@ -5489,9 +5734,9 @@ async def start_export_ffmpeg(episode_id: int, request: Request, background_task
                 if path:
                     _video_tasks[task_id]["current_path"] = path
 
-            drama = _db().get_drama(ep["drama_id"])
-            drama_meta = json.loads(drama.get("metadata", "{}") or "{}") if drama else {}
-            video_aspect_ratio = drama_meta.get("aspect_ratio", "16:9")
+            campaign = _db().get_campaign(ep["campaign_id"])
+            campaign_meta = json.loads(campaign.get("metadata", "{}") or "{}") if campaign else {}
+            video_aspect_ratio = campaign_meta.get("aspect_ratio", "16:9")
 
             export_path = await build_ffmpeg_video(
                 episode=ep,
@@ -5514,7 +5759,7 @@ async def start_export_ffmpeg(episode_id: int, request: Request, background_task
     return {"success": True, "task_id": task_id}
 
 
-@router.get("/api/v1/studio/export-ffmpeg/status/{task_id}")
+@router.get("/api/v1/pod_studio/export-ffmpeg/status/{task_id}")
 async def get_export_ffmpeg_status(task_id: str):
     """Poll FFmpeg export task status."""
     task = _video_tasks.get(task_id)
@@ -5522,12 +5767,12 @@ async def get_export_ffmpeg_status(task_id: str):
         raise HTTPException(404, "Task not found")
     return {"success": True, **task}
 
-@router.get("/api/v1/studio/grok-image/{filename}")
+@router.get("/api/v1/pod_studio/grok-image/{filename}")
 async def serve_grok_image(filename: str):
     """Serve a locally generated Grok image."""
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_images")
+        out_dir = os.path.join(str(DATA_DIR), "pod_studio", "grok_images")
     except Exception:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "grok_images")
 
@@ -5537,13 +5782,13 @@ async def serve_grok_image(filename: str):
     raise HTTPException(404, "Image not found")
 
 
-@router.get("/api/v1/studio/grok-video/{filename}")
+@router.get("/api/v1/pod_studio/grok-video/{filename}")
 async def serve_grok_video(filename: str):
     """Serve a locally generated video (Grok or Veo3)."""
     try:
         from tubecli.config import DATA_DIR
-        grok_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
-        veo3_dir = os.path.join(str(DATA_DIR), "content_studio", "veo3_videos")
+        grok_dir = os.path.join(str(DATA_DIR), "pod_studio", "grok_videos")
+        veo3_dir = os.path.join(str(DATA_DIR), "pod_studio", "veo3_videos")
     except Exception:
         base = os.path.dirname(os.path.abspath(__file__))
         grok_dir = os.path.join(base, "outputs", "grok_videos")
@@ -5557,12 +5802,12 @@ async def serve_grok_video(filename: str):
     raise HTTPException(404, "Video not found")
 
 
-@router.get("/api/v1/studio/export-video/{filename}")
+@router.get("/api/v1/pod_studio/export-video/{filename}")
 async def serve_export_video(filename: str):
     """Serve an exported FFmpeg video."""
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "outputs", "exports")
+        out_dir = os.path.join(str(DATA_DIR), "pod_studio", "outputs", "exports")
     except Exception:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "exports")
 
@@ -5580,14 +5825,14 @@ _auto_pipeline_running = False
 _auto_pipeline_current_job_id = None
 
 
-@router.get("/api/v1/studio/auto-pipeline/jobs")
+@router.get("/api/v1/pod_studio/auto-pipeline/jobs")
 async def list_auto_pipeline_jobs(status: str = None):
     """List auto pipeline jobs."""
     jobs = _db().list_pipeline_jobs(status=status)
     return {"success": True, "jobs": jobs, "count": len(jobs)}
 
 
-@router.post("/api/v1/studio/auto-pipeline/jobs")
+@router.post("/api/v1/pod_studio/auto-pipeline/jobs")
 async def create_auto_pipeline_jobs(request: Request):
     """Create batch pipeline jobs from a list of URLs + shared config."""
     data = await request.json()
@@ -5598,7 +5843,7 @@ async def create_auto_pipeline_jobs(request: Request):
     config = {
         "source_type": data.get("source_type", "youtube_link"),
         "preset_name": data.get("preset_name", ""),
-        "pipeline_template": data.get("pipeline_template", "drama_scene"),
+        "pipeline_template": data.get("pipeline_template", "campaign_scene"),
         "content_format": data.get("content_format", "Educational / Learning"),
         "visual_style": data.get("visual_style", "Default"),
         "max_episodes": data.get("max_episodes", 1),
@@ -5630,7 +5875,7 @@ async def create_auto_pipeline_jobs(request: Request):
     return {"success": True, "jobs": created, "count": len(created)}
 
 
-@router.get("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+@router.get("/api/v1/pod_studio/auto-pipeline/jobs/{job_id}")
 async def get_auto_pipeline_job(job_id: int):
     """Get a single pipeline job."""
     job = _db().get_pipeline_job(job_id)
@@ -5639,7 +5884,7 @@ async def get_auto_pipeline_job(job_id: int):
     return {"success": True, "job": job}
 
 
-@router.put("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+@router.put("/api/v1/pod_studio/auto-pipeline/jobs/{job_id}")
 async def update_auto_pipeline_job(job_id: int, request: Request):
     """Update a pipeline job config (only if pending or error)."""
     data = await request.json()
@@ -5654,14 +5899,14 @@ async def update_auto_pipeline_job(job_id: int, request: Request):
     return {"success": True, "job": updated}
 
 
-@router.delete("/api/v1/studio/auto-pipeline/jobs/{job_id}")
+@router.delete("/api/v1/pod_studio/auto-pipeline/jobs/{job_id}")
 async def delete_auto_pipeline_job(job_id: int):
     """Delete/cancel a pipeline job."""
     _db().delete_pipeline_job(job_id)
     return {"success": True}
 
 
-@router.get("/api/v1/studio/auto-pipeline/status")
+@router.get("/api/v1/pod_studio/auto-pipeline/status")
 async def get_auto_pipeline_status():
     """Get overall pipeline status."""
     db = _db()
@@ -5676,7 +5921,7 @@ async def get_auto_pipeline_status():
     }
 
 
-@router.post("/api/v1/studio/auto-pipeline/start")
+@router.post("/api/v1/pod_studio/auto-pipeline/start")
 async def start_auto_pipeline(background_tasks: BackgroundTasks):
     """Start processing the job queue in background."""
     global _auto_pipeline_running
@@ -5687,7 +5932,7 @@ async def start_auto_pipeline(background_tasks: BackgroundTasks):
     return {"success": True, "message": "Pipeline queue started"}
 
 
-@router.post("/api/v1/studio/auto-pipeline/stop")
+@router.post("/api/v1/pod_studio/auto-pipeline/stop")
 async def stop_auto_pipeline():
     """Request pipeline to stop after current job finishes."""
     global _auto_pipeline_running
@@ -5764,40 +6009,40 @@ async def _process_single_job(job: dict):
         "source_title": source_title,
     })
 
-    # ── Step 2: Create Drama Project ──
-    drama_meta = {
+    # ── Step 2: Create Ad Campaign Project ──
+    campaign_meta = {
         "content_format": job.get("content_format", "Educational / Learning"),
         "auto_pipeline_job_id": job_id,
         "source_url": source_url,
-        "pipeline": _get_pipeline_steps(job.get("pipeline_template", "drama_scene")),
+        "pipeline": _get_pipeline_steps(job.get("pipeline_template", "campaign_scene")),
         "aspect_ratio": job.get("aspect_ratio", "16:9"),
         "narration_source": job.get("narration_source", "prose"),
         "video_length": job.get("video_length", "standard"),
     }
 
     if job.get("gallery_category_id"):
-        drama_meta["gallery_category_id"] = job["gallery_category_id"]
+        campaign_meta["gallery_category_id"] = job["gallery_category_id"]
 
     browser_profiles = json.loads(job.get("browser_profiles", "[]")) if isinstance(job.get("browser_profiles"), str) else job.get("browser_profiles", [])
     if browser_profiles:
-        drama_meta["browser_profile_name"] = browser_profiles[0]
-        drama_meta["browser_profile_names_video"] = browser_profiles
+        campaign_meta["browser_profile_name"] = browser_profiles[0]
+        campaign_meta["browser_profile_names_video"] = browser_profiles
 
     if job.get("voice_preset"):
-        drama_meta["voice_preset"] = job["voice_preset"]
+        campaign_meta["voice_preset"] = job["voice_preset"]
         parts = job["voice_preset"].split("|")
         if len(parts) > 1:
-            drama_meta["tts_engine"] = parts[1]
+            campaign_meta["tts_engine"] = parts[1]
 
-    drama = db.create_drama({
+    campaign = db.create_campaign({
         "title": source_title,
         "style": job.get("visual_style", "Default"),
         "language": job.get("language", "vi"),
         "total_episodes": job.get("max_episodes", 1),
-        "metadata": drama_meta,
+        "metadata": campaign_meta,
     })
-    drama_id = drama["id"]
-    db.update_pipeline_job(job_id, {"drama_id": drama_id})
+    campaign_id = campaign["id"]
+    db.update_pipeline_job(job_id, {"campaign_id": campaign_id})
 
     # ── Step 3: Generate Outline using AI ──
     s = _settings()
@@ -5844,37 +6089,37 @@ async def _process_single_job(job: dict):
         except Exception as e:
             raise Exception(f"Failed to parse series outline JSON from AI output: {str(e)[:100]}. AI output was: {full_text[:200]}")
         
-        meta = json.loads(drama.get("metadata", "{}") or "{}")
+        meta = json.loads(campaign.get("metadata", "{}") or "{}")
         meta["series_outline"] = outline_json
-        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+        db.update_campaign(campaign_id, {"metadata": json.dumps(meta)})
         
     except Exception as e:
         logger.error(f"Auto pipeline job {job_id}: outline generation failed: {e}")
         raise Exception(f"AI Outline Generation Failed: {e}")
 
-    logger.info(f"Auto pipeline job {job_id}: drama {drama_id} created, outline generated. "
+    logger.info(f"Auto pipeline job {job_id}: campaign {campaign_id} created, outline generated. "
                 f"AutoPilot will be triggered from frontend.")
 
     # ── Step 5: Generate SEO metadata ──
     if job.get("seo_mode") == "ai_generate":
         try:
             seo_result = await _generate_seo_metadata(cc_text[:3000], source_title, job.get("language", "vi"))
-            meta = json.loads(db.get_drama(drama_id).get("metadata", "{}") or "{}")
+            meta = json.loads(db.get_campaign(campaign_id).get("metadata", "{}") or "{}")
             meta["seo"] = seo_result
-            db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+            db.update_campaign(campaign_id, {"metadata": json.dumps(meta)})
             logger.info(f"Auto pipeline job {job_id}: SEO metadata generated")
         except Exception as e:
             logger.warning(f"SEO generation failed for job {job_id}: {e}")
 
     # ── Step 6: Queue upload (will happen after video is built) ──
-    # Upload config is stored in drama metadata; the autopilot frontend
+    # Upload config is stored in campaign metadata; the autopilot frontend
     # will read it and trigger upload after FFmpeg export completes
     upload_targets = json.loads(job.get("upload_targets", "[]")) if isinstance(job.get("upload_targets"), str) else job.get("upload_targets", [])
     if upload_targets:
-        meta = json.loads(db.get_drama(drama_id).get("metadata", "{}") or "{}")
+        meta = json.loads(db.get_campaign(campaign_id).get("metadata", "{}") or "{}")
         meta["upload_targets"] = upload_targets
         meta["upload_privacy"] = job.get("upload_privacy", "private")
-        db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+        db.update_campaign(campaign_id, {"metadata": json.dumps(meta)})
 
     logger.info(f"Auto pipeline job {job_id}: ready for autopilot execution")
 
@@ -5882,12 +6127,12 @@ async def _process_single_job(job: dict):
 def _get_pipeline_steps(template_key: str) -> list:
     """Map template key to pipeline steps."""
     templates = {
-        "drama_scene": ["raw", "rewrite", "extract", "storyboard", "videos", "audio", "video", "publish"],
-        "drama_full": ["raw", "rewrite", "extract", "storyboard", "images", "audio", "video", "publish"],
+        "campaign_scene": ["raw", "rewrite", "extract", "storyboard", "videos", "audio", "video", "publish"],
+        "campaign_full": ["raw", "rewrite", "extract", "storyboard", "images", "audio", "video", "publish"],
         "audio_story": ["raw", "rewrite", "audio", "video"],
         "content_only": ["raw", "rewrite"],
     }
-    return templates.get(template_key, templates["drama_scene"])
+    return templates.get(template_key, templates["campaign_scene"])
 
 
 async def _generate_seo_metadata(content: str, title: str, language: str) -> dict:
@@ -5942,14 +6187,14 @@ async def _generate_seo_for_platform(content: str, title: str, language: str, pl
         return {"title": title, "description": content[:300], "tags": []}
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/validate-before-publish")
-async def validate_before_publish(drama_id: int, episode_id: int):
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/validate-before-publish")
+async def validate_before_publish(campaign_id: int, episode_id: int):
     """Validate that an episode is fully ready for publishing.
     Checks: storyboard images, AI videos, TTS audio, and final exported video."""
     db = _db()
-    drama = db.get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
+    campaign = db.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
     ep = db.get_episode(episode_id)
     if not ep:
         raise HTTPException(404, "Episode not found")
@@ -6022,7 +6267,7 @@ async def validate_before_publish(drama_id: int, episode_id: int):
         errors.append(f"❌ {len(short_audio)} audio files appear corrupted (too small): {details}")
 
     # Check final exported video
-    video_path = _find_episode_video(drama_id, episode_id)
+    video_path = _find_episode_video(campaign_id, episode_id)
     has_export = False
     export_size = 0
     if video_path and os.path.isfile(video_path):
@@ -6049,13 +6294,13 @@ async def validate_before_publish(drama_id: int, episode_id: int):
     is_valid = len(errors) == 0
     return {"valid": is_valid, "errors": errors, "warnings": warnings, "summary": summary}
 
-def _find_episode_video(drama_id: int, episode_id: int) -> str:
+def _find_episode_video(campaign_id: int, episode_id: int) -> str:
     """Find the final exported video file for an episode."""
     import glob
     db = _db()
-    drama = db.get_drama(drama_id)
+    campaign = db.get_campaign(campaign_id)
     ep = db.get_episode(episode_id)
-    if not drama or not ep:
+    if not campaign or not ep:
         return ""
 
     # Check episode video_url first
@@ -6064,10 +6309,10 @@ def _find_episode_video(drama_id: int, episode_id: int) -> str:
         return video_url
 
     # Check common export paths
-    drama_title = drama.get("title", f"drama_{drama_id}")
+    campaign_title = campaign.get("title", f"campaign_{campaign_id}")
     ep_num = ep.get("episode_number", 1)
 
-    # Search in data/content_studio/exports/
+    # Search in data/pod_studio/exports/
     ext_dir = os.path.dirname(os.path.abspath(__file__))
     export_dir = os.path.join(ext_dir, "data", "exports")
     
@@ -6077,7 +6322,7 @@ def _find_episode_video(drama_id: int, episode_id: int) -> str:
     if os.path.isdir(export_dir):
         patterns = [
             os.path.join(export_dir, f"episode_{episode_id}_pipeline_export.mp4"),
-            os.path.join(export_dir, f"*{drama_id}*ep{ep_num}*.mp4")
+            os.path.join(export_dir, f"*{campaign_id}*ep{ep_num}*.mp4")
         ]
         if ep_title_clean:
             patterns.append(os.path.join(export_dir, f"*{ep_title_clean}*.mp4"))
@@ -6092,7 +6337,7 @@ def _find_episode_video(drama_id: int, episode_id: int) -> str:
     if os.path.isdir(output_dir):
         patterns = [
             os.path.join(output_dir, "**", f"episode_{episode_id}_pipeline_export.mp4"),
-            os.path.join(output_dir, "**", f"*{drama_id}*ep{ep_num}*.mp4")
+            os.path.join(output_dir, "**", f"*{campaign_id}*ep{ep_num}*.mp4")
         ]
         if ep_title_clean:
             patterns.append(os.path.join(output_dir, "**", f"*{ep_title_clean}*.mp4"))
@@ -6105,21 +6350,21 @@ def _find_episode_video(drama_id: int, episode_id: int) -> str:
     return ""
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/generate-seo")
-async def generate_seo_for_publish(drama_id: int, request: Request):
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/generate-seo")
+async def generate_seo_for_publish(campaign_id: int, request: Request):
     """Generate SEO metadata for all configured upload targets (per-platform).
     SEO is stored per-episode so each episode has unique title/description/tags."""
     data = await request.json()
     episode_id = data.get("episode_id")
 
-    drama = _db().get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
 
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
     targets = meta.get("upload_targets", [])
-    language = drama.get("language", "vi")
-    title = drama.get("title", "")
+    language = campaign.get("language", "vi")
+    title = campaign.get("title", "")
 
     # Get content summary from episode
     ep = None
@@ -6137,7 +6382,7 @@ async def generate_seo_for_publish(drama_id: int, request: Request):
                         filter(None, [sb.get("narration_text", "").strip() or sb.get("description", "").strip() for sb in storyboards])
                     )
             
-            # Combine drama title and episode title for better context
+            # Combine campaign title and episode title for better context
             ep_name = ep.get("title", "")
             if ep_name and ep_name.lower() != title.lower():
                 ep_title = f"{title} - {ep_name}"
@@ -6172,28 +6417,28 @@ async def generate_seo_for_publish(drama_id: int, request: Request):
         ep_meta["seo_publish"] = seo_publish
         _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta, ensure_ascii=False)})
     else:
-        # Fallback: save to drama if no episode specified
+        # Fallback: save to campaign if no episode specified
         meta["seo_publish"] = seo_publish
-        _db().update_drama(drama_id, {"metadata": json.dumps(meta, ensure_ascii=False)})
+        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta, ensure_ascii=False)})
 
     return {"success": True, "seo_publish": seo_publish}
 
 
-@router.post("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/publish")
-async def publish_episode(drama_id: int, episode_id: int, request: Request):
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/publish")
+async def publish_episode(campaign_id: int, episode_id: int, request: Request):
     """Publish an episode's final video to a specific platform target."""
     data = await request.json()
     target_index = data.get("target_index", 0)
 
-    drama = _db().get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
 
     ep = _db().get_episode(episode_id)
     if not ep:
         raise HTTPException(404, "Episode not found")
 
-    meta = json.loads(drama.get("metadata", "{}") or "{}")
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
     targets = meta.get("upload_targets", [])
     if target_index >= len(targets):
         raise HTTPException(400, "Invalid target_index")
@@ -6203,16 +6448,16 @@ async def publish_episode(drama_id: int, episode_id: int, request: Request):
     privacy = meta.get("upload_privacy", "private")
 
     # Find the video file
-    video_path = _find_episode_video(drama_id, episode_id)
+    video_path = _find_episode_video(campaign_id, episode_id)
     if not video_path or not os.path.isfile(video_path):
         raise HTTPException(400, f"No exported video found for episode {episode_id}. Export video in Step 7 first.")
 
-    # Get SEO for this platform (per-episode, fallback to drama-level)
+    # Get SEO for this platform (per-episode, fallback to campaign-level)
     ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
     seo = ep_meta.get("seo_publish", {}).get(platform, {})
     if not seo:
         seo = meta.get("seo_publish", {}).get(platform, {})
-    upload_title = seo.get("title", drama.get("title", f"Episode {ep.get('episode_number', 1)}"))
+    upload_title = seo.get("title", campaign.get("title", f"Episode {ep.get('episode_number', 1)}"))
     upload_desc = seo.get("description", "")
     upload_tags = seo.get("tags", [])
     category_id = seo.get("category_id", "22")
@@ -6253,8 +6498,8 @@ async def publish_episode(drama_id: int, episode_id: int, request: Request):
         raise HTTPException(500, f"Publish failed: {str(e)}")
 
 
-@router.get("/api/v1/studio/dramas/{drama_id}/episodes/{episode_id}/publish-status")
-async def get_publish_status(drama_id: int, episode_id: int):
+@router.get("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/publish-status")
+async def get_publish_status(campaign_id: int, episode_id: int):
     """Get publish status for all platforms."""
     ep = _db().get_episode(episode_id)
     if not ep:
@@ -6293,14 +6538,14 @@ async def get_publish_status(drama_id: int, episode_id: int):
 _channel_watcher_running = False
 
 
-@router.get("/api/v1/studio/channel-watchers")
+@router.get("/api/v1/pod_studio/channel-watchers")
 async def list_channel_watchers():
     """List all channel watchers."""
     watchers = _db().list_channel_watchers()
     return {"success": True, "watchers": watchers, "count": len(watchers)}
 
 
-@router.post("/api/v1/studio/channel-watchers")
+@router.post("/api/v1/pod_studio/channel-watchers")
 async def create_channel_watcher(request: Request):
     """Create a new channel watcher."""
     data = await request.json()
@@ -6330,7 +6575,7 @@ async def create_channel_watcher(request: Request):
     return {"success": True, "watcher": watcher}
 
 
-@router.put("/api/v1/studio/channel-watchers/{watcher_id}")
+@router.put("/api/v1/pod_studio/channel-watchers/{watcher_id}")
 async def update_channel_watcher(watcher_id: int, request: Request):
     """Update a channel watcher."""
     data = await request.json()
@@ -6340,14 +6585,14 @@ async def update_channel_watcher(watcher_id: int, request: Request):
     return {"success": True, "watcher": watcher}
 
 
-@router.delete("/api/v1/studio/channel-watchers/{watcher_id}")
+@router.delete("/api/v1/pod_studio/channel-watchers/{watcher_id}")
 async def delete_channel_watcher(watcher_id: int):
     """Delete a channel watcher."""
     _db().delete_channel_watcher(watcher_id)
     return {"success": True}
 
 
-@router.post("/api/v1/studio/channel-watchers/start")
+@router.post("/api/v1/pod_studio/channel-watchers/start")
 async def start_channel_watcher_loop(background_tasks: BackgroundTasks):
     """Start the channel watcher background loop."""
     global _channel_watcher_running
@@ -6357,7 +6602,7 @@ async def start_channel_watcher_loop(background_tasks: BackgroundTasks):
     return {"success": True, "message": "Channel watcher started"}
 
 
-@router.post("/api/v1/studio/channel-watchers/stop")
+@router.post("/api/v1/pod_studio/channel-watchers/stop")
 async def stop_channel_watcher_loop():
     """Stop the channel watcher background loop."""
     global _channel_watcher_running
@@ -6365,7 +6610,7 @@ async def stop_channel_watcher_loop():
     return {"success": True, "message": "Stop requested"}
 
 
-@router.get("/api/v1/studio/channel-watchers/status")
+@router.get("/api/v1/pod_studio/channel-watchers/status")
 async def channel_watcher_status():
     """Get channel watcher loop status."""
     return {"success": True, "running": _channel_watcher_running}
@@ -6489,7 +6734,7 @@ async def _check_channel_for_new_videos(watcher: dict):
             "source_url": video_url,
             "source_title": vid["title"],
             "preset_name": watcher.get("preset_name", ""),
-            "pipeline_template": watcher.get("pipeline_template", "drama_scene"),
+            "pipeline_template": watcher.get("pipeline_template", "campaign_scene"),
             "content_format": watcher.get("content_format", "Educational / Learning"),
             "visual_style": watcher.get("visual_style", "Default"),
             "max_episodes": watcher.get("max_episodes", 1),
@@ -6505,14 +6750,14 @@ async def _check_channel_for_new_videos(watcher: dict):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Character Gallery API
+# Product & Model Gallery API
 # ═══════════════════════════════════════════════════════════════
 
 def _get_gallery_dir():
     """Get directory for storing gallery character images."""
     try:
         from tubecli.config import DATA_DIR
-        d = os.path.join(str(DATA_DIR), "content_studio", "gallery")
+        d = os.path.join(str(DATA_DIR), "pod_studio", "gallery")
     except Exception:
         d = os.path.join(_ext_dir, "outputs", "gallery")
     os.makedirs(d, exist_ok=True)
@@ -6521,20 +6766,20 @@ def _get_gallery_dir():
 
 # ── Category CRUD ──
 
-@router.get("/api/v1/studio/gallery/categories")
+@router.get("/api/v1/pod_studio/gallery/categories")
 async def list_gallery_categories():
     cats = _db().list_gallery_categories()
     return {"success": True, "categories": cats}
 
 
-@router.post("/api/v1/studio/gallery/categories")
+@router.post("/api/v1/pod_studio/gallery/categories")
 async def create_gallery_category(request: Request):
     data = await request.json()
     cat = _db().create_gallery_category(data)
     return {"success": True, "category": cat}
 
 
-@router.put("/api/v1/studio/gallery/categories/{cat_id}")
+@router.put("/api/v1/pod_studio/gallery/categories/{cat_id}")
 async def update_gallery_category(cat_id: int, request: Request):
     data = await request.json()
     cat = _db().update_gallery_category(cat_id, data)
@@ -6543,7 +6788,7 @@ async def update_gallery_category(cat_id: int, request: Request):
     return {"success": True, "category": cat}
 
 
-@router.delete("/api/v1/studio/gallery/categories/{cat_id}")
+@router.delete("/api/v1/pod_studio/gallery/categories/{cat_id}")
 async def delete_gallery_category(cat_id: int):
     _db().delete_gallery_category(cat_id)
     return {"success": True}
@@ -6551,20 +6796,20 @@ async def delete_gallery_category(cat_id: int):
 
 # ── Item CRUD ──
 
-@router.get("/api/v1/studio/gallery/items")
+@router.get("/api/v1/pod_studio/gallery/items")
 async def list_gallery_items(category_id: int = None):
     items = _db().list_gallery_items(category_id)
     return {"success": True, "items": items}
 
 
-@router.post("/api/v1/studio/gallery/items")
+@router.post("/api/v1/pod_studio/gallery/items")
 async def create_gallery_item(request: Request):
     data = await request.json()
     item = _db().create_gallery_item(data)
     return {"success": True, "item": item}
 
 
-@router.get("/api/v1/studio/gallery/items/{item_id}")
+@router.get("/api/v1/pod_studio/gallery/items/{item_id}")
 async def get_gallery_item(item_id: int):
     item = _db().get_gallery_item(item_id)
     if not item:
@@ -6572,7 +6817,7 @@ async def get_gallery_item(item_id: int):
     return {"success": True, "item": item}
 
 
-@router.put("/api/v1/studio/gallery/items/{item_id}")
+@router.put("/api/v1/pod_studio/gallery/items/{item_id}")
 async def update_gallery_item(item_id: int, request: Request):
     data = await request.json()
     item = _db().update_gallery_item(item_id, data)
@@ -6581,7 +6826,7 @@ async def update_gallery_item(item_id: int, request: Request):
     return {"success": True, "item": item}
 
 
-@router.delete("/api/v1/studio/gallery/items/{item_id}")
+@router.delete("/api/v1/pod_studio/gallery/items/{item_id}")
 async def delete_gallery_item(item_id: int):
     _db().delete_gallery_item(item_id)
     return {"success": True}
@@ -6589,7 +6834,7 @@ async def delete_gallery_item(item_id: int):
 
 # ── Upload Image ──
 
-@router.post("/api/v1/studio/gallery/upload-image")
+@router.post("/api/v1/pod_studio/gallery/upload-image")
 async def upload_gallery_image_generic(request: Request):
     """Upload a reference image for a gallery character (before saving item)."""
     import shutil
@@ -6610,11 +6855,11 @@ async def upload_gallery_image_generic(request: Request):
         content = await file.read()
         f.write(content)
 
-    web_url = f"/api/v1/studio/gallery/image/{filename}"
+    web_url = f"/api/v1/pod_studio/gallery/image/{filename}"
     return {"success": True, "url": web_url, "filepath": filepath}
 
 
-@router.post("/api/v1/studio/gallery/items/{item_id}/upload-image")
+@router.post("/api/v1/pod_studio/gallery/items/{item_id}/upload-image")
 async def upload_gallery_image(item_id: int, request: Request):
     """Upload a reference image for a gallery character."""
     import shutil
@@ -6646,7 +6891,7 @@ async def upload_gallery_image(item_id: int, request: Request):
         refs = []
     refs.append(filepath)
 
-    web_url = f"/api/v1/studio/gallery/image/{filename}"
+    web_url = f"/api/v1/pod_studio/gallery/image/{filename}"
     _db().update_gallery_item(item_id, {
         "image_url": web_url,
         "reference_images": refs,
@@ -6659,7 +6904,7 @@ async def upload_gallery_image(item_id: int, request: Request):
 
 # ── Save Gemini API Key ──
 
-@router.post("/api/v1/studio/gallery/save-api-key")
+@router.post("/api/v1/pod_studio/gallery/save-api-key")
 async def save_gemini_api_key(request: Request):
     """Save a Gemini API key to cloud_api_keys.json for persistent use."""
     data = await request.json()
@@ -6688,7 +6933,7 @@ async def save_gemini_api_key(request: Request):
         raise HTTPException(500, f"Failed to save API key: {str(e)}")
 
 
-@router.get("/api/v1/studio/gallery/list-gemini-keys")
+@router.get("/api/v1/pod_studio/gallery/list-gemini-keys")
 async def list_gemini_keys():
     """List all saved Gemini API keys (masked) with active status."""
     try:
@@ -6722,7 +6967,7 @@ async def list_gemini_keys():
         return {"keys": []}
 
 
-@router.post("/api/v1/studio/gallery/set-active-gemini-key")
+@router.post("/api/v1/pod_studio/gallery/set-active-gemini-key")
 async def set_active_gemini_key(request: Request):
     """Set a specific Gemini key label as the active one (deactivate others)."""
     data = await request.json()
@@ -6751,7 +6996,7 @@ async def set_active_gemini_key(request: Request):
         raise HTTPException(500, f"Failed: {str(e)}")
 
 
-@router.post("/api/v1/studio/gallery/delete-gemini-key")
+@router.post("/api/v1/pod_studio/gallery/delete-gemini-key")
 async def delete_gemini_key(request: Request):
     """Delete a specific Gemini key by label."""
     data = await request.json()
@@ -6768,7 +7013,7 @@ async def delete_gemini_key(request: Request):
         raise HTTPException(500, f"Failed: {str(e)}")
 
 
-@router.post("/api/v1/studio/gallery/analyze-image")
+@router.post("/api/v1/pod_studio/gallery/analyze-image")
 async def analyze_gallery_image(request: Request):
     """
     Analyze a character image using Gemini Vision API.
@@ -6807,8 +7052,8 @@ async def analyze_gallery_image(request: Request):
         image_path = data.get("image_path", "")
 
         # Resolve web URL to filesystem path if needed
-        if image_path and image_path.startswith("/api/v1/studio/gallery/image/"):
-            fname = image_path.replace("/api/v1/studio/gallery/image/", "", 1)
+        if image_path and image_path.startswith("/api/v1/pod_studio/gallery/image/"):
+            fname = image_path.replace("/api/v1/pod_studio/gallery/image/", "", 1)
             image_path = os.path.join(_get_gallery_dir(), fname)
 
         if not image_path or not os.path.isfile(image_path):
@@ -6965,27 +7210,27 @@ RESPOND ONLY with valid JSON, no markdown or explanation.
         raise HTTPException(500, f"Analysis failed: {str(e)[:200]}")
 
 
-# ── Clone Gallery to Drama ──
+# ── Clone Gallery to Ad Campaign ──
 
-@router.post("/api/v1/studio/gallery/apply-to-drama")
-async def apply_gallery_to_drama(request: Request):
+@router.post("/api/v1/pod_studio/gallery/apply-to-campaign")
+async def apply_gallery_to_campaign(request: Request):
     """
-    Clone gallery characters into a drama project.
+    Clone gallery characters into a campaign project.
     Copies name, appearance, image_url, reference_images from gallery items
-    into the drama's characters table.
+    into the campaign's characters table.
     """
     data = await request.json()
-    drama_id = data.get("drama_id")
+    campaign_id = data.get("campaign_id")
     category_id = data.get("category_id")
     item_ids = data.get("item_ids", [])
 
-    if not drama_id:
-        raise HTTPException(400, "drama_id required")
+    if not campaign_id:
+        raise HTTPException(400, "campaign_id required")
 
     db = _db()
-    drama = db.get_drama(drama_id)
-    if not drama:
-        raise HTTPException(404, "Drama not found")
+    campaign = db.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Ad Campaign not found")
 
     # Get gallery items to clone
     if item_ids:
@@ -6998,8 +7243,8 @@ async def apply_gallery_to_drama(request: Request):
 
     cloned = []
     for gi in items:
-        # Check if character with same name already exists in drama
-        existing = db.list_characters(drama_id)
+        # Check if character with same name already exists in campaign
+        existing = db.list_characters(campaign_id)
         already_exists = any(c.get("name", "").lower() == gi.get("name", "").lower() for c in existing)
         if already_exists:
             continue
@@ -7013,15 +7258,15 @@ async def apply_gallery_to_drama(request: Request):
             "image_url": gi.get("image_url", ""),
             "reference_images": gi.get("reference_images", "[]"),
         }
-        char = db.create_character(drama_id, char_data)
+        char = db.create_character(campaign_id, char_data)
         cloned.append(char)
 
-    # Store gallery_category_id in drama metadata for pipeline reference
+    # Store gallery_category_id in campaign metadata for pipeline reference
     if category_id:
         try:
-            meta = json.loads(drama.get("metadata") or "{}")
+            meta = json.loads(campaign.get("metadata") or "{}")
             meta["gallery_category_id"] = category_id
-            db.update_drama(drama_id, {"metadata": json.dumps(meta)})
+            db.update_campaign(campaign_id, {"metadata": json.dumps(meta)})
         except Exception:
             pass
 
@@ -7030,7 +7275,7 @@ async def apply_gallery_to_drama(request: Request):
 
 # ── Search Gallery ──
 
-@router.get("/api/v1/studio/gallery/search")
+@router.get("/api/v1/pod_studio/gallery/search")
 async def search_gallery(q: str = "", gender: str = "", age_range: str = "", visual_style: str = ""):
     items = _db().search_gallery_items(query=q, gender=gender, age_range=age_range, visual_style=visual_style)
     return {"success": True, "items": items, "count": len(items)}
@@ -7038,7 +7283,7 @@ async def search_gallery(q: str = "", gender: str = "", age_range: str = "", vis
 
 # ── Serve Gallery Images ──
 
-@router.get("/api/v1/studio/gallery/image/{filename:path}")
+@router.get("/api/v1/pod_studio/gallery/image/{filename:path}")
 async def serve_gallery_image(filename: str):
     """Serve gallery images."""
     gallery_dir = _get_gallery_dir()
@@ -7046,4 +7291,200 @@ async def serve_gallery_image(filename: str):
     if not os.path.isfile(filepath):
         raise HTTPException(404, "Image not found")
     return FileResponse(filepath)
+
+
+
+# ── Storyboard Grid Concept ──
+
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/upload-grid")
+async def upload_storyboard_grid(campaign_id: int, episode_id: int, file: UploadFile = File(...)):
+    if not file:
+        raise HTTPException(400, "No file uploaded")
+        
+    db = _db()
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+        
+    import shutil
+    from datetime import datetime as _dt
+    _rdir = _get_ref_dir()
+    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    ext = file.filename.split('.')[-1] if '.' in file.filename else 'png'
+    filename = f"ep_{episode_id}_grid_manual_{_ts}.{ext}"
+    filepath = os.path.join(_rdir, filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    image_url = f"/pod-studio-static/ref_images/{filename}"
+    
+    return {"success": True, "image_url": image_url}
+
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/generate-grid")
+async def generate_storyboard_grid(campaign_id: int, episode_id: int, request: Request):
+    data = await request.json()
+    prompt = data.get("prompt")
+    profile_name = data.get("profile_name", "default")
+    engine = data.get("engine", "veo3")  # veo3 (4K) or grok
+    
+    if not prompt:
+        raise HTTPException(400, "Prompt is required")
+        
+    db = _db()
+    ep = db.get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+        
+    from datetime import datetime as _dt
+    import asyncio
+    from pathlib import Path
+    
+    _top = Path(_ext_dir).parents[2]
+    _bdir = str(_top / "tubecli" / "extensions" / "browser")
+    try:
+        from tubecli.config import DATA_DIR
+        _pdir = os.path.join(str(DATA_DIR), "browser_profiles")
+    except:
+        _pdir = str(_top / "data" / "browser_profiles")
+        
+    _rdir = _get_ref_dir()
+    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    _cout = os.path.join(_rdir, f"ep_{episode_id}_grid_{_ts}.png")
+    os.makedirs(os.path.dirname(_cout), exist_ok=True)
+    
+    _env = os.environ.copy()
+    _env["NODE_PATH"] = os.path.join(_bdir, "node_modules")
+    
+    # Determine aspect ratio from campaign metadata
+    campaign = db.get_campaign(campaign_id)
+    c_meta = json.loads(campaign.get("metadata", "{}") or "{}") if campaign else {}
+    aspect_ratio = c_meta.get("aspect_ratio", "1:1")
+    
+    try:
+        if engine == "veo3":
+            # Veo3 batch mode (single job for 4K quality)
+            jobs_file = os.path.join(_ext_dir, f"_grid_job_{episode_id}.json")
+            grid_jobs = [{"id": f"grid_{episode_id}", "prompt": prompt, "output": _cout}]
+            with open(jobs_file, "w", encoding="utf-8") as f:
+                json.dump(grid_jobs, f)
+            
+            _veo3_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
+            _cmd = ["node", _veo3_script, "--profile", profile_name, "--jobs", jobs_file, "--profiles-dir", _pdir, "--aspect-ratio", aspect_ratio, "--timeout", "150"]
+            
+            _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=_bdir, env=_env)
+            _so_raw = await asyncio.wait_for(_pr.stdout.read(), timeout=200)
+            await _pr.wait()
+            _sot = _so_raw.decode("utf-8", errors="replace").strip()
+            
+            success = False
+            actual_path = _cout
+            for _ln in _sot.splitlines():
+                _ln = _ln.strip()
+                if _ln.startswith("{"):
+                    try:
+                        _rj = json.loads(_ln)
+                        if _rj.get("status") == "success" and _rj.get("path"):
+                            actual_path = _rj["path"]
+                            if os.path.exists(actual_path):
+                                success = True
+                                break
+                    except:
+                        pass
+            
+            # Cleanup temp job file
+            try: os.remove(jobs_file)
+            except: pass
+        else:
+            # Grok fallback
+            _grok_char = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+            _cmd = ["node", _grok_char, "--profile", profile_name, "--prompt", prompt, "--output", _cout, "--profiles-dir", _pdir, "--timeout", "150"]
+            
+            _pr = await asyncio.create_subprocess_exec(*_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=_bdir, env=_env)
+            _so, _se = await asyncio.wait_for(_pr.communicate(), timeout=180)
+            _sot = _so.decode("utf-8", errors="replace").strip()
+            
+            actual_path = _cout
+            success = False
+            for _ln in reversed(_sot.splitlines()):
+                if _ln.strip().startswith("{"):
+                    try:
+                        _rj = json.loads(_ln.strip())
+                        actual_path = _rj.get("path", _cout)
+                        if _rj.get("status") == "success" and os.path.exists(actual_path):
+                            success = True
+                            break
+                    except:
+                        pass
+                    
+        if success:
+            # Save to metadata
+            meta = json.loads(ep.get("metadata", "{}") or "{}")
+            meta["grid_image_url"] = actual_path
+            db.update_episode(episode_id, {"metadata": json.dumps(meta, ensure_ascii=False)})
+            return {"success": True, "image_url": actual_path}
+        else:
+            raise HTTPException(500, f"Failed to generate grid image. Output: {_sot[-500:]}")
+            
+    except Exception as e:
+        logger.error(f"Generate grid error: {e}")
+        raise HTTPException(500, str(e))
+
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/slice-grid")
+async def slice_storyboard_grid(campaign_id: int, episode_id: int, request: Request):
+    data = await request.json()
+    cols = int(data.get("cols", 3))
+    rows = int(data.get("rows", 4))
+    image_url = data.get("image_url")
+    
+    if not image_url or not os.path.exists(image_url):
+        raise HTTPException(400, "Valid grid image_url is required")
+        
+    try:
+        from PIL import Image
+    except ImportError:
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
+        from PIL import Image
+        
+    db = _db()
+    shots = db.list_storyboards(episode_id)
+    if not shots:
+        raise HTTPException(400, "No storyboards found for this episode")
+        
+    shots.sort(key=lambda x: x.get("storyboard_number", 0))
+    
+    try:
+        img = Image.open(image_url)
+        w, h = img.size
+        dw = w // cols
+        dh = h // rows
+        
+        _rdir = _get_ref_dir()
+        from datetime import datetime as _dt
+        _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        
+        count = 0
+        updated_shots = []
+        for r in range(rows):
+            for c in range(cols):
+                if count >= len(shots):
+                    break
+                box = (c * dw, r * dh, (c + 1) * dw, (r + 1) * dh)
+                cropped = img.crop(box)
+                
+                shot = shots[count]
+                shot_id = shot["id"]
+                out_path = os.path.join(_rdir, f"sb_{shot_id}_sliced_{_ts}.png")
+                cropped.save(out_path)
+                
+                db.update_storyboard(shot_id, {"image_url": out_path})
+                updated_shots.append({"id": shot_id, "image_url": out_path})
+                count += 1
+                
+        return {"success": True, "sliced_count": count, "shots": updated_shots}
+    except Exception as e:
+        logger.error(f"Slice grid error: {e}")
+        raise HTTPException(500, str(e))
 

@@ -1,1 +1,1 @@
-# Content Studio Config package
+# POD Studio Config package

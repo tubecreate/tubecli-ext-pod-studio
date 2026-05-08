@@ -14,7 +14,7 @@ import subprocess
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("ContentStudio.GrokVideoEngine")
+logger = logging.getLogger("PodStudio.GrokVideoEngine")
 
 # Path to browser extension node_modules
 BROWSER_EXT_DIR = Path(__file__).parents[4] / "tubecli" / "extensions" / "browser"
@@ -24,7 +24,7 @@ GROK_JS_SCRIPT = Path(__file__).parent / "grok_video.js"
 def get_output_dir() -> str:
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "grok_videos")
+        out_dir = os.path.join(str(DATA_DIR), "pod_studio", "grok_videos")
     except Exception:
         out_dir = str(Path(__file__).parent.parent / "outputs" / "grok_videos")
     os.makedirs(out_dir, exist_ok=True)

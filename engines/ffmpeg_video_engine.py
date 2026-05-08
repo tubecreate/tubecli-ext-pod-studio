@@ -8,7 +8,7 @@ logger = logging.getLogger("ffmpeg")
 
 try:
     from tubecli.config import DATA_DIR
-    OUT_DIR = os.path.join(str(DATA_DIR), "content_studio", "outputs", "exports")
+    OUT_DIR = os.path.join(str(DATA_DIR), "pod_studio", "outputs", "exports")
 except Exception:
     ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     OUT_DIR = os.path.join(ext_dir, "outputs", "exports")

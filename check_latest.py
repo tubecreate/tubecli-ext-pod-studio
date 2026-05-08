@@ -9,9 +9,9 @@ import importlib.util
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-db_path = r"C:/tubecreate-vue/tubecli/data/content_studio/content_studio.db"
+db_path = r"C:/tubecreate-vue/tubecli/data/pod_studio/pod_studio.db"
 outputs_dir = r"C:/tubecreate-vue/tubecli/data/tts_vibevoice/outputs"
-studio_routes_path = r"C:\tubecreate-vue\tubecli\data\extensions_external\content_studio\studio_routes.py"
+studio_routes_path = r"C:\tubecreate-vue\tubecli\data\extensions_external\pod_studio\studio_routes.py"
 
 # Import _find_shot_start_time dynamically to test the actual code
 spec = importlib.util.spec_from_file_location("studio_routes", studio_routes_path)

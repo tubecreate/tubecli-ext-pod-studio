@@ -1,12 +1,12 @@
 """
-Content Studio Database Schema
-SQLite tables for drama projects, episodes, characters, scenes, storyboards.
-Ported from Huobao Drama (Drizzle/TypeScript) to Python sqlite3.
+POD Studio Database Schema
+SQLite tables for campaign projects, episodes, characters, scenes, storyboards.
+Ported from Huobao Ad Campaign (Drizzle/TypeScript) to Python sqlite3.
 """
 
 SCHEMA_SQL = """
--- Drama projects
-CREATE TABLE IF NOT EXISTS dramas (
+-- Ad Campaign projects
+CREATE TABLE IF NOT EXISTS campaigns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS dramas (
 -- Episodes / Chapters
 CREATE TABLE IF NOT EXISTS episodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    drama_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
     episode_number INTEGER NOT NULL,
     title TEXT NOT NULL,
     content TEXT DEFAULT '',
@@ -40,13 +40,13 @@ CREATE TABLE IF NOT EXISTS episodes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,
-    FOREIGN KEY (drama_id) REFERENCES dramas(id)
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 
--- Characters
+-- Models & Products
 CREATE TABLE IF NOT EXISTS characters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    drama_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     role TEXT DEFAULT '',
     description TEXT DEFAULT '',
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS characters (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,
-    FOREIGN KEY (drama_id) REFERENCES dramas(id)
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 
 -- Episode-Character (M:N)
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS episode_characters (
 -- Scenes
 CREATE TABLE IF NOT EXISTS scenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    drama_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
     episode_id INTEGER,
     location TEXT NOT NULL,
     time TEXT NOT NULL,
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,
-    FOREIGN KEY (drama_id) REFERENCES dramas(id)
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 
 -- Episode-Scene (M:N)
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS storyboard_characters (
 -- Export history
 CREATE TABLE IF NOT EXISTS export_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    drama_id INTEGER,
+    campaign_id INTEGER,
     episode_id INTEGER,
     format TEXT NOT NULL,
     file_path TEXT DEFAULT '',
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
 
     -- Config snapshot
     preset_name TEXT DEFAULT '',
-    pipeline_template TEXT DEFAULT 'drama_scene',
+    pipeline_template TEXT DEFAULT 'campaign_scene',
     content_format TEXT DEFAULT 'Educational / Learning',
     visual_style TEXT DEFAULT 'Default',
     max_episodes INTEGER DEFAULT 1,
@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
     gallery_category_id INTEGER,
 
     -- Result references
-    drama_id INTEGER,
+    campaign_id INTEGER,
     episode_ids TEXT DEFAULT '[]',
     uploaded_video_ids TEXT DEFAULT '[]',
     output_video_path TEXT DEFAULT '',
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS auto_pipeline_jobs (
 
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY (drama_id) REFERENCES dramas(id)
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 
 -- Channel Watchers (monitor channels for new videos)
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS channel_watchers (
 
     -- Config
     preset_name TEXT DEFAULT '',
-    pipeline_template TEXT DEFAULT 'drama_scene',
+    pipeline_template TEXT DEFAULT 'campaign_scene',
     content_format TEXT DEFAULT 'Educational / Learning',
     visual_style TEXT DEFAULT 'Default',
     max_episodes INTEGER DEFAULT 1,
@@ -244,7 +244,7 @@ CREATE TABLE IF NOT EXISTS channel_watchers (
 );
 
 -- ═══════════════════════════════════════════════════
--- Character Gallery — reusable character templates
+-- Product & Model Gallery — reusable character templates
 -- ═══════════════════════════════════════════════════
 
 -- Gallery Categories (groups of characters)

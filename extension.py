@@ -1,6 +1,6 @@
 """
-Content Studio Extension — AI Drama/Novel Content Writer for TubeCLI.
-Script rewriting, character extraction, storyboard breaking, multi-language.
+POD Studio Extension — AI Video Ad Content Writer for TubeCLI.
+Script rewriting, model extraction, storyboard breaking, multi-language.
 """
 import os
 import sys
@@ -12,18 +12,18 @@ try:
 except ImportError:
     from TubeCLI.core.extension_manager import Extension
 
-logger = logging.getLogger("ContentStudio")
+logger = logging.getLogger("PodStudio")
 
 
-class ContentStudioExtension(Extension):
-    name = "content_studio"
+class PodStudioExtension(Extension):
+    name = "pod_studio"
     version = "1.0.0"
-    description = "AI Content Studio — Drama/Novel script writing with AI"
+    description = "AI POD Studio — Video Ad script writing with AI"
     author = "TubeCreate"
     extension_type = "external"
 
     def on_enable(self):
-        logger.info("Content Studio extension enabled")
+        logger.info("POD Studio extension enabled")
         self._ensure_httpx()
         self._init_database()
         self._init_settings()
@@ -48,7 +48,7 @@ class ContentStudioExtension(Extension):
         """Initialize JSON file store (migrated from SQLite)."""
         try:
             from tubecli.config import DATA_DIR
-            data_dir = os.path.join(str(DATA_DIR), "content_studio")
+            data_dir = os.path.join(str(DATA_DIR), "pod_studio")
             os.makedirs(data_dir, exist_ok=True)
 
             # Dynamic import from extension dir
@@ -56,16 +56,16 @@ class ContentStudioExtension(Extension):
             if ext_dir not in sys.path:
                 sys.path.insert(0, ext_dir)
 
-            from db.json_store import JsonStore
+            from pod_db.json_store import JsonStore
             JsonStore.get_instance(data_dir)
             logger.info(f"JsonStore initialized: {data_dir}")
 
             # Auto-migrate from SQLite if old DB exists AND migration hasn't completed
-            old_db = os.path.join(data_dir, "content_studio.db")
-            index_file = os.path.join(data_dir, "dramas_index.json")
+            old_db = os.path.join(data_dir, "pod_studio.db")
+            index_file = os.path.join(data_dir, "campaigns_index.json")
             if os.path.exists(old_db) and not os.path.exists(index_file):
                 logger.info("Found old SQLite DB, starting migration...")
-                from db.migrate_db_to_json import migrate
+                from pod_db.migrate_db_to_json import migrate
                 migrate(old_db, data_dir)
             elif os.path.exists(old_db) and os.path.exists(index_file):
                 # Migration already done but DB wasn't renamed — try again
@@ -90,7 +90,7 @@ class ContentStudioExtension(Extension):
         """Initialize extension settings."""
         try:
             from tubecli.config import DATA_DIR
-            data_dir = os.path.join(str(DATA_DIR), "content_studio")
+            data_dir = os.path.join(str(DATA_DIR), "pod_studio")
             os.makedirs(data_dir, exist_ok=True)
 
             ext_dir = self.extension_dir or os.path.dirname(os.path.abspath(__file__))
@@ -104,44 +104,40 @@ class ContentStudioExtension(Extension):
             logger.error(f"Failed to init settings: {e}")
 
     def _register_skill(self):
-        """Register Content Studio skill for chatbot routing."""
+        """Register POD Studio skill for chatbot routing."""
         try:
             from tubecli.core.skill import skill_manager
-            existing = skill_manager.find_by_name("Content Studio")
+            existing = skill_manager.find_by_name("POD Studio")
             if existing:
-                logger.info("Content Studio skill already registered, skipping.")
+                logger.info("POD Studio skill already registered, skipping.")
                 return
 
             skill_manager.create(
-                name="Content Studio",
+                name="POD Studio",
                 description=(
-                    "AI Content Studio — Viết kịch bản drama/novel bằng AI. "
-                    "Hỗ trợ chuyển đổi tiểu thuyết → kịch bản, trích xuất nhân vật/bối cảnh, "
-                    "tạo phân cảnh chi tiết, gợi ý giọng nói, tạo prompt hình ảnh. "
-                    "Hỗ trợ đa ngôn ngữ: Tiếng Việt, English, 中文, 한국어, 日本語."
+                    "AI POD Studio — Viết kịch bản video quảng cáo POD bằng AI. "
+                    "Hỗ trợ viết script, trích xuất vật phẩm/bối cảnh, "
+                    "tạo phân cảnh chi tiết, gợi ý storyboard video."
                 ),
                 skill_type="Extension Skill",
                 commands=[
-                    "viết kịch bản", "viết drama", "write script", "drama writer",
-                    "content studio", "tạo nhân vật", "trích xuất nhân vật",
-                    "extract characters", "phân cảnh", "storyboard", "tách cảnh",
-                    "viết tiểu thuyết", "write novel", "tạo kịch bản",
+                    "viết quảng cáo", "làm video pod", "write ad script", "pod video",
+                    "pod studio", "tạo storyboard pod"
                 ],
                 workflow_data={
-                    "extension": "content_studio",
+                    "extension": "pod_studio",
                     "action": "write_content",
                     "sop": (
-                        "1. Mở Content Studio tại /content-studio\n"
-                        "2. Tạo dự án drama mới\n"
-                        "3. Tạo episode, paste nội dung tiểu thuyết\n"
-                        "4. Sử dụng AI Agent để rewrite → extract → storyboard\n"
-                        "5. Export kịch bản ra MD/TXT/DOCX hoặc Google Drive"
+                        "1. Mở POD Studio tại /pod-studio\n"
+                        "2. Tạo dự án mới\n"
+                        "3. Chọn gallery sản phẩm/model\n"
+                        "4. Sử dụng AI Agent để viết kịch bản quảng cáo → extract → storyboard\n"
                     ),
                 },
             )
-            logger.info("✅ Content Studio skill registered successfully.")
+            logger.info("✅ POD Studio skill registered successfully.")
         except Exception as e:
-            logger.warning(f"Could not register Content Studio skill: {e}")
+            logger.warning(f"Could not register POD Studio skill: {e}")
 
     def get_routes(self):
         """Load and return FastAPI router."""
@@ -155,10 +151,10 @@ class ContentStudioExtension(Extension):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             router = getattr(mod, "router", None)
-            logger.info(f"Content Studio: loaded router, {len(router.routes) if router else 0} routes")
+            logger.info(f"POD Studio: loaded router, {len(router.routes) if router else 0} routes")
             return router
         except Exception as e:
-            logger.error(f"Failed to load Content Studio routes: {e}")
+            logger.error(f"Failed to load POD Studio routes: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -169,14 +165,13 @@ class ContentStudioExtension(Extension):
         }
 
     async def _action_write_content(self, action_data: dict, context: dict) -> str:
-        """Telegram action stub: direct user to Content Studio UI."""
+        """Telegram action stub: direct user to POD Studio UI."""
         return (
-            "🎬 **Content Studio**\n\n"
-            "Mở Content Studio để viết kịch bản drama bằng AI:\n"
-            "📎 `/content-studio`\n\n"
+            "🛍️ **POD Studio**\n\n"
+            "Mở POD Studio để tạo video quảng cáo bằng AI:\n"
+            "📎 `/pod-studio`\n\n"
             "Các tính năng:\n"
-            "• Chuyển đổi tiểu thuyết → kịch bản drama\n"
-            "• Trích xuất nhân vật & bối cảnh\n"
-            "• Tạo phân cảnh chi tiết\n"
-            "• Hỗ trợ đa ngôn ngữ (VI/EN/ZH/KO/JA)"
+            "• Chuyển ý tưởng → kịch bản quảng cáo\n"
+            "• Trích xuất Character & bối cảnh\n"
+            "• Tạo phân cảnh chi tiết (shot-to-shot)\n"
         )

@@ -1,14 +1,14 @@
-/**
- * Content Studio — Frontend Logic
+﻿/**
+ * POD Studio — Frontend Logic
  * Handles CRUD, SSE streaming, pipeline steps, and sidebar navigation.
  */
 
-const API = '/api/v1/studio';
+const API = '/api/v1/pod_studio';
 
 // ── State ──────────────────────────────────────────────────
-let dramas = [];
+let campaigns = [];
 let currentEpisode = null; window._fc_getEpisode = () => currentEpisode;
-let currentDrama = null;   window._fc_getDrama = () => currentDrama;
+let currentCampaign = null;   window._fc_getCampaign = () => currentCampaign;
 let currentStep = 'raw';
 let isStreaming = false;
 
@@ -26,17 +26,17 @@ const STEP_REGISTRY = {
 };
 
 const PIPELINE_TEMPLATES = {
-    drama_scene:  { label: '🎞 Drama Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video → Publish)', steps: ['raw', 'rewrite', 'extract', 'storyboard', 'videos', 'audio', 'video', 'publish'] },
-    drama_full:   { label: '📺 Drama Slideshow',  steps: ['raw', 'rewrite', 'extract', 'storyboard', 'images', 'audio', 'video', 'publish'] },
+    campaign_scene:  { label: '🎞 Campaign Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video → Publish)', steps: ['raw', 'rewrite', 'extract', 'storyboard', 'videos', 'audio', 'video', 'publish'] },
+    campaign_full:   { label: '📺 Campaign Slideshow',  steps: ['raw', 'rewrite', 'extract', 'storyboard', 'images', 'audio', 'video', 'publish'] },
     audio_story:  { label: '🎧 Audio Story',      steps: ['raw', 'rewrite', 'audio', 'video'] },
     content_only: { label: '📝 Content Only',     steps: ['raw', 'rewrite'] },
     custom:       { label: '🎬 Custom',           steps: [] },
 };
 
 function getCurrentPipeline() {
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.pipeline && Array.isArray(meta.pipeline) && meta.pipeline.length > 0) {
                 return meta.pipeline;
             }
@@ -49,7 +49,7 @@ function getCurrentPipeline() {
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     syncPresetsWithServer().then(() => {
-        loadDramas();
+        loadCampaigns();
         loadAiModelInfo();
     });
 });
@@ -123,14 +123,14 @@ async function loadAiModelInfo() {
     }
 }
 
-// ── Drama CRUD ─────────────────────────────────────────────
-async function loadDramas() {
+// ── Campaign CRUD ─────────────────────────────────────────────
+async function loadCampaigns() {
     try {
-        const data = await apiFetch('/dramas');
-        dramas = data.items || [];
+        const data = await apiFetch('/campaigns');
+        campaigns = data.items || [];
         renderSidebar();
-        document.getElementById('projectCount').textContent = `${dramas.length} projects`;
-        if (!dramas.length) {
+        document.getElementById('projectCount').textContent = `${campaigns.length} projects`;
+        if (!campaigns.length) {
             showWelcome();
         }
     } catch (e) {
@@ -138,7 +138,7 @@ async function loadDramas() {
     }
 }
 
-window.showCreateDrama = function() {
+window.showCreateCampaign = function() {
     document.getElementById('wizardModal').style.display = 'flex';
     document.getElementById('wizStep1').style.display = '';
     document.getElementById('wizStep2').style.display = 'none';
@@ -160,7 +160,7 @@ window.showCreateDrama = function() {
     // Load presets dropdown
     loadWizPresets();
     
-    // Load Character Gallery categories into the dropdown FIRST,
+    // Load Product & Model Gallery categories into the dropdown FIRST,
     // THEN restore last-used config (order matters — gallery options must exist before restore)
     loadWizGalleryCategories().then(() => {
         restoreLastWizConfig();
@@ -377,22 +377,22 @@ function restoreLastWizConfig() {
 }
 
 async function wizSkipToManual() {
-    const drama = await _createDramaFromWiz();
-    if (drama) {
+    const campaign = await _createCampaignFromWiz();
+    if (campaign) {
         hideWizard();
         toast('Project created! Welcome to manual mode.', 'success');
-        await loadDramas();
-        await selectDrama(drama.id);
+        await loadCampaigns();
+        await selectCampaign(campaign.id);
     }
 }
 
-async function _createDramaFromWiz() {
+async function _createCampaignFromWiz() {
     const title = document.getElementById('wizTitle').value.trim();
     const vStyleSel = document.getElementById('wizStyle').value;
     const cStyleSel = document.getElementById('wizCharacterStyle').value;
     const vStyle = vStyleSel === '__custom__' ? (document.getElementById('wizStyleCustom')?.value.trim() || 'Default') : vStyleSel;
     const cStyle = cStyleSel === '__custom__' ? (document.getElementById('wizCharStyleCustom')?.value.trim() || 'Default') : cStyleSel;
-    const finalStyle = `Visual Style: ${vStyle} | Character Style: ${cStyle}`;
+    const finalStyle = `Visual Style: ${vStyle} | Model/Product Style: ${cStyle}`;
     
     const metadata = {};
     
@@ -408,6 +408,7 @@ async function _createDramaFromWiz() {
     metadata.narration_source = document.getElementById('wizNarrationSource').value;
     metadata.text_in_video = document.getElementById('wizNoTextPrompt')?.value || 'notext';
     metadata.video_length = document.getElementById('wizVideoLength')?.value || 'standard';
+    metadata.scene_gen_mode = document.getElementById('wizSceneGenMode')?.value || 'per_shot';
     
     const galleryCatId = document.getElementById('wizGalleryCategory').value;
     if (galleryCatId) {
@@ -437,7 +438,7 @@ async function _createDramaFromWiz() {
     saveLastWizConfig();
 
     try {
-        return await apiFetch('/dramas', {
+        return await apiFetch('/campaigns', {
             method: 'POST',
             body: JSON.stringify({
                 title: title,
@@ -472,7 +473,7 @@ function getWizPipeline() {
 }
 
 // Global reference for generating outline
-let pendingAutoPilotDramaId = null;
+let pendingAutoPilotCampaignId = null;
 
 async function wizFetchYoutube() {
     const url = document.getElementById('wizYoutubeUrl').value.trim();
@@ -540,8 +541,56 @@ function trimWizPremise() {
 }
 
 async function wizGenerateOutline() {
-    const premise = document.getElementById('wizPremise').value.trim();
-    if (!premise) { toast("Premise is required", "error"); return; }
+    let premise = document.getElementById('wizPremise').value.trim();
+    
+    // If premise is empty, auto-generate from gallery items + campaign settings
+    if (!premise) {
+        const galleryId = document.getElementById('wizGalleryCategory')?.value;
+        if (!galleryId) {
+            toast("Nhập kịch bản hoặc thêm sản phẩm vào Gallery trước", "error");
+            return;
+        }
+        try {
+            const galleryRes = await apiFetch(`/gallery/items?category_id=${galleryId}`);
+            const galleryItems = galleryRes?.items || [];
+            if (galleryItems.length === 0) {
+                toast("Gallery trống — thêm sản phẩm/model trước hoặc nhập kịch bản", "error");
+                return;
+            }
+            // Build auto-premise from gallery
+            const format = document.getElementById('wizContentFormat')?.value || 'Quảng cáo';
+            const ethnicity = document.getElementById('wizEthnicity')?.value || 'Default';
+            const aspect = document.getElementById('wizAspectRatio')?.value || '9:16';
+            const language = document.getElementById('wizLanguage')?.value || 'Tiếng Việt';
+            
+            let productLines = [];
+            let modelLines = [];
+            for (const gi of galleryItems) {
+                const isPrimary = gi.is_primary ? ' ⭐ (SẢN PHẨM CHÍNH)' : '';
+                const desc = gi.appearance || gi.description || '';
+                const fabric = gi.fabric_material ? `, Chất liệu: ${gi.fabric_material}` : '';
+                const acc = gi.accessory_material ? `, Phụ kiện: ${gi.accessory_material}` : '';
+                if (gi.role_type === 'presenter' || gi.char_type === 'individual') {
+                    modelLines.push(`- Model: ${gi.name} (${gi.gender || ''}, ${gi.age_range || ''}). ${desc}`);
+                } else {
+                    productLines.push(`- Sản phẩm${isPrimary}: ${gi.name}. ${desc}${fabric}${acc}`);
+                }
+            }
+            
+            const ethDesc = ethnicity !== 'Default' ? `\nDân tộc nhân vật: ${ethnicity}` : '';
+            premise = `Tự động tạo kịch bản video ${format} tối ưu cho các sản phẩm/model sau:\n\n` +
+                (productLines.length ? `SẢN PHẨM:\n${productLines.join('\n')}\n\n` : '') +
+                (modelLines.length ? `MODEL:\n${modelLines.join('\n')}\n\n` : '') +
+                `Định dạng: ${format}\nTỉ lệ video: ${aspect}\nNgôn ngữ: ${language}${ethDesc}\n\n` +
+                `Yêu cầu: Tạo kịch bản quảng cáo hấp dẫn, tối ưu cho sản phẩm trên. ` +
+                `Tập trung vào sản phẩm chính (⭐). Kịch bản ngắn gọn, phù hợp video ngắn.`;
+            
+            toast("🤖 Tự động tạo kịch bản từ Gallery...", "info");
+        } catch(e) {
+            toast("Lỗi đọc Gallery: " + e.message, "error");
+            return;
+        }
+    }
 
     // Clear any previous error
     let errBox = document.getElementById('wizOutlineError');
@@ -554,14 +603,14 @@ async function wizGenerateOutline() {
 
     toast("Creating project and generating outline...", "info");
     
-    // Create drama first so we have an ID
-    const drama = await _createDramaFromWiz();
-    if (!drama) {
+    // Create campaign first so we have an ID
+    const campaign = await _createCampaignFromWiz();
+    if (!campaign) {
         btn.innerHTML = oldHtml;
         btn.disabled = false;
         return;
     }
-    pendingAutoPilotDramaId = drama.id;
+    pendingAutoPilotCampaignId = campaign.id;
     
     const rawCount = parseInt(document.getElementById('wizEpisodes').value);
     const count = isNaN(rawCount) ? 1 : rawCount;
@@ -569,7 +618,7 @@ async function wizGenerateOutline() {
     btn.innerHTML = 'Generating Outline...';
 
     try {
-        const res = await apiFetch(`/dramas/${drama.id}/generate-outline`, {
+        const res = await apiFetch(`/campaigns/${campaign.id}/generate-outline`, {
             method: 'POST',
             body: JSON.stringify({ premise, episode_count: count })
         });
@@ -668,38 +717,38 @@ function customConfirm(title, message) {
     });
 }
 
-async function deleteDrama(dramaId, event) {
+async function deleteCampaign(campaignId, event) {
     if (event) event.stopPropagation();
     
     const confirmed = await customConfirm('⚠️ Xác nhận xoá', 'Delete this project? This cannot be undone.');
     if (!confirmed) return;
     
     try {
-        await apiFetch(`/dramas/${dramaId}`, { method: 'DELETE' });
+        await apiFetch(`/campaigns/${campaignId}`, { method: 'DELETE' });
         toast('Project deleted', 'success');
-        if (currentDrama && currentDrama.id === dramaId) {
-            currentDrama = null;
+        if (currentCampaign && currentCampaign.id === campaignId) {
+            currentCampaign = null;
             currentEpisode = null;
             showWelcome();
         }
-        await loadDramas();
+        await loadCampaigns();
     } catch (e) {
         toast('Failed to delete: ' + e.message, 'error');
     }
 }
 
-async function selectDrama(dramaId) {
+async function selectCampaign(campaignId) {
     try {
         // Close Pipeline Queue view if open
         _closePipelineView();
 
-        currentDrama = await apiFetch(`/dramas/${dramaId}`);
+        currentCampaign = await apiFetch(`/campaigns/${campaignId}`);
         renderSidebar();
         // Auto-select first episode or create one
-        if (currentDrama.episodes && currentDrama.episodes.length) {
-            await selectEpisode(currentDrama.episodes[0].id);
+        if (currentCampaign.episodes && currentCampaign.episodes.length) {
+            await selectEpisode(currentCampaign.episodes[0].id);
         } else {
-            await addEpisode(dramaId);
+            await addEpisode(campaignId);
         }
     } catch (e) {
         toast('Failed to load project', 'error');
@@ -707,21 +756,21 @@ async function selectDrama(dramaId) {
 }
 
 // ── Episode CRUD ───────────────────────────────────────────
-async function addEpisode(dramaId) {
+async function addEpisode(campaignId) {
     try {
-        const ep = await apiFetch(`/dramas/${dramaId}/episodes`, {
+        const ep = await apiFetch(`/campaigns/${campaignId}/episodes`, {
             method: 'POST',
             body: JSON.stringify({}),
         });
-        if (currentDrama) {
-            currentDrama.episodes = currentDrama.episodes || [];
-            currentDrama.episodes.push(ep);
+        if (currentCampaign) {
+            currentCampaign.episodes = currentCampaign.episodes || [];
+            currentCampaign.episodes.push(ep);
         }
-        // Also update the global dramas array so renderSidebar shows the new episode
-        const dramaInList = dramas.find(d => d.id == dramaId);
-        if (dramaInList) {
-            dramaInList.episodes = dramaInList.episodes || [];
-            dramaInList.episodes.push(ep);
+        // Also update the global campaigns array so renderSidebar shows the new episode
+        const campaignInList = campaigns.find(d => d.id == campaignId);
+        if (campaignInList) {
+            campaignInList.episodes = campaignInList.episodes || [];
+            campaignInList.episodes.push(ep);
         }
         await selectEpisode(ep.id);
         renderSidebar();
@@ -743,13 +792,13 @@ async function selectEpisode(episodeId) {
         // (see setStep → loadEpisodeImages, loadEpisodeVideos, etc.)
         
         // Pre-cache extract data in background (lightweight, no render)
-        if (currentDrama && !window.currentDramaCharacters) {
+        if (currentCampaign && !window.currentCampaignCharacters) {
             Promise.all([
-                apiFetch(`/dramas/${currentDrama.id}/characters`),
-                apiFetch(`/dramas/${currentDrama.id}/scenes`)
+                apiFetch(`/campaigns/${currentCampaign.id}/characters`),
+                apiFetch(`/campaigns/${currentCampaign.id}/scenes`)
             ]).then(([charRes, sceneRes]) => {
-                window.currentDramaCharacters = charRes.items || [];
-                window.currentDramaScenes = sceneRes.items || [];
+                window.currentCampaignCharacters = charRes.items || [];
+                window.currentCampaignScenes = sceneRes.items || [];
             }).catch(() => {});
         }
 
@@ -779,23 +828,23 @@ async function saveCurrentEpisode() {
 // ── Sidebar Rendering ──────────────────────────────────────
 function renderSidebar() {
     const list = document.getElementById('sidebarList');
-    if (!dramas.length) {
+    if (!campaigns.length) {
         list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">No projects yet</div>';
         return;
     }
-    list.innerHTML = dramas.map(d => {
-        const isActive = currentDrama && currentDrama.id === d.id;
-        // For the active project, use currentDrama (which has full episodes list)
+    list.innerHTML = campaigns.map(d => {
+        const isActive = currentCampaign && currentCampaign.id === d.id;
+        // For the active project, use currentCampaign (which has full episodes list)
         // For others, use lightweight data (only episode_count)
-        const eps = isActive && currentDrama.episodes ? currentDrama.episodes : [];
+        const eps = isActive && currentCampaign.episodes ? currentCampaign.episodes : [];
         const epCount = isActive ? eps.length : (d.episode_count || d.episodes?.length || 0);
         return `
             <div class="sidebar-project">
-                <div class="sidebar-project-head ${isActive ? 'active' : ''}" onclick="selectDrama(${d.id})">
+                <div class="sidebar-project-head ${isActive ? 'active' : ''}" onclick="selectCampaign(${d.id})">
                     <span class="project-icon">🎬</span>
                     <span class="project-name">${esc(d.title)}</span>
                     <span class="project-ep-count">${epCount}</span>
-                    <button class="sidebar-delete-btn" onclick="deleteDrama(${d.id}, event)" title="Delete">
+                    <button class="sidebar-delete-btn" onclick="deleteCampaign(${d.id}, event)" title="Delete">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                     </button>
                 </div>
@@ -849,15 +898,15 @@ function showEditor() {
     if (galleryView) galleryView.style.display = 'none';
 
     // Populate header
-    document.getElementById('editorTitle').textContent = currentDrama?.title || 'Untitled';
+    document.getElementById('editorTitle').textContent = currentCampaign?.title || 'Untitled';
     document.getElementById('editorChip').textContent = `Episode ${currentEpisode?.episode_number || '?'}`;
-    document.getElementById('metaChars').textContent = `${(currentDrama?.characters || []).length} characters`;
-    document.getElementById('metaScenes').textContent = `${(currentDrama?.scenes || []).length} scenes`;
+    document.getElementById('metaChars').textContent = `${(currentCampaign?.characters || []).length} characters`;
+    document.getElementById('metaScenes').textContent = `${(currentCampaign?.scenes || []).length} scenes`;
     // ── Refresh header counters from actual DB ──
-    if (currentDrama) {
+    if (currentCampaign) {
         Promise.all([
-            apiFetch(`/dramas/${currentDrama.id}/characters`),
-            apiFetch(`/dramas/${currentDrama.id}/scenes`)
+            apiFetch(`/campaigns/${currentCampaign.id}/characters`),
+            apiFetch(`/campaigns/${currentCampaign.id}/scenes`)
         ]).then(([charRes, sceneRes]) => {
             document.getElementById('metaChars').textContent = `${(charRes.items || []).length} characters`;
             document.getElementById('metaScenes').textContent = `${(sceneRes.items || []).length} scenes`;
@@ -891,14 +940,14 @@ function showEditor() {
     // Show/hide script empty state
     updateScriptUI(scriptContent);
 
-    // Render dynamic pipeline tabs for this drama
+    // Render dynamic pipeline tabs for this campaign
     renderPipelineNav();
     setStep('raw');
 }
 
 function goBack() {
     currentEpisode = null;
-    currentDrama = null;
+    currentCampaign = null;
     showWelcome();
     renderSidebar();
 }
@@ -948,14 +997,14 @@ function setStep(step) {
 
 // ── Lazy Tab Loaders ───────────────────────────────────────
 async function loadExtractData() {
-    if (!currentDrama || !currentEpisode) return;
+    if (!currentCampaign || !currentEpisode) return;
     try {
         const [charRes, sceneRes] = await Promise.all([
-            apiFetch(`/dramas/${currentDrama.id}/characters`),
-            apiFetch(`/dramas/${currentDrama.id}/scenes`)
+            apiFetch(`/campaigns/${currentCampaign.id}/characters`),
+            apiFetch(`/campaigns/${currentCampaign.id}/scenes`)
         ]);
-        const characters = window.currentDramaCharacters = charRes.items || [];
-        const scenes = window.currentDramaScenes = sceneRes.items || [];
+        const characters = window.currentCampaignCharacters = charRes.items || [];
+        const scenes = window.currentCampaignScenes = sceneRes.items || [];
         if (characters.length > 0 || scenes.length > 0) {
             document.getElementById('extractEmpty').style.display = 'none';
             renderExtractResults({ characters, scenes });
@@ -963,6 +1012,7 @@ async function loadExtractData() {
             document.getElementById('extractEmpty').style.display = '';
             document.getElementById('charsSection').style.display = 'none';
             document.getElementById('scenesSection').style.display = 'none';
+            renderPanoramaSection();
         }
     } catch(e) {
         console.warn('Failed to load extract data', e);
@@ -974,6 +1024,40 @@ async function loadStoryboardData() {
     try {
         const sbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
         const storyboards = sbRes.items || [];
+        
+        let hasGridPrompt = false;
+        let gridImageUrl = '';
+        try {
+            if (currentEpisode.metadata) {
+                const meta = typeof currentEpisode.metadata === 'string' ? JSON.parse(currentEpisode.metadata) : currentEpisode.metadata;
+                if (meta.master_grid_prompt) hasGridPrompt = true;
+                if (meta.grid_image_url) gridImageUrl = meta.grid_image_url;
+            }
+        } catch(e) {}
+
+        const gridPanel = document.getElementById('gridConceptPanel');
+        if (gridPanel) {
+            if (hasGridPrompt && storyboards.length > 0) {
+                gridPanel.style.display = 'block';
+                const btnSlice = document.getElementById('btnSliceGrid');
+                const imgPreview = document.getElementById('gridImagePreview');
+                const imgPlaceholder = document.getElementById('gridImagePlaceholder');
+                
+                if (gridImageUrl) {
+                    imgPreview.src = gridImageUrl;
+                    imgPreview.style.display = 'block';
+                    if (imgPlaceholder) imgPlaceholder.style.display = 'none';
+                    if (btnSlice) btnSlice.style.display = 'inline-block';
+                } else {
+                    imgPreview.style.display = 'none';
+                    if (imgPlaceholder) imgPlaceholder.style.display = 'block';
+                    if (btnSlice) btnSlice.style.display = 'none';
+                }
+            } else {
+                gridPanel.style.display = 'none';
+            }
+        }
+
         if (storyboards.length > 0) {
             document.getElementById('storyboardEmpty').style.display = 'none';
             renderStoryboard(storyboards);
@@ -1013,7 +1097,7 @@ async function doRewrite() {
                 agent_type: 'script_rewriter',
                 message: promptMsg,
                 episode_id: currentEpisode?.id,
-                drama_id: currentDrama?.id,
+                campaign_id: currentCampaign?.id,
             }),
         });
 
@@ -1087,7 +1171,7 @@ function updateScriptUI(content) {
     document.getElementById('scriptLoading').style.display = 'none';
 }
 
-// ── Extract (Characters & Scenes) ──────────────────────────
+// ── Extract (Models & Products & Scenes) ──────────────────────────
 async function doExtract() {
     if (isStreaming) return;
     if (!currentEpisode) {
@@ -1116,10 +1200,10 @@ async function doExtract() {
     document.getElementById('btnExtract').disabled = true;
 
     // ── Resolve browser profile for auto char-image gen ──────────────────────
-    // Priority: drama metadata → chip UI selection → localStorage fallback
+    // Priority: campaign metadata → chip UI selection → localStorage fallback
     let extractBrowserProfile = '';
     try {
-        const existingMeta = JSON.parse(currentDrama?.metadata || '{}');
+        const existingMeta = JSON.parse(currentCampaign?.metadata || '{}');
         extractBrowserProfile = existingMeta.browser_profile_name || '';
         if (!extractBrowserProfile) {
             // Try chip UI first (most up-to-date selection)
@@ -1127,14 +1211,14 @@ async function doExtract() {
             // Then localStorage saved value
             const lsProfile = (localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '').split(',').filter(Boolean)[0] || '';
             extractBrowserProfile = chipProfile || lsProfile;
-            // Save discovered profile back to drama metadata so future ops find it
-            if (extractBrowserProfile && currentDrama) {
+            // Save discovered profile back to campaign metadata so future ops find it
+            if (extractBrowserProfile && currentCampaign) {
                 existingMeta.browser_profile_name = extractBrowserProfile;
-                await apiFetch(`/dramas/${currentDrama.id}`, {
+                await apiFetch(`/campaigns/${currentCampaign.id}`, {
                     method: 'PUT',
                     body: JSON.stringify({ metadata: JSON.stringify(existingMeta) })
                 });
-                currentDrama.metadata = JSON.stringify(existingMeta);
+                currentCampaign.metadata = JSON.stringify(existingMeta);
             }
         }
     } catch(e) { console.warn('[doExtract] Could not resolve browser profile', e); }
@@ -1200,8 +1284,8 @@ async function doExtract() {
                         // Live-refresh character cards when an image is generated
                         if (parsed.message && (parsed.message.includes('✅') || parsed.message.includes('Hoàn thành'))) {
                             try {
-                                const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
-                                const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                                const charRes = await apiFetch(`/campaigns/${currentCampaign.id}/characters`);
+                                const sceneRes = await apiFetch(`/campaigns/${currentCampaign.id}/scenes`);
                                 renderExtractResults({ characters: charRes.items || [], scenes: sceneRes.items || [] });
                             } catch(e) {}
                         }
@@ -1221,8 +1305,8 @@ async function doExtract() {
                     // ── Live render characters/scenes as they are saved ──
                     if (parsed.event === 'chars_saved' || parsed.event === 'scenes_saved') {
                         try {
-                            const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
-                            const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                            const charRes = await apiFetch(`/campaigns/${currentCampaign.id}/characters`);
+                            const sceneRes = await apiFetch(`/campaigns/${currentCampaign.id}/scenes`);
                             renderExtractResults({ characters: charRes.items || [], scenes: sceneRes.items || [] });
                             // Update header counters
                             document.getElementById('metaChars').textContent = `${(charRes.items || []).length} characters`;
@@ -1266,14 +1350,14 @@ async function doExtract() {
                 } catch(e) { console.warn('[doExtract] Could not save extract_completed flag', e); }
             }
 
-            // Refresh drama data for header counters and global list
-            if (currentDrama) {
+            // Refresh campaign data for header counters and global list
+            if (currentCampaign) {
                 const [d, charRes, sceneRes] = await Promise.all([
-                    apiFetch(`/dramas/${currentDrama.id}`),
-                    apiFetch(`/dramas/${currentDrama.id}/characters`),
-                    apiFetch(`/dramas/${currentDrama.id}/scenes`)
+                    apiFetch(`/campaigns/${currentCampaign.id}`),
+                    apiFetch(`/campaigns/${currentCampaign.id}/characters`),
+                    apiFetch(`/campaigns/${currentCampaign.id}/scenes`)
                 ]);
-                currentDrama = d;
+                currentCampaign = d;
                 document.getElementById('metaChars').textContent = `${(d.characters || []).length} characters`;
                 document.getElementById('metaScenes').textContent = `${(d.scenes || []).length} scenes`;
                 
@@ -1285,7 +1369,7 @@ async function doExtract() {
         } else {
             document.getElementById('extractEmpty').style.display = '';
             toast('No data extracted', 'error');
-            throw new Error("No data extracted");
+            throw new Error(`No data extracted (received ${exCharCount} chars from AI)`);
         }
     } catch (e) {
         if (e.name === 'AbortError' || e.message === 'Aborted by user') {
@@ -1314,7 +1398,7 @@ function renderExtractResults(data) {
     const characters = data.characters || [];
     const scenes = data.scenes || [];
 
-    // Characters section
+    // Models & Products section
     const charsSection = document.getElementById('charsSection');
     const charsGrid = document.getElementById('charsGrid');
     const charsCount = document.getElementById('charsCount');
@@ -1389,16 +1473,19 @@ function renderExtractResults(data) {
 
     // Update extract count
     document.getElementById('extractCount').textContent = `${characters.length} characters · ${scenes.length} scenes`;
+
+    // Render panorama section
+    renderPanoramaSection();
 }
 
 // ── Character/Scene Reference Helpers ──────────────────────
 function _getCharRefUrl(c) {
     if (c.image_url) {
-        // Gallery images already have a web URL like /api/v1/studio/gallery/image/...
+        // Gallery images already have a web URL like /api/v1/pod_studio/gallery/image/...
         if (c.image_url.startsWith('/api/')) return c.image_url;
         // Absolute file paths — extract filename and serve via /references/
         const fname = c.image_url.replace(/\\/g, '/').split('/').pop();
-        return `/api/v1/studio/references/${encodeURIComponent(fname)}`;
+        return `/api/v1/pod_studio/references/${encodeURIComponent(fname)}`;
     }
     return null;
 }
@@ -1406,7 +1493,7 @@ function _getCharRefUrl(c) {
 function _getSceneRefUrl(s) {
     if (s.image_url) {
         const fname = s.image_url.replace(/\\/g, '/').split('/').pop();
-        return `/api/v1/studio/references/${encodeURIComponent(fname)}`;
+        return `/api/v1/pod_studio/references/${encodeURIComponent(fname)}`;
     }
     return null;
 }
@@ -1464,8 +1551,243 @@ async function _uploadRefFile(endpoint, file) {
     }
 }
 
+// ── Scene Panorama ─────────────────────────────────────────
+function renderPanoramaSection() {
+    const section = document.getElementById('panoramaSection');
+    if (!section || !currentEpisode) return;
+    section.style.display = '';
+
+    let epMeta = {};
+    try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+    const panoramaUrl = epMeta.panorama_image_url || null;
+    const zone = document.getElementById('panoramaUploadZone');
+    const content = document.getElementById('panoramaContent');
+    const locInfo = document.getElementById('panoramaLocationInfo');
+
+    if (panoramaUrl) {
+        zone.classList.add('has-image');
+        content.innerHTML = `
+            <div class="panorama-img-wrap">
+                <img src="${panoramaUrl}" alt="Scene Panorama" onerror="this.alt='Failed to load'" />
+                <div class="panorama-img-overlay">
+                    <span class="panorama-label">📍 ${esc(epMeta.scene_location || 'Scene Location')}</span>
+                    <div class="panorama-actions">
+                        <button onclick="event.stopPropagation();triggerPanoramaUpload()">🔄 Replace</button>
+                        <button onclick="event.stopPropagation();removePanorama()">🗑️ Remove</button>
+                    </div>
+                </div>
+            </div>`;
+        const scenes = window.currentCampaignScenes || [];
+        if (scenes.length > 0) {
+            const mainScene = scenes[0];
+            locInfo.style.display = '';
+            document.getElementById('panoramaLocationName').textContent = mainScene.location || '—';
+            document.getElementById('panoramaLocationTime').textContent = mainScene.time || '—';
+            document.getElementById('panoramaLocationMood').textContent = mainScene.mood || mainScene.description?.substring(0, 40) || '—';
+        }
+    } else {
+        zone.classList.remove('has-image');
+        content.innerHTML = `
+            <div class="panorama-placeholder">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                <span>Drop panoramic scene image here or click to upload</span>
+                <span style="font-size:11px;color:var(--text-3);">This image will be used as the spatial map for camera blocking</span>
+            </div>`;
+        locInfo.style.display = 'none';
+    }
+}
+
+function triggerPanoramaUpload() {
+    if (!currentEpisode) { toast('Select a scene first', 'error'); return; }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+        if (!input.files[0]) return;
+        const formData = new FormData();
+        formData.append('file', input.files[0]);
+        try {
+            const resp = await fetch(`${API}/episodes/${currentEpisode.id}/upload-panorama`, {
+                method: 'POST', body: formData
+            });
+            if (!resp.ok) throw new Error('Upload failed');
+            const data = await resp.json();
+            if (data.success) {
+                let meta = {};
+                try { meta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                meta.panorama_image_url = data.panorama_url;
+                meta.scene_mode = true;
+                currentEpisode.metadata = JSON.stringify(meta);
+                toast('✅ Panorama uploaded!', 'success');
+                renderPanoramaSection();
+            }
+        } catch(e) { toast('Upload failed: ' + e.message, 'error'); }
+    };
+    input.click();
+}
+
+async function handlePanoramaDrop(event) {
+    const file = event.dataTransfer?.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    if (!currentEpisode) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const resp = await fetch(`${API}/episodes/${currentEpisode.id}/upload-panorama`, {
+            method: 'POST', body: formData
+        });
+        if (!resp.ok) throw new Error('Upload failed');
+        const data = await resp.json();
+        if (data.success) {
+            let meta = {};
+            try { meta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+            meta.panorama_image_url = data.panorama_url;
+            meta.scene_mode = true;
+            currentEpisode.metadata = JSON.stringify(meta);
+            toast('✅ Panorama uploaded!', 'success');
+            renderPanoramaSection();
+        }
+    } catch(e) { toast('Upload failed: ' + e.message, 'error'); }
+}
+
+async function removePanorama() {
+    if (!currentEpisode) return;
+    let meta = {};
+    try { meta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+    delete meta.panorama_image_url;
+    currentEpisode.metadata = JSON.stringify(meta);
+    try {
+        await apiFetch(`/episodes/${currentEpisode.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ metadata: currentEpisode.metadata })
+        });
+        toast('Panorama removed', 'info');
+        renderPanoramaSection();
+    } catch(e) { toast('Failed to remove: ' + e.message, 'error'); }
+}
+
+function copyPanoramaPrompt() {
+    const chars = window.currentCampaignCharacters || [];
+    const scenes = window.currentCampaignScenes || [];
+    const campaign = currentCampaign || {};
+    let cMeta = {};
+    try { cMeta = JSON.parse(campaign.metadata || '{}'); } catch(e) {}
+
+    const style = campaign.style || 'Cinematic Realistic';
+    const ms = scenes[0] || {};
+    const location = ms.location || 'a cinematic interior space';
+    const time = ms.time || 'Day';
+    const mood = ms.mood || ms.description || 'dramatic cinematic';
+    const lighting = ms.lighting_style || 'Natural cinematic lighting';
+    const desc = ms.description || '';
+
+    // Build character descriptions
+    const mainChars = chars.filter(c => c.role !== 'product' && c.role !== 'prop');
+    const products = chars.filter(c => c.role === 'product' || c.role === 'prop' || c.role === 'hero_product');
+
+    const charBlock = mainChars.slice(0, 2).map(c => {
+        const app = (c.appearance || '').substring(0, 120);
+        return `  - ${c.name}: ${app}`;
+    }).join('\n');
+
+    const productBlock = products.slice(0, 2).map(p => {
+        const app = (p.appearance || '').substring(0, 100);
+        return `  - ${p.name}: ${app}`;
+    }).join('\n');
+
+    const script = currentEpisode?.script_content || currentEpisode?.content || '';
+    const scriptExcerpt = script.substring(0, 3000).replace(/\n/g, ' ').trim();
+
+    const showMatches = script.match(/\[SHOW:/g);
+    const shotCount = showMatches ? Math.min(showMatches.length, 6) : 5;
+
+    const prompt = `Create a professional cinematic PRODUCTION DESIGN BOARD for "${campaign.name || 'Scene'}" — a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628) with subtle grid lines and cyan/teal accent borders.
+
+LAYOUT — 4 MAIN ZONES arranged in a structured grid:
+
+ZONE 1 — CHARACTER + HERO OBJECT REFERENCE (Top-left, ~40% width)
+Title label: "1. CHARACTER + HERO OBJECT REFERENCE"
+CHARACTER REFERENCE: Show the main character from 6 angles in a horizontal strip:
+  FRONT | SIDE | BACK | FACE CLOSE-UP | SIDE CLOSE-UP | COSTUME DETAIL
+${charBlock ? `Character details:\n${charBlock}` : '  - A cinematic character appropriate to the scene'}
+${productBlock ? `HERO OBJECT: Show the key product/object from 4 angles:\n  DETAIL | 3/4 VIEW | SIDE SILHOUETTE | TEXTURE DETAIL | IN-CONTEXT\n${productBlock}` : ''}
+Below: SHARED PALETTE (4-5 color swatches) + REFERENCE NOTES (texture keywords, handling notes, material feel)
+
+ZONE 2 — ENVIRONMENT / SET DESIGN (Top-right, ~60% width)
+Title label: "2. ENVIRONMENT / SET DESIGN"
+MAIN ENVIRONMENT STILL: One large cinematic establishing shot of: ${location} — ${time}
+${desc ? `Scene: ${desc}` : ''}
+Below the main still, show 3 SUPPLEMENTARY VIEWS:
+  - Wide angle from different side
+  - Detail/texture shot of key architectural element
+  - Character-in-environment context shot
+MATERIALS + SET DETAIL STRIP: Small thumbnails of key materials/textures (wood grain, stone, fabric, metal, etc.)
+
+ZONE 3 — STORYBOARD (Middle band, full width)
+Title label: "3. STORYBOARD"
+${shotCount} sequential cinematic CUTS arranged horizontally (Cut 1, Cut 2, Cut 3...):
+Each cut shows a different camera angle of the SAME scene with:
+  - Cut number label at top
+  - Small cinematic frame showing the shot
+  - Below each frame: 2 lines of shot description (camera type, movement, action)
+Camera angle progression:
+  Cut 1: STATIC / WIDE — Establishing shot
+  Cut 2: DOLLY IN / MEDIUM — Character approach
+  Cut 3: TRACK / EXTREME CU — Detail interaction
+  Cut 4: ARC / OTS — Over-shoulder perspective
+  Cut 5: PUSH IN / CLOSE-UP — Emotional payoff
+${shotCount > 5 ? '  Cut 6: PULL OUT / WIDE — Resolution' : ''}
+
+ZONE 4 — FLOOR PLAN + CAMERA PLAN (Bottom-right, ~40% width)
+Title label: "FLOOR PLAN + CAMERA PLAN (TOP-DOWN)"
+A TOP-DOWN architectural floor plan of the scene showing:
+  - Room/space layout with walls, doors, windows
+  - Furniture/prop positions as simple shapes
+  - Camera positions marked as numbered icons (Cut 1, Cut 2, Cut 3...)
+  - Camera angle arrows showing direction each cut is facing
+  - Dotted lines showing camera movement paths
+  - Character position(s) marked with figure icons
+
+ZONE 5 — LIGHTING / MOOD / STYLE NOTES (Bottom-left, ~60% width)
+Title label: "4. LIGHTING / MOOD / STYLE NOTES"
+Left side: 3 small reference images showing lighting atmosphere:
+  - Window/Room Atmosphere
+  - Key light quality (${lighting})
+  - Neutral/fill light reference
+Right side: Text sections:
+  MOOD KEYWORDS: ${mood}
+  CINEMATOGRAPHY STYLE NOTES:
+  - Key light direction and quality
+  - Shadow depth and fill ratio
+  - Atmosphere (particles, haze, dust)
+  - Color palette approach
+
+VISUAL STYLE RULES:
+- Dark navy/charcoal background (#0a1628)
+- Clean white text labels, section titles in CAPS
+- Subtle grid lines separating zones
+- Professional film production aesthetic
+- All images are cinematic quality, consistent lighting and color
+- Style: ${style}
+- 8K ultra-detailed, professional production design board
+- No watermarks, clean readable layout
+${scriptExcerpt ? `\nSCRIPT CONTEXT: ${scriptExcerpt}${script.length > 3000 ? '...' : ''}` : ''}`;
+
+    navigator.clipboard.writeText(prompt).then(() => {
+        toast('\uD83D\uDCCB Production Board prompt copied!', 'success');
+    }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = prompt;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast('\uD83D\uDCCB Production Board prompt copied!', 'success');
+    });
+}
+
 function openCharacterDetail(charId) {
-    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    const char = (window.currentCampaignCharacters || []).find(c => c.id === charId);
     if (!char) { toast('Character not found', 'error'); return; }
     
     const refImgUrl = _getCharRefUrl(char);
@@ -1493,7 +1815,7 @@ function openCharacterDetail(charId) {
     const thumbsEl = document.getElementById('charDetailThumbs');
     thumbsEl.innerHTML = refs.map((path, i) => {
         const fname = path.replace(/\\/g, '/').split('/').pop();
-        return `<div class="char-ref-thumb ${i === refs.length - 1 ? 'active' : ''}"><img src="/api/v1/studio/references/${encodeURIComponent(fname)}" /></div>`;
+        return `<div class="char-ref-thumb ${i === refs.length - 1 ? 'active' : ''}"><img src="/api/v1/pod_studio/references/${encodeURIComponent(fname)}" /></div>`;
     }).join('');
     
     modal.dataset.charId = charId;
@@ -1528,13 +1850,13 @@ function openSceneDetail(sceneId) {
 }
 
 async function generateCharRefAI(charId) {
-    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    const char = (window.currentCampaignCharacters || []).find(c => c.id === charId);
     if (!char) { toast('Character not found', 'error'); return; }
     if (!char.appearance || !char.appearance.trim()) {
         toast(`Please fill in the Appearance field for "${char.name}" first (click Edit)`, 'error');
         return;
     }
-    // Auto-detect profile: wizard chips > drama metadata > localStorage
+    // Auto-detect profile: wizard chips > campaign metadata > localStorage
     const autoProfile = _getAutoProfile();
     if (autoProfile) {
         // Skip modal — use saved profile directly
@@ -1570,10 +1892,10 @@ function _getAutoProfile() {
     if (typeof _chipSelectedProfiles !== 'undefined' && _chipSelectedProfiles.length > 0) {
         return _chipSelectedProfiles[0];
     }
-    // 2. Drama metadata
-    if (typeof currentDrama !== 'undefined' && currentDrama) {
+    // 2. Campaign metadata
+    if (typeof currentCampaign !== 'undefined' && currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.browser_profile_name) return meta.browser_profile_name;
             if (meta.browser_profile_names_video && meta.browser_profile_names_video.length > 0) {
                 return meta.browser_profile_names_video[0];
@@ -1617,7 +1939,7 @@ async function _openCharGenProfileModal(charId) {
     modal.style.display = 'flex';
 
     try {
-        const res = await fetch('/api/v1/studio/browser-profiles');
+        const res = await fetch('/api/v1/pod_studio/browser-profiles');
         const data = await res.json();
         _charGenAllProfiles = data.profiles || [];
     } catch(e) {
@@ -1754,13 +2076,13 @@ function _pollCharGenStatus(taskId, charId, btn) {
 
 // ── Scene AI Image Generation ──────────────────────────────
 async function generateSceneRefAI(sceneId) {
-    const scene = (window.currentDramaScenes || []).find(s => s.id === sceneId);
+    const scene = (window.currentCampaignScenes || []).find(s => s.id === sceneId);
     if (!scene) { toast('Scene not found', 'error'); return; }
     if (!scene.location || !scene.location.trim()) {
         toast(`Scene has no location description`, 'error');
         return;
     }
-    // Auto-detect profile: wizard chips > drama metadata > localStorage
+    // Auto-detect profile: wizard chips > campaign metadata > localStorage
     const autoProfile = _getAutoProfile();
     if (autoProfile) {
         // Skip modal — use saved profile directly
@@ -1814,7 +2136,7 @@ async function _confirmCharGenProfile() {
         const modal = document.getElementById('charGenProfileModal');
         if (modal) modal.style.display = 'none';
         
-        const scene = (window.currentDramaScenes || []).find(s => s.id === sceneId);
+        const scene = (window.currentCampaignScenes || []).find(s => s.id === sceneId);
         const btn = document.getElementById(`btnGenScene${sceneId}`);
         if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
         
@@ -1847,7 +2169,7 @@ async function _confirmCharGenProfile() {
     const modal = document.getElementById('charGenProfileModal');
     if (modal) modal.style.display = 'none';
     
-    const char = (window.currentDramaCharacters || []).find(c => c.id === charId);
+    const char = (window.currentCampaignCharacters || []).find(c => c.id === charId);
     const btn = document.getElementById(`btnGenChar${charId}`);
     if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating...'; }
     
@@ -2112,10 +2434,351 @@ async function doBreakdown(append = false) {
     }
 }
 
+
+// ── Production Board (8 Zones) Toggle & Render ──
+
+let currentSbView = 'board'; // 'board' or 'list'
+
+function toggleSbView(view) {
+    currentSbView = view;
+    document.getElementById('btnViewBoard').className = view === 'board' ? 'btn btn-sm' : 'btn btn-sm btn-ghost';
+    document.getElementById('btnViewBoard').style.background = view === 'board' ? 'var(--bg-0)' : '';
+    document.getElementById('btnViewBoard').style.color = view === 'board' ? 'var(--text-1)' : 'var(--text-3)';
+    
+    document.getElementById('btnViewList').className = view === 'list' ? 'btn btn-sm' : 'btn btn-sm btn-ghost';
+    document.getElementById('btnViewList').style.background = view === 'list' ? 'var(--bg-0)' : '';
+    document.getElementById('btnViewList').style.color = view === 'list' ? 'var(--text-1)' : 'var(--text-3)';
+
+    if (window.currentRenderedShots && window.currentRenderedShots.length > 0) {
+        if (view === 'board') {
+            document.getElementById('sbList').style.display = 'none';
+            document.getElementById('productionBoard').style.display = 'grid';
+            renderProductionBoard(window.currentRenderedShots);
+        } else {
+            document.getElementById('productionBoard').style.display = 'none';
+            document.getElementById('sbList').style.display = '';
+            // sbList is already populated by renderStoryboard
+        }
+    }
+}
+
+function renderProductionBoard(shots) {
+    const container = document.getElementById('productionBoard');
+    if (!shots || shots.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('sbViewToggles').style.display = 'flex';
+
+    // Data Sources
+    const chars = window.currentCampaignCharacters || [];
+    const scenes = window.currentCampaignScenes || [];
+    
+    // Z1: Characters (find all unique characters in these shots)
+    let activeCharIds = new Set();
+    let activeCharNames = new Set();
+    shots.forEach(s => {
+        (s.character_ids || []).forEach(id => activeCharIds.add(id));
+        (s.character_names || []).forEach(n => activeCharNames.add(n));
+    });
+    
+    let boardChars = chars.filter(c => activeCharIds.has(c.id) || activeCharNames.has(c.name));
+    if (boardChars.length === 0) boardChars = chars.slice(0, 4);
+
+    // Z2: Environment
+    const scene = scenes.length > 0 ? scenes[0] : null;
+
+    // Z5-Z8: Extract from scene
+    const lighting = scene && scene.lighting_style ? scene.lighting_style : 'Natural / Cinematic';
+    const emotions = scene && scene.mood ? scene.mood.split(',').map(m => m.trim()).filter(Boolean) : ['Dramatic', 'Intense'];
+    const props = scene && scene.material_refs ? scene.material_refs.split(',').map(m => m.trim()).filter(Boolean) : [];
+    
+    // Scene element tags from description
+    const sceneElements = [];
+    if (scene) {
+        if (scene.location) sceneElements.push(scene.location);
+        if (scene.description) {
+            scene.description.split(',').slice(0, 6).forEach(d => {
+                const t = d.trim();
+                if (t && t.length < 30) sceneElements.push(t);
+            });
+        }
+    }
+
+    // Helper: get total duration
+    const totalDur = shots.reduce((sum, s) => sum + (s.duration || 5), 0);
+    let cumTime = 0;
+
+    container.innerHTML = `
+        <!-- Zone 1: Characters -->
+        <div class="pb-zone pb-z1">
+            <div class="pb-zone-header">
+                <span class="pb-zh-cn">Characters</span>
+                <span class="pb-zh-en">STYLING & REFERENCE</span>
+            </div>
+            <div class="pb-char-list">
+                ${boardChars.map(c => {
+                    const imgUrl = _getCharRefUrl(c);
+                    const descLines = [];
+                    if (c.appearance) descLines.push({label: 'Appearance', val: c.appearance});
+                    if (c.personality) descLines.push({label: 'Personality', val: c.personality});
+                    if (c.description) descLines.push({label: 'Note', val: c.description});
+                    return `
+                    <div class="pb-char-item" style="flex-direction:column; gap:8px; padding:10px;">
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            ${imgUrl
+                              ? `<img src="${imgUrl}" class="pb-char-img" style="width:56px;height:72px;border-radius:6px;border:1px solid rgba(0,200,220,0.3);" />`
+                              : `<div class="pb-char-img" style="width:56px;height:72px;border-radius:6px;background:#1e293b;display:flex;align-items:center;justify-content:center;">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                 </div>`}
+                            <div>
+                                <div class="pb-char-name">${esc(c.name)}</div>
+                                <div class="pb-char-role">${esc(c.role || 'character')}</div>
+                            </div>
+                        </div>
+                        ${descLines.length > 0 ? `
+                        <div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">
+                            ${descLines.map(d => `
+                                <div style="font-size:11px;line-height:1.4;">
+                                    <span style="color:#00c8dc;font-weight:600;">${d.label}:</span>
+                                    <span style="color:#94a3b8;">${esc(d.val.substring(0,80))}${d.val.length > 80 ? '…' : ''}</span>
+                                </div>
+                            `).join('')}
+                        </div>` : ''}
+                    </div>
+                    `;
+                }).join('') || '<div style="color:#64748b;font-size:12px;padding:12px;">No characters assigned</div>'}
+            </div>
+        </div>
+
+        <!-- Zone 2: Environment -->
+        <div class="pb-zone pb-z2">
+            <div class="pb-zone-header">
+                <span class="pb-zh-cn">Environment</span>
+                <span class="pb-zh-en">SCENE DESIGN</span>
+            </div>
+            ${scene ? `
+                <div class="pb-env-view">
+                    <div class="pb-env-img-wrap">
+                        ${_getSceneRefUrl(scene)
+                          ? `<img src="${_getSceneRefUrl(scene)}" class="pb-env-img" onerror="this.parentElement.innerHTML='<div style=\\'width:100%;height:100%;background:#1e293b;display:flex;align-items:center;justify-content:center;color:#475569;\\'>No Image</div>'">`
+                          : '<div style="width:100%;height:100%;background:#1e293b;display:flex;align-items:center;justify-content:center;color:#475569;font-size:12px;">No Scene Image</div>'}
+                        <div class="pb-env-name">${esc(scene.name || scene.location || 'Scene')}</div>
+                    </div>
+                    <div class="pb-env-desc">${esc(scene.description || scene.location || '')}</div>
+                    ${sceneElements.length > 0 ? `
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+                        ${sceneElements.map(e => `<span class="pb-pill">${esc(e)}</span>`).join('')}
+                    </div>` : ''}
+                </div>
+            ` : '<div style="color:#64748b;font-size:12px;">No scene data available</div>'}
+        </div>
+
+        <!-- Zone 3: Storyboard Panels -->
+        <div class="pb-zone pb-z3">
+            <div class="pb-zone-header">
+                <span class="pb-zh-cn">Shots (${shots.length}) · ${totalDur}s</span>
+                <span class="pb-zh-en">STORYBOARD PANELS</span>
+            </div>
+            <div class="pb-panels">
+                ${shots.map((s, idx) => {
+                    const dur = s.duration || 5;
+                    const startT = cumTime;
+                    cumTime += dur;
+                    const timeLabel = startT + '-' + cumTime + 's';
+                    const thumbUrl = s.composed_image ? '/api/v1/pod_studio/references/' + encodeURIComponent(s.composed_image.replace(/\\\\/g, '/').split('/').pop()) : null;
+                    return `
+                        <div class="pb-panel">
+                            <div class="pb-panel-head">
+                                <span class="pb-panel-num">SHOT ${s.storyboard_number || (idx+1)}</span>
+                                <span class="pb-panel-time">${esc(s.shot_type || '')} · ${esc(s.angle || '')} · ${timeLabel}</span>
+                            </div>
+                            ${thumbUrl ? `<img src="${thumbUrl}" style="width:100%;height:80px;object-fit:cover;border-radius:4px;margin-bottom:6px;border:1px solid rgba(0,200,220,0.2);" onerror="this.style.display='none'">` : ''}
+                            ${s.title ? `<div class="pb-panel-title">${esc(s.title)}</div>` : ''}
+                            ${s.action ? `<div class="pb-panel-action">${esc(s.action)}</div>` : ''}
+                            ${s.dialogue ? `<div class="pb-panel-dialogue">"${esc(s.dialogue)}"</div>` : ''}
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+
+        <!-- Zone 4: Blocking & Movement (Map Style) -->
+        <div class="pb-zone pb-z4" style="padding:0;overflow:hidden;">
+            <div class="pb-zone-header" style="padding:16px 16px 12px;">
+                <span class="pb-zh-cn">Blocking</span>
+                <span class="pb-zh-en">CAMERA MOVEMENT MAP</span>
+            </div>
+            <div style="display:flex;gap:0;min-height:220px;">
+                <!-- Left: Scene Map with Shot Markers -->
+                <div style="flex:1;position:relative;min-height:220px;overflow:hidden;border-right:1px solid rgba(0,200,220,0.15);">
+                    ${(() => {
+                        // Priority: Panorama image > Scene image > none
+                        let _epMeta = {};
+                        try { _epMeta = JSON.parse(currentEpisode?.metadata || '{}'); } catch(e) {}
+                        const panoramaUrl = _epMeta.panorama_image_url || null;
+                        const sceneUrl = panoramaUrl || (scene ? _getSceneRefUrl(scene) : null);
+                        const isPanorama = !!panoramaUrl;
+
+                        // Generate marker positions
+                        const n = shots.length;
+                        const positions = [];
+
+                        for (let i = 0; i < n; i++) {
+                            const s = shots[i];
+                            // Try AI spatial_position first
+                            let sp = s.spatial_position || null;
+                            if (!sp) {
+                                try {
+                                    const sMeta = JSON.parse(s.metadata || '{}');
+                                    sp = sMeta.spatial_position || null;
+                                } catch(e) {}
+                            }
+
+                            if (sp && sp.zone && sp.depth) {
+                                // Map spatial_position to x,y coordinates
+                                const zoneX = { left: 15, 'center-left': 30, center: 50, 'center-right': 70, right: 85 };
+                                const depthY = { foreground: 80, midground: 50, background: 20 };
+                                positions.push({
+                                    x: zoneX[sp.zone] || 50,
+                                    y: depthY[sp.depth] || 50,
+                                    anchor: sp.anchor_element || ''
+                                });
+                            } else {
+                                // Fallback: S-curve
+                                const progress = n > 1 ? i / (n - 1) : 0.5;
+                                const isLeft = i % 2 === 0;
+                                const x = isLeft ? 20 + progress * 25 : 75 - progress * 25;
+                                const y = 15 + progress * 70;
+                                positions.push({ x, y, anchor: '' });
+                            }
+                        }
+                        
+                        // Build SVG path lines
+                        let pathD = '';
+                        if (positions.length > 1) {
+                            pathD = 'M ' + positions[0].x + ' ' + positions[0].y;
+                            for (let i = 1; i < positions.length; i++) {
+                                const prev = positions[i-1];
+                                const curr = positions[i];
+                                const cpx = (prev.x + curr.x) / 2;
+                                const cpy = prev.y + (curr.y - prev.y) * 0.3;
+                                pathD += ' Q ' + cpx + ' ' + cpy + ' ' + curr.x + ' ' + curr.y;
+                            }
+                        }
+                        
+                        return `
+                        <!-- Scene background (dimmed) -->
+                        ${sceneUrl ? `<img src="${sceneUrl}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:brightness(${isPanorama ? '0.4' : '0.3'}) saturate(0.5);z-index:0;" onerror="this.style.display='none'">` : ''}
+                        <div style="position:absolute;inset:0;background:rgba(10,22,40,${sceneUrl ? '0.4' : '0.9'});z-index:1;"></div>
+                        
+                        <!-- SVG Overlay: paths + markers -->
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;z-index:2;">
+                            <!-- Movement path line -->
+                            ${pathD ? `
+                            <path d="${pathD}" fill="none" stroke="rgba(0,200,220,0.15)" stroke-width="0.8" stroke-dasharray="2,2"/>
+                            <path d="${pathD}" fill="none" stroke="rgba(0,200,220,0.5)" stroke-width="0.4"/>
+                            ` : ''}
+                            
+                            <!-- Shot markers -->
+                            ${positions.map((p, i) => `
+                                <circle cx="${p.x}" cy="${p.y}" r="3.5" fill="rgba(10,22,40,0.8)" stroke="${i === 0 ? '#f59e0b' : '#00c8dc'}" stroke-width="0.5"/>
+                                <text x="${p.x}" y="${p.y + 1.2}" text-anchor="middle" fill="${i === 0 ? '#fbbf24' : '#fff'}" font-size="3" font-weight="700" font-family="sans-serif">${shots[i].storyboard_number || (i+1)}</text>
+                            `).join('')}
+                            
+                            <!-- Direction arrows between markers -->
+                            ${positions.length > 1 ? positions.slice(0, -1).map((p, i) => {
+                                const next = positions[i+1];
+                                const mx = (p.x + next.x) / 2;
+                                const my = (p.y + next.y) / 2;
+                                const angle = Math.atan2(next.y - p.y, next.x - p.x) * 180 / Math.PI;
+                                return `<polygon points="${mx},${my-0.8} ${mx+1.5},${my} ${mx},${my+0.8}" fill="rgba(0,200,220,0.6)" transform="rotate(${angle},${mx},${my})"/>`;
+                            }).join('') : ''}
+                        </svg>
+                        
+                        <!-- Legend -->
+                        <div style="position:absolute;bottom:8px;left:10px;z-index:3;display:flex;gap:12px;font-size:10px;color:#94a3b8;">
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b;margin-right:4px;"></span>Start</span>
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#00c8dc;margin-right:4px;"></span>Shot</span>
+                            <span style="color:rgba(0,200,220,0.5);">― Path</span>
+                            ${isPanorama ? '<span style="color:#f59e0b;">📍 Panorama</span>' : ''}
+                        </div>
+                        `;
+                    })()}
+                </div>
+                <!-- Right: Shot Movement List -->
+                <div style="width:280px;padding:8px 12px;overflow-y:auto;max-height:280px;display:flex;flex-direction:column;gap:6px;font-size:11px;">
+                    <div style="font-size:10px;color:rgba(0,200,220,0.7);font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">${shots.length} shots sequence</div>
+                    ${shots.map((s, idx) => {
+                        const move = s.movement || 'static';
+                        const isTracking = move.toLowerCase().includes('track') || move.toLowerCase().includes('dolly') || move.toLowerCase().includes('pan');
+                        return `
+                        <div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;${idx < shots.length - 1 ? 'border-bottom:1px solid rgba(255,255,255,0.04);' : ''}">
+                            <div style="width:18px;height:18px;border-radius:50%;background:${idx === 0 ? 'rgba(245,158,11,0.2)' : 'rgba(0,200,220,0.15)'};color:${idx === 0 ? '#fbbf24' : '#00c8dc'};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${s.storyboard_number || (idx+1)}</div>
+                            <div style="min-width:0;">
+                                <span style="color:#fff;font-weight:600;">${esc(move)}</span>
+                                ${isTracking ? '<span style="margin-left:4px;font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(0,200,220,0.15);color:#00c8dc;">↗</span>' : ''}
+                                <div style="color:#94a3b8;margin-top:2px;line-height:1.3;">${esc((s.title || s.action || '').substring(0, 60))}</div>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Row (Zones 5, 6, 7, 8) -->
+        <div class="pb-bottom-row">
+            <div class="pb-zone">
+                <div class="pb-zone-header" style="margin-bottom:8px;padding-bottom:8px;">
+                    <span class="pb-zh-cn" style="font-size:13px;">Lighting</span>
+                    <span class="pb-zh-en" style="font-size:9px;">ATMOSPHERE</span>
+                </div>
+                <div style="font-size:12px; color:#cbd5e1; line-height:1.6;">${esc(lighting)}</div>
+            </div>
+            
+            <div class="pb-zone">
+                <div class="pb-zone-header" style="margin-bottom:8px;padding-bottom:8px;">
+                    <span class="pb-zh-cn" style="font-size:13px;">Emotions</span>
+                    <span class="pb-zh-en" style="font-size:9px;">MOOD & TONE</span>
+                </div>
+                <div class="pb-pill-container">
+                    ${emotions.map(e => `<span class="pb-pill glow">${esc(e)}</span>`).join('')}
+                </div>
+            </div>
+
+            <div class="pb-zone">
+                <div class="pb-zone-header" style="margin-bottom:8px;padding-bottom:8px;">
+                    <span class="pb-zh-cn" style="font-size:13px;">Sound</span>
+                    <span class="pb-zh-en" style="font-size:9px;">SFX & BGM</span>
+                </div>
+                <div style="font-size:11px; color:#cbd5e1; display:flex; flex-direction:column; gap:6px;">
+                    ${shots.filter(s => s.sound_effect).slice(0,4).map(s => `<div>🎵 ${esc(s.sound_effect)}</div>`).join('')}
+                    ${shots.filter(s => s.bgm_prompt).slice(0,1).map(s => `<div style="color:#fcd34d;">🎼 ${esc(s.bgm_prompt)}</div>`).join('')}
+                    ${shots.filter(s => s.sound_effect).length === 0 && shots.filter(s => s.bgm_prompt).length === 0 ? '<div style="color:#475569;">No sound data</div>' : ''}
+                </div>
+            </div>
+
+            <div class="pb-zone">
+                <div class="pb-zone-header" style="margin-bottom:8px;padding-bottom:8px;">
+                    <span class="pb-zh-cn" style="font-size:13px;">Props</span>
+                    <span class="pb-zh-en" style="font-size:9px;">DETAILS & ITEMS</span>
+                </div>
+                <div class="pb-pill-container">
+                    ${props.length > 0
+                      ? props.map(p => `<span class="pb-pill">${esc(p)}</span>`).join('')
+                      : '<span style="color:#475569;font-size:11px;">No props data</span>'}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+
 function renderStoryboard(shots) {
     window.currentRenderedShots = shots;
     const sbList = document.getElementById('sbList');
-    sbList.style.display = '';
+    if (shots && shots.length > 0) { toggleSbView(currentSbView); } else { sbList.style.display = ''; document.getElementById('productionBoard').style.display = 'none'; document.getElementById('sbViewToggles').style.display = 'none'; }
 
     // Hide the empty-state placeholder
     document.getElementById('storyboardEmpty').style.display = 'none';
@@ -2199,7 +2862,7 @@ function copyShotPrompt(e, idx, type = 'image') {
     const basePrompt = type === 'video' ? (shot.video_prompt || shot.image_prompt || '') : (shot.image_prompt || '');
     
     // Character info
-    const chars = window.currentDramaCharacters || [];
+    const chars = window.currentCampaignCharacters || [];
     const shotCharNames = shot.character_names || []; 
     const shotCharIds = shot.character_ids || [];     
     
@@ -2213,7 +2876,7 @@ function copyShotPrompt(e, idx, type = 'image') {
     const charText = charsInfo.map(c => `- ${c.name} (${c.role || 'Minor'}): ${c.description || ''}`).join('\n');
     
     // Scene info
-    const scenes = window.currentDramaScenes || [];
+    const scenes = window.currentCampaignScenes || [];
     let sceneInfo = null;
     if (shot.scene_id) {
         sceneInfo = scenes.find(s => s.id === shot.scene_id);
@@ -2298,7 +2961,7 @@ async function sendChat() {
                 agent_type: document.getElementById('agentSelect').value,
                 message,
                 episode_id: currentEpisode?.id,
-                drama_id: currentDrama?.id,
+                campaign_id: currentCampaign?.id,
             }),
         });
 
@@ -2393,8 +3056,8 @@ async function generateRawAudio() {
         let vibeHtml = '<optgroup label="VibeVoice (Offline)">';
         let geminiHtml = '<optgroup label="Gemini (Online via automation)">';
         
-        const targetLang = (typeof currentDrama !== 'undefined' && currentDrama && currentDrama.language) 
-            ? currentDrama.language.toLowerCase() 
+        const targetLang = (typeof currentCampaign !== 'undefined' && currentCampaign && currentCampaign.language) 
+            ? currentCampaign.language.toLowerCase() 
             : null;
             
         let hasProfiles = false;
@@ -2551,9 +3214,9 @@ let apPollingInterval = null;
 let realtimeAbortController = null;
 
 async function startBackgroundAutoPilot() {
-    if (!pendingAutoPilotDramaId) return;
+    if (!pendingAutoPilotCampaignId) return;
     try {
-        await apiFetch(`/dramas/${pendingAutoPilotDramaId}/start-autopilot`, { method: 'POST' });
+        await apiFetch(`/campaigns/${pendingAutoPilotCampaignId}/start-autopilot`, { method: 'POST' });
         
         document.getElementById('wizStep3').style.display = 'none';
         document.getElementById('wizStepProgress').style.display = '';
@@ -2568,9 +3231,9 @@ async function startBackgroundAutoPilot() {
 }
 
 async function pollBackgroundStatus() {
-    if (!pendingAutoPilotDramaId) return;
+    if (!pendingAutoPilotCampaignId) return;
     try {
-        const res = await apiFetch(`/dramas/${pendingAutoPilotDramaId}/autopilot-status`);
+        const res = await apiFetch(`/campaigns/${pendingAutoPilotCampaignId}/autopilot-status`);
         document.getElementById('wizStatusText').textContent = res.status;
         document.getElementById('wizProgressBar').style.width = res.progress + '%';
         
@@ -2587,20 +3250,20 @@ async function pollBackgroundStatus() {
 }
 
 window.resumeAutoPilot = function() {
-    if (!currentDrama) return;
-    pendingAutoPilotDramaId = currentDrama.id;
+    if (!currentCampaign) return;
+    pendingAutoPilotCampaignId = currentCampaign.id;
     window.pendingAutoPilotIsResume = true;
     
     let outline;
-    try { outline = JSON.parse(currentDrama.metadata).series_outline; } catch(e) {}
+    try { outline = JSON.parse(currentCampaign.metadata).series_outline; } catch(e) {}
     
     if (!outline || !outline.episodes) {
-        outline = { episodes: [], series_title: currentDrama.title };
+        outline = { episodes: [], series_title: currentCampaign.title };
     }
     
     // Pad outline to support manually added DB episodes
-    if (currentDrama && currentDrama.episodes) {
-        let maxEpNum = currentDrama.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
+    if (currentCampaign && currentCampaign.episodes) {
+        let maxEpNum = currentCampaign.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
         while (outline.episodes.length < maxEpNum) {
             const nextNum = outline.episodes.length + 1;
             outline.episodes.push({
@@ -2637,13 +3300,13 @@ window.resumeAutoPilot = function() {
         });
         document.getElementById('wizOutlineReview').innerHTML = outlineHtml;
         
-        // Load browser profiles into chip selector, pre-select from drama metadata
+        // Load browser profiles into chip selector, pre-select from campaign metadata
         _loadBrowserProfilesIntoSelect('wizBrowserProfileExec').then(() => {
-            // Try to restore browser profiles from drama metadata first
+            // Try to restore browser profiles from campaign metadata first
             let restored = false;
-            if (currentDrama) {
+            if (currentCampaign) {
                 try {
-                    const meta = JSON.parse(currentDrama.metadata || '{}');
+                    const meta = JSON.parse(currentCampaign.metadata || '{}');
                     const savedProfiles = meta.browser_profile_names_video || (meta.browser_profile_name ? [meta.browser_profile_name] : []);
                     if (savedProfiles.length > 0) {
                         _chipSelectedProfiles = savedProfiles.filter(s => s && _browserProfilesCache.some(p => p.name === s));
@@ -2656,10 +3319,10 @@ window.resumeAutoPilot = function() {
             _renderBrowserChips();
         });
 
-        // Restore video engine dropdown from drama metadata
-        if (currentDrama) {
+        // Restore video engine dropdown from campaign metadata
+        if (currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 if (meta.video_engine) {
                     const wizEngEl = document.getElementById('wizVideoEngine');
                     if (wizEngEl) {
@@ -2671,10 +3334,10 @@ window.resumeAutoPilot = function() {
             } catch(e) {}
         }
 
-        // Restore preset dropdown if drama was created from a queue job
-        if (currentDrama) {
+        // Restore preset dropdown if campaign was created from a queue job
+        if (currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const jobId = meta.auto_pipeline_job_id;
                 if (jobId) {
                     // Fetch the original job to get preset_name
@@ -2705,16 +3368,16 @@ window.resumeAutoPilot = function() {
                         bpLabel.textContent = _getVideoEngine() === 'veo3' ? '🌐 Browser Profile (Veo3 AI Gen)' : '🌐 Browser Profile (Grok AI Gen)';
                     }
                 }
-                const targetLan = (typeof currentDrama !== 'undefined' && currentDrama && currentDrama.language) 
-                                    ? currentDrama.language 
+                const targetLan = (typeof currentCampaign !== 'undefined' && currentCampaign && currentCampaign.language) 
+                                    ? currentCampaign.language 
                                     : (document.getElementById('wizLanguage') ? document.getElementById('wizLanguage').value : null);
-                // Load voices then auto-select from drama metadata (voice_preset)
+                // Load voices then auto-select from campaign metadata (voice_preset)
                 _loadVoiceProfilesIntoSelect('wizVoiceProfileExec', targetLan).then(() => {
-                    // The _loadVoiceProfilesIntoSelect already tries currentDrama.metadata.voice_preset
+                    // The _loadVoiceProfilesIntoSelect already tries currentCampaign.metadata.voice_preset
                     // But voice_preset format is "voiceId|engine", need to match just voiceId
-                    if (currentDrama) {
+                    if (currentCampaign) {
                         try {
-                            const meta = JSON.parse(currentDrama.metadata || '{}');
+                            const meta = JSON.parse(currentCampaign.metadata || '{}');
                             const savedVoice = meta.voice_preset || meta.tts_voice || '';
                             if (savedVoice) {
                                 const voiceId = savedVoice.split('|')[0]; // strip engine suffix
@@ -2736,10 +3399,10 @@ window.resumeAutoPilot = function() {
             }
         }
 
-        // Restore upload targets from drama metadata
-        if (currentDrama) {
+        // Restore upload targets from campaign metadata
+        if (currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const savedTargets = meta.upload_targets || [];
                 const savedPrivacy = meta.upload_privacy || 'private';
                 // Pre-load YT/FB dropdowns and select saved values
@@ -2787,10 +3450,10 @@ window.resumeAutoPilot = function() {
 // ── REALTIME VISUAL AUTO PILOT ─────────────────────────────
 let isAutoPilotRunning = false;
 async function startRealtimeAutoPilot() {
-    if (!pendingAutoPilotDramaId) return;
+    if (!pendingAutoPilotCampaignId) return;
     if (isAutoPilotRunning) return;
     
-    // Save selected profiles from wizard to localStorage + drama metadata
+    // Save selected profiles from wizard to localStorage + campaign metadata
     const wizProfileSel = document.getElementById('wizBrowserProfileExec');
     let selectedVideoProfiles = wizProfileSel ? Array.from(wizProfileSel.selectedOptions).map(o => o.value).filter(Boolean) : [];
     // Fallback: if chip UI has values (may not yet be synced) use those
@@ -2814,10 +3477,10 @@ async function startRealtimeAutoPilot() {
         }
     }
     
-    // Always persist video_engine + profile to drama metadata
+    // Always persist video_engine + profile to campaign metadata
     try {
-        const dramaData = await apiFetch(`/dramas/${pendingAutoPilotDramaId}`);
-        const meta = JSON.parse(dramaData.metadata || '{}');
+        const campaignData = await apiFetch(`/campaigns/${pendingAutoPilotCampaignId}`);
+        const meta = JSON.parse(campaignData.metadata || '{}');
         
         // Always save video engine
         meta.video_engine = _getVideoEngine();
@@ -2852,7 +3515,7 @@ async function startRealtimeAutoPilot() {
         const privVal = document.getElementById('wizUploadPrivacy')?.value;
         if (privVal) meta.upload_privacy = privVal;
         
-        await apiFetch(`/dramas/${pendingAutoPilotDramaId}`, {
+        await apiFetch(`/campaigns/${pendingAutoPilotCampaignId}`, {
             method: 'PUT',
             body: JSON.stringify({ metadata: JSON.stringify(meta) })
         });
@@ -2862,22 +3525,22 @@ async function startRealtimeAutoPilot() {
     
     hideWizard();
     
-    // Save the episode the user was viewing before selectDrama resets it
+    // Save the episode the user was viewing before selectCampaign resets it
     const isResume = !!window.pendingAutoPilotIsResume;
     window.pendingAutoPilotIsResume = false;
     const savedResumeEpNumber = (isResume && currentEpisode) ? currentEpisode.episode_number : null;
     
     // Refresh sidebar data so the newly created project appears
-    await loadDramas();
+    await loadCampaigns();
     
-    // Load Drama into the workspace
-    await selectDrama(pendingAutoPilotDramaId);
+    // Load Campaign into the workspace
+    await selectCampaign(pendingAutoPilotCampaignId);
     
     // Verify an outline exists
-    if (!currentDrama || !currentDrama.metadata) return;
+    if (!currentCampaign || !currentCampaign.metadata) return;
     let outline;
     try { 
-        outline = JSON.parse(currentDrama.metadata).series_outline; 
+        outline = JSON.parse(currentCampaign.metadata).series_outline; 
     } catch(e) {}
     
     if (!outline || !outline.episodes) {
@@ -2885,8 +3548,8 @@ async function startRealtimeAutoPilot() {
     }
     
     // Pad outline to support manually added DB episodes
-    if (currentDrama && currentDrama.episodes) {
-        let maxEpNum = currentDrama.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
+    if (currentCampaign && currentCampaign.episodes) {
+        let maxEpNum = currentCampaign.episodes.reduce((max, ep) => Math.max(max, ep.episode_number || 1), outline.episodes.length);
         while (outline.episodes.length < maxEpNum) {
             const nextNum = outline.episodes.length + 1;
             outline.episodes.push({
@@ -2929,10 +3592,10 @@ async function startRealtimeAutoPilot() {
                 
                 try {
                     // 1. Ensure episode exists in UI
-                    let ep = currentDrama.episodes.find(e => e.episode_number === (epPlan.episode_number || i+1));
+                    let ep = currentCampaign.episodes.find(e => e.episode_number === (epPlan.episode_number || i+1));
                     if (!ep) {
                         // we technically need to add an episode
-                        await addEpisode(currentDrama.id);
+                        await addEpisode(currentCampaign.id);
                         // `addEpisode` auto-selects the newly created episode as `currentEpisode`
                         currentEpisode.title = epPlan.title || `Episode ${i+1}`;
                         await apiFetch(`/episodes/${currentEpisode.id}`, {
@@ -3004,9 +3667,9 @@ async function startRealtimeAutoPilot() {
                         let allScenes = [];
                         let allChars = [];
                         try {
-                            const sceneRes = await apiFetch(`/dramas/${currentDrama.id}/scenes`);
+                            const sceneRes = await apiFetch(`/campaigns/${currentCampaign.id}/scenes`);
                             allScenes = (sceneRes && sceneRes.items) ? sceneRes.items : [];
-                            const charRes = await apiFetch(`/dramas/${currentDrama.id}/characters`);
+                            const charRes = await apiFetch(`/campaigns/${currentCampaign.id}/characters`);
                             allChars = (charRes && charRes.items) ? charRes.items : [];
                         } catch(e) {
                             console.warn('[AutoPilot] Could not fetch chars/scenes:', e);
@@ -3025,9 +3688,9 @@ async function startRealtimeAutoPilot() {
                             let imgProfile = '';
                             let imgEngine = 'grok';
                             try {
-                                const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
-                                imgProfile = dramaMeta.browser_profile_name || '';
-                                imgEngine = dramaMeta.video_engine || 'grok';
+                                const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
+                                imgProfile = campaignMeta.browser_profile_name || '';
+                                imgEngine = campaignMeta.video_engine || 'grok';
                             } catch(e) {}
                             if (!imgProfile) imgProfile = localStorage.getItem('cs_last_browser_profile') || '';
                             
@@ -3148,8 +3811,89 @@ async function startRealtimeAutoPilot() {
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     }
                     
+                    // 5.5 Auto Grid Generation (after storyboard, before video/image gen)
+                    // Run grid gen when: storyboard is in pipeline, OR panoramic mode + images pipeline
+                    const _isPanoramicMode = (() => { try { return JSON.parse(currentCampaign.metadata || '{}').scene_gen_mode === 'panoramic_grid'; } catch(e) { return false; } })();
+                    if (pipeline.includes('storyboard') || (_isPanoramicMode && pipeline.includes('images'))) {
+                        try {
+                            let gridMeta = {};
+                            try { gridMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                            
+                            if (gridMeta.master_grid_prompt && !gridMeta.grid_image_url) {
+                                toast(`🎨 Auto Grid: Generating concept grid via Veo3...`, "info");
+                                
+                                let browserProfile = '';
+                                try {
+                                    const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
+                                    browserProfile = campaignMeta.browser_profile_name || campaignMeta.browser_profile || '';
+                                } catch(e) {}
+                                if (!browserProfile) browserProfile = localStorage.getItem('cs_last_browser_profile') || '';
+                                
+                                if (browserProfile) {
+                                    try {
+                                        const gridRes = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/generate-grid`, {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                                prompt: gridMeta.master_grid_prompt,
+                                                profile_name: browserProfile,
+                                                engine: 'veo3'
+                                            })
+                                        });
+                                        
+                                        if (gridRes.success && gridRes.image_url) {
+                                            toast(`✅ Grid image generated! Auto-slicing...`, "success");
+                                            gridMeta.grid_image_url = gridRes.image_url;
+                                            currentEpisode.metadata = JSON.stringify(gridMeta);
+                                            
+                                            // Auto-determine grid dimensions
+                                            const sbRes2 = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
+                                            const shotCount = (sbRes2.items || []).length;
+                                            let cols = 3, rows = 3;
+                                            if (shotCount <= 4) { cols = 2; rows = 2; }
+                                            else if (shotCount <= 6) { cols = 3; rows = 2; }
+                                            else if (shotCount <= 8) { cols = 4; rows = 2; }
+                                            else if (shotCount <= 9) { cols = 3; rows = 3; }
+                                            else if (shotCount <= 12) { cols = 4; rows = 3; }
+                                            else { cols = 4; rows = 4; }
+                                            
+                                            // Auto-slice
+                                            const sliceRes = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/slice-grid`, {
+                                                method: 'POST',
+                                                body: JSON.stringify({
+                                                    image_url: gridRes.image_url,
+                                                    cols: cols,
+                                                    rows: rows
+                                                })
+                                            });
+                                            
+                                            if (sliceRes.success) {
+                                                toast(`✅ Grid sliced into ${sliceRes.sliced_count} shot references!`, "success");
+                                            }
+                                        }
+                                    } catch(gridErr) {
+                                        console.warn('[AutoPilot] Grid generation failed, continuing pipeline:', gridErr);
+                                        toast(`⚠️ Grid gen failed: ${gridErr.message}. Continuing...`, "warning");
+                                    }
+                                } else {
+                                    toast(`⚠️ No browser profile — skipping auto grid gen`, "warning");
+                                }
+                            } else if (gridMeta.grid_image_url) {
+                                toast(`⏭️ Grid image already exists, skipping`, "info");
+                            }
+                        } catch(e) { console.warn('[AutoPilot] Grid check error:', e); }
+                        
+                        if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                    }
+
                     // 6. Image Generation via Grok (skip if not in pipeline)
-                    if (pipeline.includes('images')) {
+                    // Check scene gen mode — panoramic_grid uses grid slice, not per-shot
+                    let _sceneGenMode = 'per_shot';
+                    try { _sceneGenMode = JSON.parse(currentCampaign.metadata || '{}').scene_gen_mode || 'per_shot'; } catch(e) {}
+                    
+                    if (pipeline.includes('images') && _sceneGenMode === 'panoramic_grid') {
+                        toast(`🖼️ Panoramic Grid mode: Ảnh các shot đã được tạo từ Grid slice. Bỏ qua per-shot image gen.`, "info");
+                        setStep('images');
+                    } else if (pipeline.includes('images')) {
                     await new Promise(r => setTimeout(r, 2000));
                     setStep('images');
                     
@@ -3163,8 +3907,8 @@ async function startRealtimeAutoPilot() {
                     } else if (pendingImgShots.length > 0) {
                         let browserProfile = '';
                         try {
-                            const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
-                            browserProfile = dramaMeta.browser_profile_name || dramaMeta.browser_profile_path || '';
+                            const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
+                            browserProfile = campaignMeta.browser_profile_name || campaignMeta.browser_profile_path || '';
                         } catch(e) {}
                         if (!browserProfile) browserProfile = localStorage.getItem('cs_last_browser_profile') || '';
                         
@@ -3210,14 +3954,14 @@ async function startRealtimeAutoPilot() {
                         await loadEpisodeVideos().catch(e => {});
                     } else if (pendingVidShots.length > 0) {
                         let browserProfileNames = [];
-                        let dramaMeta = {};
+                        let campaignMeta = {};
                         try {
-                            dramaMeta = JSON.parse(currentDrama.metadata || '{}');
+                            campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
                             
-                            if (dramaMeta.browser_profile_names_video && dramaMeta.browser_profile_names_video.length > 0) {
-                                browserProfileNames = dramaMeta.browser_profile_names_video;
+                            if (campaignMeta.browser_profile_names_video && campaignMeta.browser_profile_names_video.length > 0) {
+                                browserProfileNames = campaignMeta.browser_profile_names_video;
                             } else {
-                                const fallback = dramaMeta.browser_profile_name || dramaMeta.browser_profile_path || '';
+                                const fallback = campaignMeta.browser_profile_name || campaignMeta.browser_profile_path || '';
                                 if (fallback) browserProfileNames = [fallback];
                             }
                         } catch(e) {}
@@ -3235,12 +3979,12 @@ async function startRealtimeAutoPilot() {
                         if (browserProfileNames.length === 0) {
                             toast(`⚠️ No browser profile set — skipping video gen for ${currentEpisode.title}`, "warning");
                         } else {
-                            const engineName = (dramaMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok') === 'veo3' ? 'Veo3' : 'Grok';
+                            const engineName = (campaignMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok') === 'veo3' ? 'Veo3' : 'Grok';
                             toast(`🎞 Auto ${engineName} video gen: ${pendingVidShots.length} shots for ${currentEpisode.title}`, "info");
                             
                             const genRes = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
                                 method: 'POST',
-                                body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false, engine: dramaMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok' })
+                                body: JSON.stringify({ profile_names: browserProfileNames, headless: false, overwrite: false, engine: campaignMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok' })
                             });
                             
                             if (genRes.success) {
@@ -3369,7 +4113,7 @@ async function startRealtimeAutoPilot() {
                             // Generate SEO for THIS episode if not exists
                             if (!epMeta.seo_publish || Object.keys(epMeta.seo_publish).length === 0) {
                                 toast("Generating SEO Metadata for this episode...", "info");
-                                await apiFetch(`/dramas/${currentDrama.id}/generate-seo`, {
+                                await apiFetch(`/campaigns/${currentCampaign.id}/generate-seo`, {
                                     method: 'POST',
                                     body: JSON.stringify({ episode_id: currentEpisode.id }),
                                 });
@@ -3377,7 +4121,7 @@ async function startRealtimeAutoPilot() {
                             
                             // ═══ Pre-publish Validation ═══
                             toast(`🔍 Validating episode content before publish...`, "info");
-                            const validation = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/validate-before-publish`, { method: 'POST' });
+                            const validation = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/validate-before-publish`, { method: 'POST' });
                             
                             if (validation.warnings && validation.warnings.length > 0) {
                                 validation.warnings.forEach(w => toast(w, "warning"));
@@ -3393,7 +4137,7 @@ async function startRealtimeAutoPilot() {
                                 // 📲 Telegram: report validation errors
                                 const errList = (validation.errors || []).join('\n');
                                 const tgMsg = `⛔ <b>[Auto-Pilot] Publish BLOCKED</b>\n` +
-                                    `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n\n` +
+                                    `📁 ${currentCampaign.title} — Ep ${epPlan.episode_number || i+1}\n\n` +
                                     `${errList}\n\n` +
                                     `📊 Video: ${s.with_video || 0}/${s.total_shots || 0} | Audio: ${s.with_audio || 0}/${s.total_shots || 0} | Export: ${s.has_export ? s.export_size_mb + 'MB' : '❌ MISSING'}`;
                                 apiFetch('/notify-telegram', { method: 'POST', body: JSON.stringify({ text: tgMsg }) }).catch(() => {});
@@ -3402,8 +4146,8 @@ async function startRealtimeAutoPilot() {
                                 const s = validation.summary || {};
                                 toast(`✅ Validation OK: ${s.total_shots} shots, ${s.with_video}/${s.total_shots} videos, ${s.with_audio}/${s.total_shots} audio, export ${s.export_size_mb}MB`, "success");
                                 
-                                const dramaMeta = JSON.parse(currentDrama.metadata || '{}');
-                                const uploadTargets = dramaMeta.upload_targets || [];
+                                const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
+                                const uploadTargets = campaignMeta.upload_targets || [];
                                 
                                 if (uploadTargets.length === 0) {
                                     toast(`⚠️ No upload targets configured. Skipping publish.`, "warning");
@@ -3413,7 +4157,7 @@ async function startRealtimeAutoPilot() {
                                         const targetPlatform = uploadTargets[ti].provider || 'youtube';
                                         toast(`📤 Publishing to ${targetPlatform} (${ti+1}/${uploadTargets.length})...`, "info");
                                         try {
-                                            const pubRes = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish`, {
+                                            const pubRes = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/publish`, {
                                                 method: 'POST',
                                                 body: JSON.stringify({ target_index: ti }),
                                             });
@@ -3438,19 +4182,19 @@ async function startRealtimeAutoPilot() {
                                     let tgText = '';
                                     if (okPlatforms.length > 0 && failPlatforms.length === 0) {
                                         tgText = `✅ <b>[Auto-Pilot] Đăng thành công!</b>\n` +
-                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `📁 ${currentCampaign.title} — Ep ${epPlan.episode_number || i+1}\n` +
                                             `📤 Platforms: ${okPlatforms.join(', ')}\n` +
                                             `📊 ${s.total_shots} shots | Export: ${s.export_size_mb}MB`;
                                     } else if (okPlatforms.length > 0 && failPlatforms.length > 0) {
                                         const failDetails = failPlatforms.map(f => `  ❌ ${f.platform}: ${f.error}`).join('\n');
                                         tgText = `⚠️ <b>[Auto-Pilot] Đăng một phần</b>\n` +
-                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `📁 ${currentCampaign.title} — Ep ${epPlan.episode_number || i+1}\n` +
                                             `✅ OK: ${okPlatforms.join(', ')}\n` +
                                             `❌ Lỗi:\n${failDetails}`;
                                     } else {
                                         const failDetails = failPlatforms.map(f => `  ❌ ${f.platform}: ${f.error}`).join('\n');
                                         tgText = `❌ <b>[Auto-Pilot] Đăng thất bại!</b>\n` +
-                                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                                            `📁 ${currentCampaign.title} — Ep ${epPlan.episode_number || i+1}\n` +
                                             `❌ Lỗi:\n${failDetails}`;
                                     }
                                     // Send with video attached if at least one succeeded
@@ -3494,7 +4238,7 @@ async function startRealtimeAutoPilot() {
                     } else {
                         // All retries exhausted — notify Telegram and stop
                         const tgErrMsg = `❌ <b>[Auto-Pilot] Dừng lại!</b>\n` +
-                            `📁 ${currentDrama.title} — Ep ${epPlan.episode_number || i+1}\n` +
+                            `📁 ${currentCampaign.title} — Ep ${epPlan.episode_number || i+1}\n` +
                             `⚠️ Lỗi sau ${MAX_AUTO_RETRIES} lần thử lại:\n${err.message}\n\n` +
                             `🕐 ${new Date().toLocaleString('vi-VN')}`;
                         apiFetch('/notify-telegram', { method: 'POST', body: JSON.stringify({ text: tgErrMsg }) }).catch(() => {});
@@ -3525,7 +4269,7 @@ async function startRealtimeAutoPilot() {
         realtimeAbortController = null;
         isAutoPilotRunning = false;
         document.getElementById('floatStopBtn').style.display = 'none';
-        await loadDramas();
+        await loadCampaigns();
     }
 }
 let _activeGenVideoTaskId = null;
@@ -3585,7 +4329,7 @@ async function _runAgentStreamAction(agentType, message, targetTextareaId, count
                 agent_type: agentType,
                 message: message,
                 episode_id: currentEpisode?.id,
-                drama_id: currentDrama?.id,
+                campaign_id: currentCampaign?.id,
             }),
             signal: realtimeAbortController ? realtimeAbortController.signal : null
         });
@@ -3667,10 +4411,10 @@ async function _loadBrowserProfilesIntoSelect(selectId) {
                 opt.textContent = label;
                 sel.appendChild(opt);
             });
-            // Auto-select if drama already has a saved profile
-            if (currentDrama) {
+            // Auto-select if campaign already has a saved profile
+            if (currentCampaign) {
                 try {
-                    const meta = JSON.parse(currentDrama.metadata || '{}');
+                    const meta = JSON.parse(currentCampaign.metadata || '{}');
                     if (meta.browser_profile_name) {
                         for (let i = 0; i < sel.options.length; i++) {
                             if (sel.options[i].value === meta.browser_profile_name) {
@@ -3849,12 +4593,12 @@ async function _loadVoiceProfilesIntoSelect(selectId, targetLang = null) {
         geminiHtml += '</optgroup>';
         sel.innerHTML = vibeHtml + edgeHtml + geminiHtml;
         
-        // Auto-select if drama already has a saved voice
+        // Auto-select if campaign already has a saved voice
         const saved = localStorage.getItem('cs_last_voice_profile') || '';
         let hasSelected = false;
-        if (typeof currentDrama !== 'undefined' && currentDrama) {
+        if (typeof currentCampaign !== 'undefined' && currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const savedVoice = meta.tts_voice || meta.voice_preset;
                 if (savedVoice) {
                     for (let i = 0; i < sel.options.length; i++) {
@@ -3892,11 +4636,11 @@ async function openGenImagesDialog() {
     // Load profiles into gen-images modal
     await _loadBrowserProfilesIntoSelect('genImgProfile');
 
-    // Pre-select saved profile: drama metadata first, then localStorage fallback
+    // Pre-select saved profile: campaign metadata first, then localStorage fallback
     const sel = document.getElementById('genImgProfile');
     let savedProfile = '';
-    if (currentDrama) {
-        try { savedProfile = JSON.parse(currentDrama.metadata || '{}').browser_profile_name || ''; } catch(e) {}
+    if (currentCampaign) {
+        try { savedProfile = JSON.parse(currentCampaign.metadata || '{}').browser_profile_name || ''; } catch(e) {}
     }
     if (!savedProfile) savedProfile = localStorage.getItem('cs_last_browser_profile') || '';
     
@@ -3943,18 +4687,18 @@ async function startGrokImageGen() {
     const overwrite = document.getElementById('genImgMode').value === 'all';
     const headless = document.getElementById('genImgHeadless').checked;
 
-    // Save profile name to drama metadata + localStorage for global recall
+    // Save profile name to campaign metadata + localStorage for global recall
     localStorage.setItem('cs_last_browser_profile', profilePath);
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             meta.browser_profile_name = profilePath;
-            await apiFetch(`/dramas/${currentDrama.id}`, {
+            await apiFetch(`/campaigns/${currentCampaign.id}`, {
                 method: 'PUT',
                 body: JSON.stringify({ metadata: JSON.stringify(meta) })
             });
-            currentDrama.metadata = JSON.stringify(meta);
-        } catch(e) { console.warn('Could not save profile to drama', e); }
+            currentCampaign.metadata = JSON.stringify(meta);
+        } catch(e) { console.warn('Could not save profile to campaign', e); }
     }
 
     // Disable button while starting
@@ -4120,9 +4864,9 @@ async function loadEpisodeImages() {
         const withImages = shots.filter(s => s.composed_image);
 
         let arCss = '16/9';
-        if (currentDrama) {
+        if (currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const ar = meta.aspect_ratio || '16:9';
                 if (ar.includes(':')) arCss = ar.replace(':', '/');
             } catch(e) {}
@@ -4147,7 +4891,7 @@ async function loadEpisodeImages() {
             // Serve image: if it's an absolute path, use grok-image endpoint with filename
             const imgPath = s.composed_image || '';
             const filename = imgPath.split(/[\\/]/).pop();
-            const imgSrc = `/api/v1/studio/grok-image/${filename}`;
+            const imgSrc = `/api/v1/pod_studio/grok-image/${filename}`;
             return `
                 <div style="border-radius:8px; overflow:hidden; background:var(--bg-1); border:1px solid var(--border); position:relative;">
                     <img src="${imgSrc}" alt="Shot ${s.storyboard_number}"
@@ -4213,9 +4957,9 @@ async function openGenVideosDialog() {
     // Initialize chip UI for Gen Videos dialog
     _genVidChipSelected = [];
     let savedProfiles = [];
-    if (currentDrama) {
+    if (currentCampaign) {
         try { 
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.browser_profile_names_video) savedProfiles = meta.browser_profile_names_video;
             else if (meta.browser_profile_name) savedProfiles = [meta.browser_profile_name];
         } catch(e) {}
@@ -4250,7 +4994,7 @@ async function openGenVideosDialog() {
         let ar = '16:9';
         let hasGallery = false;
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             ar = meta.aspect_ratio || '16:9';
             hasGallery = !!meta.gallery_category_id;
         } catch(e) {}
@@ -4413,6 +5157,20 @@ function onVideoLengthChange() {
     }
 }
 
+function onSceneGenModeChange() {
+    const sel = document.getElementById('wizSceneGenMode');
+    const hint = document.getElementById('wizSceneGenModeHint');
+    const camSel = document.getElementById('wizCameraAngle');
+    if (!sel) return;
+    if (sel.value === 'panoramic_grid') {
+        if (hint) hint.innerHTML = '🖼️ Mỗi scene tạo 1 ảnh grid 3×3 → auto crop theo góc quay. AI tự thiết kế bố cục & số lượng shot.';
+        if (camSel) { camSel.value = 'Default'; camSel.closest('label').style.opacity = '0.4'; camSel.disabled = true; }
+    } else {
+        if (hint) hint.textContent = 'Mỗi shot tạo ảnh riêng lẻ qua AI.';
+        if (camSel) { camSel.closest('label').style.opacity = '1'; camSel.disabled = false; }
+    }
+}
+
 function onGenVidEngineChange() {
     const engine = document.getElementById('genVidEngine')?.value || 'grok';
     const title = document.getElementById('genVidModalTitle');
@@ -4446,10 +5204,10 @@ function _getVideoEngine() {
         const wizEl = document.getElementById('wizVideoEngine');
         if (wizEl && wizEl.value) return wizEl.value;
     }
-    // Otherwise: drama metadata > localStorage > wizard dropdown > default
-    if (typeof currentDrama !== 'undefined' && currentDrama) {
+    // Otherwise: campaign metadata > localStorage > wizard dropdown > default
+    if (typeof currentCampaign !== 'undefined' && currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.video_engine) return meta.video_engine;
         } catch(e) {}
     }
@@ -4459,11 +5217,11 @@ function _getVideoEngine() {
 }
 
 function _restoreVideoEngine() {
-    // Restore engine selection from drama metadata or localStorage
+    // Restore engine selection from campaign metadata or localStorage
     let engine = 'grok';
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             if (meta.video_engine) engine = meta.video_engine;
         } catch(e) {}
     }
@@ -4501,15 +5259,15 @@ async function startGrokVideoGen() {
     const headless = document.getElementById('genVidHeadless').checked;
 
     localStorage.setItem('cs_last_browser_profile_video', profilePaths.join(','));
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             meta.browser_profile_names_video = profilePaths;
-            await apiFetch(`/dramas/${currentDrama.id}`, {
+            await apiFetch(`/campaigns/${currentCampaign.id}`, {
                 method: 'PUT',
                 body: JSON.stringify({ metadata: JSON.stringify(meta) })
             });
-            currentDrama.metadata = JSON.stringify(meta);
+            currentCampaign.metadata = JSON.stringify(meta);
         } catch(e) {}
     }
 
@@ -4662,9 +5420,9 @@ async function loadEpisodeVideos(progressMap = null) {
         const videoShots = shots.filter(s => s.image_prompt);
         
         let arCss = '16/9';
-        if (currentDrama) {
+        if (currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const ar = meta.aspect_ratio || '16:9';
                 if (ar.includes(':')) arCss = ar.replace(':', '/');
             } catch(e) {}
@@ -4697,7 +5455,7 @@ async function loadEpisodeVideos(progressMap = null) {
                 if (vidPath) {
                     completedVideosCount++;
                     const filename = vidPath.split(/[\\/]/).pop();
-                    const vidSrc = `/api/v1/studio/grok-video/${filename}`;
+                    const vidSrc = `/api/v1/pod_studio/grok-video/${filename}`;
                     
                     if (card.dataset.state !== 'video' || card.dataset.src !== vidSrc) {
                         card.dataset.state = 'video';
@@ -4763,9 +5521,9 @@ async function loadEpisodeVideos(progressMap = null) {
 
         // Update aspect ratio badge
         const arBadge = document.getElementById('vidAspectBadge');
-        if (arBadge && currentDrama) {
+        if (arBadge && currentCampaign) {
             try {
-                const meta = JSON.parse(currentDrama.metadata || '{}');
+                const meta = JSON.parse(currentCampaign.metadata || '{}');
                 const ar = meta.aspect_ratio || '16:9';
                 arBadge.textContent = ar;
                 arBadge.style.display = videoShots.length > 0 ? '' : 'none';
@@ -4787,9 +5545,9 @@ async function loadEpisodeVideos(progressMap = null) {
             });
             // Also check if gallery is configured
             let hasGallery = false;
-            if (currentDrama) {
+            if (currentCampaign) {
                 try {
-                    const meta = JSON.parse(currentDrama.metadata || '{}');
+                    const meta = JSON.parse(currentCampaign.metadata || '{}');
                     hasGallery = !!meta.gallery_category_id;
                 } catch(e) {}
             }
@@ -4837,9 +5595,9 @@ function showRefImagesDetail() {
     }
 
     let hasGallery = false;
-    if (currentDrama) {
+    if (currentCampaign) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             hasGallery = !!meta.gallery_category_id;
         } catch(e) {}
     }
@@ -4968,7 +5726,7 @@ async function handleAudioUpload(input) {
         const formData = new FormData();
         formData.append('audio', file);
         
-        const resp = await fetch(`/api/v1/studio/episodes/${currentEpisode.id}/upload-audio`, {
+        const resp = await fetch(`/api/v1/pod_studio/episodes/${currentEpisode.id}/upload-audio`, {
             method: 'POST',
             body: formData
         });
@@ -5677,7 +6435,7 @@ function loadEpisodeVideo() {
         if (videoSrc.includes(':\\') || videoSrc.includes(':/')) {
             // Absolute Windows/Unix path -> serve via a file API
             const fname = videoSrc.replace(/\\/g, '/').split('/').pop();
-            videoSrc = `/api/v1/studio/export-video/${encodeURIComponent(fname)}`;
+            videoSrc = `/api/v1/pod_studio/export-video/${encodeURIComponent(fname)}`;
         }
         
         exportedPlayer.src = videoSrc;
@@ -5906,9 +6664,9 @@ async function _doBuildVideoPreview(options = { randomSlides: true, addAudio: tr
     const empty = document.getElementById('videoEmpty');
     const container = document.getElementById('videoPlayerContainer');
     const canvas = document.getElementById('videoCanvas');
-    if (typeof currentDrama !== 'undefined' && currentDrama && canvas) {
+    if (typeof currentCampaign !== 'undefined' && currentCampaign && canvas) {
         try {
-            const meta = JSON.parse(currentDrama.metadata || '{}');
+            const meta = JSON.parse(currentCampaign.metadata || '{}');
             const ar = meta.aspect_ratio || '16:9';
             canvas.style.aspectRatio = ar.replace(':', '/');
         } catch(e) {}
@@ -5939,7 +6697,7 @@ async function _doBuildVideoPreview(options = { randomSlides: true, addAudio: tr
         videoSlides = shots.map(s => {
             const filename = s.composed_image.split(/[\\/]/).pop();
             return {
-                src: `/api/v1/studio/grok-image/${filename}`,
+                src: `/api/v1/pod_studio/grok-image/${filename}`,
                 label: `Shot #${s.storyboard_number}${s.title ? ' — ' + s.title : ''}`,
                 dialogue: s.dialogue || s.description || '',
             };
@@ -6694,7 +7452,7 @@ function applyApPreset() {
     // Build info display
     const infoParts = [];
     const pipelineLabels = {
-        drama_scene: '🎞 Cinematic', drama_full: '📺 Slideshow',
+        campaign_scene: '🎞 Cinematic', campaign_full: '📺 Slideshow',
         audio_story: '🎧 Audio', content_only: '📝 Content'
     };
     const langLabels = { vi: '🇻🇳', en: '🇬🇧', zh: '🇨🇳', ja: '🇯🇵', ko: '🇰🇷' };
@@ -6861,13 +7619,13 @@ async function submitBatchQueue() {
         const vStyle = presetData.wizStyle === '__custom__' ? (presetData.wizStyleCustom || 'Default') : (presetData.wizStyle || 'Default');
         const cStyle = presetData.wizCharacterStyle === '__custom__' ? (presetData.wizCharStyleCustom || 'Default') : (presetData.wizCharacterStyle || 'Default');
         if (vStyle !== 'Default' || cStyle !== 'Default') {
-            finalVisualStyle = `Visual Style: ${vStyle} | Character Style: ${cStyle}`;
+            finalVisualStyle = `Visual Style: ${vStyle} | Model/Product Style: ${cStyle}`;
         }
     }
 
     const payload = {
         urls: urls,
-        pipeline_template: document.getElementById('apPipeline')?.value || presetData?.wizPipelineTemplate || 'drama_scene',
+        pipeline_template: document.getElementById('apPipeline')?.value || presetData?.wizPipelineTemplate || 'campaign_scene',
         language: document.getElementById('apLanguage')?.value || presetData?.wizLanguage || 'vi',
         voice_preset: voicePreset,
         browser_profiles: selectedBrowsers,
@@ -6969,18 +7727,18 @@ function _renderApJobRow(job) {
             if (pd) {
                 const pvs = pd.wizStyle === '__custom__' ? (pd.wizStyleCustom || '') : (pd.wizStyle || '');
                 const pcs = pd.wizCharacterStyle === '__custom__' ? (pd.wizCharStyleCustom || '') : (pd.wizCharacterStyle || '');
-                if (pvs && pvs !== 'Default') vs = `Visual Style: ${pvs} | Character Style: ${pcs || 'Default'}`;
+                if (pvs && pvs !== 'Default') vs = `Visual Style: ${pvs} | Model/Product Style: ${pcs || 'Default'}`;
             }
         } catch(e) {}
     }
     
     if (vs && vs !== 'Default') {
         const vsMatch = vs.match(/Visual Style:\s*([^|]+)/);
-        const csMatch = vs.match(/Character Style:\s*(.+)/);
+        const csMatch = vs.match(/Model\/Product Style:\s*(.+)/);
         const vName = vsMatch ? vsMatch[1].trim() : vs;
         const cName = csMatch ? csMatch[1].trim() : '';
         if (vName && vName !== 'Default') vStyleBadge = `<span style="background:rgba(168,85,247,0.15); color:#c084fc; padding:2px 6px; border-radius:4px; border:1px solid rgba(168,85,247,0.3);" title="Visual Style: ${vName}">🎨 ${vName}</span>`;
-        if (cName && cName !== 'Default') cStyleBadge = `<span style="background:rgba(59,130,246,0.15); color:#93c5fd; padding:2px 6px; border-radius:4px; border:1px solid rgba(59,130,246,0.3);" title="Character Style: ${cName}">👤 ${cName}</span>`;
+        if (cName && cName !== 'Default') cStyleBadge = `<span style="background:rgba(59,130,246,0.15); color:#93c5fd; padding:2px 6px; border-radius:4px; border:1px solid rgba(59,130,246,0.3);" title="Model/Product Style: ${cName}">👤 ${cName}</span>`;
     }
 
     // Aspect ratio badge
@@ -7061,7 +7819,7 @@ function _renderApJobRow(job) {
         </td>
         <td class="pq-col-actions">
             <div style="display:flex; justify-content:flex-end; gap:8px;">
-                ${job.drama_id ? `<button class="pq-edit-btn" onclick="openQueueDrama(${job.drama_id})" title="Mở Project & Resume">📂</button>` : ''}
+                ${job.campaign_id ? `<button class="pq-edit-btn" onclick="openQueueCampaign(${job.campaign_id})" title="Mở Project & Resume">📂</button>` : ''}
                 ${job.status === 'error' ? `<button class="pq-edit-btn" onclick="retryApJob(${job.id})" title="Thử lại" style="color:var(--accent);">🔄</button>` : ''}
                 ${canEdit ? `<button class="pq-edit-btn" onclick="editApJob(${job.id})" title="Chỉnh sửa">✏️</button>` : ''}
                 <button class="pq-delete-btn" onclick="deleteApJob(${job.id})" title="Xóa">🗑️</button>
@@ -7087,12 +7845,12 @@ async function retryApJob(jobId) {
 }
 
 // ── Open Queue Project with Resume ──
-async function openQueueDrama(dramaId) {
+async function openQueueCampaign(campaignId) {
     togglePipelineView();
-    await selectDrama(dramaId);
-    // Small delay to ensure currentDrama is loaded, then trigger resume
+    await selectCampaign(campaignId);
+    // Small delay to ensure currentCampaign is loaded, then trigger resume
     setTimeout(() => {
-        if (currentDrama && currentDrama.id === dramaId) {
+        if (currentCampaign && currentCampaign.id === campaignId) {
             resumeAutoPilot();
         }
     }, 300);
@@ -7292,7 +8050,7 @@ async function _refreshApStatus() {
         // Refresh sidebar project list if any job is processing to show newly created projects
         const pRes = await apiFetch('/auto-pipeline/status');
         if (pRes.running) {
-            loadDramas();
+            loadCampaigns();
         }
         
         // Pipeline status
@@ -7597,16 +8355,16 @@ async function loadGalleryCategories() {
         
         listEl.innerHTML = '';
         
-        // "All Characters" sidebar item
+        // "All Models & Products" sidebar item
         const allItem = document.createElement('div');
         allItem.className = 'gallery-cat-item' + (currentGalleryCategory === null ? ' active' : '');
         allItem.innerHTML = `
             <div class="gallery-cat-icon">👥</div>
-            <span class="gallery-cat-name">All Characters</span>
+            <span class="gallery-cat-name">All Models & Products</span>
         `;
         allItem.onclick = () => {
             currentGalleryCategory = null;
-            document.getElementById('galleryCurrentCategoryName').textContent = 'All Characters';
+            document.getElementById('galleryCurrentCategoryName').textContent = 'All Models & Products';
             loadGalleryCategories();
             loadGalleryItems(null);
         };
@@ -7665,7 +8423,7 @@ async function deleteGalleryCategory(catId, catName) {
         // Reset view if we were viewing the deleted category
         if (currentGalleryCategory === catId) {
             currentGalleryCategory = null;
-            document.getElementById('galleryCurrentCategoryName').textContent = 'All Characters';
+            document.getElementById('galleryCurrentCategoryName').textContent = 'All Models & Products';
             loadGalleryItems(null);
         }
         loadGalleryCategories();
@@ -7714,7 +8472,7 @@ function _resolveGalleryImageUrl(url) {
     // Old absolute path like C:\...\gallery\filename.ext — extract filename
     const parts = url.replace(/\\/g, '/').split('/');
     const fname = parts[parts.length - 1];
-    if (fname) return `/api/v1/studio/gallery/image/${fname}`;
+    if (fname) return `/api/v1/pod_studio/gallery/image/${fname}`;
     return url;
 }
 
@@ -7735,8 +8493,8 @@ function _renderGalleryCards(items) {
                         <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
                     </svg>
                 </div>
-                <div class="gallery-empty-title">No Characters Yet</div>
-                <div class="gallery-empty-desc">Upload reference images and add character details to build your gallery. Characters will be used as visual references in drama projects.</div>
+                <div class="gallery-empty-title">No Models & Products Yet</div>
+                <div class="gallery-empty-desc">Upload reference images and add character details to build your gallery. Models & Products will be used as visual references in campaign projects.</div>
                 <button class="btn btn-primary" onclick="showGalleryItemModal()" style="margin-top:16px;">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                     Add First Character
@@ -7816,12 +8574,53 @@ async function saveGalleryCategory() {
     }
 }
 
+function togglePrimaryProduct() {
+    const input = document.getElementById('galItemIsPrimary');
+    const star = document.getElementById('galItemPrimaryStar');
+    const toggle = document.getElementById('galItemPrimaryToggle');
+    const label = document.getElementById('galItemPrimaryLabel');
+    const isPrimary = input.value === '1';
+    if (isPrimary) {
+        input.value = '0';
+        star.textContent = '☆';
+        toggle.style.border = '1px solid var(--border)';
+        toggle.style.background = 'var(--bg-2)';
+        label.textContent = 'Mark as Primary Product';
+    } else {
+        input.value = '1';
+        star.textContent = '⭐';
+        toggle.style.border = '1px solid #f59e0b';
+        toggle.style.background = 'rgba(245,158,11,0.08)';
+        label.textContent = '⭐ Primary Product — AI Focus Lock';
+    }
+}
+
+function _setPrimaryState(isPrimary) {
+    const input = document.getElementById('galItemIsPrimary');
+    const star = document.getElementById('galItemPrimaryStar');
+    const toggle = document.getElementById('galItemPrimaryToggle');
+    const label = document.getElementById('galItemPrimaryLabel');
+    if (isPrimary) {
+        input.value = '1';
+        star.textContent = '⭐';
+        toggle.style.border = '1px solid #f59e0b';
+        toggle.style.background = 'rgba(245,158,11,0.08)';
+        label.textContent = '⭐ Primary Product — AI Focus Lock';
+    } else {
+        input.value = '0';
+        star.textContent = '☆';
+        toggle.style.border = '1px solid var(--border)';
+        toggle.style.background = 'var(--bg-2)';
+        label.textContent = 'Mark as Primary Product';
+    }
+}
+
 function showGalleryItemModal(item = null) {
     document.getElementById('galleryItemModal').style.display = 'flex';
     document.getElementById('galItemAnalyzeStatus').style.display = 'none';
     
     if (item) {
-        document.getElementById('galItemModalTitle').textContent = 'Edit Character';
+        document.getElementById('galItemModalTitle').textContent = 'Edit Model/Product';
         document.getElementById('galItemId').value = item.id;
         document.getElementById('galItemName').value = item.name || '';
         document.getElementById('galItemCharType').value = item.char_type || 'individual';
@@ -7830,6 +8629,9 @@ function showGalleryItemModal(item = null) {
         document.getElementById('galItemRole').value = item.role_type || '';
         document.getElementById('galItemAppearance').value = item.appearance || '';
         document.getElementById('galItemTags').value = item.tags || '';
+        document.getElementById('galItemFabric').value = item.fabric_material || '';
+        document.getElementById('galItemAccessoryMaterial').value = item.accessory_material || '';
+        _setPrimaryState(item.is_primary === 1 || item.is_primary === true);
         document.getElementById('galItemImageUrl').value = _resolveGalleryImageUrl(item.image_url) || '';
         
         document.getElementById('btnDeleteGalItem').style.display = 'block';
@@ -7849,7 +8651,7 @@ function showGalleryItemModal(item = null) {
         _galItemSelectedCategories = item.category_ids || [];
         
     } else {
-        document.getElementById('galItemModalTitle').textContent = 'Add Character';
+        document.getElementById('galItemModalTitle').textContent = 'Add Model/Product';
         document.getElementById('galItemId').value = '';
         document.getElementById('galItemName').value = '';
         document.getElementById('galItemCharType').value = 'individual';
@@ -7858,6 +8660,9 @@ function showGalleryItemModal(item = null) {
         document.getElementById('galItemRole').value = '';
         document.getElementById('galItemAppearance').value = '';
         document.getElementById('galItemTags').value = '';
+        document.getElementById('galItemFabric').value = '';
+        document.getElementById('galItemAccessoryMaterial').value = '';
+        _setPrimaryState(false);
         document.getElementById('galItemImageUrl').value = '';
         
         document.getElementById('btnDeleteGalItem').style.display = 'none';
@@ -7951,7 +8756,7 @@ async function handleGalleryImageUpload(input) {
     formData.append('file', file);
     
     try {
-        const resp = await fetch('/api/v1/studio/gallery/upload-image', {
+        const resp = await fetch('/api/v1/pod_studio/gallery/upload-image', {
             method: 'POST',
             body: formData
         });
@@ -8250,6 +9055,9 @@ async function saveGalleryItem() {
         role_type: document.getElementById('galItemRole').value,
         appearance: document.getElementById('galItemAppearance').value,
         tags: document.getElementById('galItemTags').value,
+        fabric_material: document.getElementById('galItemFabric').value,
+        accessory_material: document.getElementById('galItemAccessoryMaterial').value,
+        is_primary: document.getElementById('galItemIsPrimary').value === '1' ? 1 : 0,
         image_url: imageUrl,
         category_ids: _galItemSelectedCategories
     };
@@ -8375,12 +9183,12 @@ async function loadWizFbPages() {
 let _publishSEOData = {}; // { youtube: {title, description, tags}, facebook: {...} }
 
 async function loadPublishData() {
-    if (!currentDrama || !currentEpisode) return;
+    if (!currentCampaign || !currentEpisode) return;
     try {
-        const meta = JSON.parse(currentDrama.metadata || '{}');
+        const meta = JSON.parse(currentCampaign.metadata || '{}');
         const targets = meta.upload_targets || [];
         
-        // Load SEO from EPISODE metadata (per-episode), fallback to drama-level
+        // Load SEO from EPISODE metadata (per-episode), fallback to campaign-level
         const epMeta = JSON.parse(currentEpisode.metadata || '{}');
         const seoPublish = epMeta.seo_publish || meta.seo_publish || {};
         _publishSEOData = seoPublish;
@@ -8405,7 +9213,7 @@ async function loadPublishData() {
         // Load publish status
         let publishStatus = {};
         try {
-            const psRes = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish-status`);
+            const psRes = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/publish-status`);
             publishStatus = psRes.platforms || {};
         } catch(e) {}
 
@@ -8476,7 +9284,7 @@ function switchPublishSEOPlatform(platform) {
 }
 
 async function savePublishSEO() {
-    if (!currentDrama || !currentEpisode) return;
+    if (!currentCampaign || !currentEpisode) return;
     const platform = document.getElementById('publishSEOPlatform').value;
     const title = document.getElementById('publishSEOTitle').value.trim();
     const desc = document.getElementById('publishSEODesc').value.trim();
@@ -8502,7 +9310,7 @@ async function savePublishSEO() {
 }
 
 async function generatePublishSEO() {
-    if (!currentDrama || !currentEpisode) {
+    if (!currentCampaign || !currentEpisode) {
         toast('Chọn episode trước', 'error');
         return;
     }
@@ -8511,7 +9319,7 @@ async function generatePublishSEO() {
     btn.innerHTML = '⏳ Generating...';
     btn.disabled = true;
     try {
-        const res = await apiFetch(`/dramas/${currentDrama.id}/generate-seo`, {
+        const res = await apiFetch(`/campaigns/${currentCampaign.id}/generate-seo`, {
             method: 'POST',
             body: JSON.stringify({ episode_id: currentEpisode.id }),
         });
@@ -8533,8 +9341,8 @@ async function generatePublishSEO() {
 }
 
 async function publishToTarget(targetIdx) {
-    if (!currentDrama || !currentEpisode) return;
-    const meta = JSON.parse(currentDrama.metadata || '{}');
+    if (!currentCampaign || !currentEpisode) return;
+    const meta = JSON.parse(currentCampaign.metadata || '{}');
     const targets = meta.upload_targets || [];
     const target = targets[targetIdx];
     if (!target) { toast('Invalid target', 'error'); return; }
@@ -8544,7 +9352,7 @@ async function publishToTarget(targetIdx) {
     if (btn) { btn.innerHTML = '⏳ Publishing...'; btn.disabled = true; }
 
     try {
-        const res = await apiFetch(`/dramas/${currentDrama.id}/episodes/${currentEpisode.id}/publish`, {
+        const res = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/publish`, {
             method: 'POST',
             body: JSON.stringify({ target_index: targetIdx }),
         });
@@ -8562,8 +9370,8 @@ async function publishToTarget(targetIdx) {
 }
 
 async function publishAllTargets() {
-    if (!currentDrama) return;
-    const meta = JSON.parse(currentDrama.metadata || '{}');
+    if (!currentCampaign) return;
+    const meta = JSON.parse(currentCampaign.metadata || '{}');
     const targets = meta.upload_targets || [];
     for (let i = 0; i < targets.length; i++) {
         await publishToTarget(i);
@@ -8599,3 +9407,182 @@ function _pollPublishStatus(taskId, targetIdx) {
         }
     }, 3000);
 }
+
+
+// ── Storyboard Grid Concept ──
+
+function copyGridPrompt() {
+    if (!currentEpisode) return;
+    try {
+        const meta = typeof currentEpisode.metadata === 'string' ? JSON.parse(currentEpisode.metadata) : currentEpisode.metadata;
+        if (meta && meta.master_grid_prompt) {
+            navigator.clipboard.writeText(meta.master_grid_prompt);
+            toast("Prompt copied to clipboard!", "success");
+        } else {
+            toast("No grid prompt available. Please generate storyboard first.", "error");
+        }
+    } catch(e) {
+        toast("Error reading prompt.", "error");
+    }
+}
+
+async function uploadGridManual(event) {
+    if (!currentCampaign || !currentEpisode) return;
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const btn = document.getElementById('btnGenGrid');
+    const oldText = btn.innerHTML;
+    btn.innerHTML = "Uploading...";
+    btn.disabled = true;
+
+    try {
+        // We will hit a new endpoint: POST /campaigns/{id}/episodes/{id}/upload-grid
+        // We use fetch directly to avoid apiFetch setting application/json
+        const resp = await fetch(`${API}/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/upload-grid`, {
+            method: 'POST',
+            body: formData
+        });
+        const res = await resp.json();
+        
+        if (resp.ok && res.success && res.image_url) {
+            toast("Grid Image uploaded manually!", "success");
+            let meta = typeof currentEpisode.metadata === 'string' ? JSON.parse(currentEpisode.metadata) : currentEpisode.metadata;
+            meta.grid_image_url = res.image_url;
+            currentEpisode.metadata = JSON.stringify(meta);
+            loadStoryboardData(); // re-render panel
+        } else {
+            toast(res.error || "Failed to upload grid image", "error");
+        }
+    } catch (e) {
+        toast("Upload error", "error");
+    } finally {
+        btn.innerHTML = oldText;
+        btn.disabled = false;
+        event.target.value = ''; // reset file input
+    }
+}
+
+async function generateGridConcept() {
+    if (!currentCampaign || !currentEpisode) return;
+    
+    let meta = {};
+    try {
+        if (currentEpisode.metadata) {
+            meta = typeof currentEpisode.metadata === 'string' ? JSON.parse(currentEpisode.metadata) : currentEpisode.metadata;
+        }
+    } catch(e) {}
+    
+    if (!meta.master_grid_prompt) {
+        toast("Master Grid Prompt not found. Please regenerate storyboard.", "error");
+        return;
+    }
+    
+    let profileName = "default";
+    let engineName = "veo3";
+    try {
+        if (currentCampaign.metadata) {
+            const cmeta = typeof currentCampaign.metadata === 'string' ? JSON.parse(currentCampaign.metadata) : currentCampaign.metadata;
+            profileName = cmeta.browser_profile_name || cmeta.browser_profile || "default";
+            engineName = cmeta.video_engine || "veo3";
+        }
+    } catch(e) {}
+    
+    const btn = document.getElementById('btnGenGrid');
+    const oldText = btn.innerHTML;
+    btn.innerHTML = `Generating via ${engineName === 'veo3' ? 'Veo3 4K' : 'Grok'}... (~2 min)`;
+    btn.disabled = true;
+    
+    try {
+        const res = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/generate-grid`, {
+            method: 'POST',
+            body: JSON.stringify({
+                prompt: meta.master_grid_prompt,
+                profile_name: profileName,
+                engine: engineName
+            })
+        });
+        
+        if (res.success && res.image_url) {
+            toast("Grid Image generated successfully!", "success");
+            meta.grid_image_url = res.image_url;
+            currentEpisode.metadata = JSON.stringify(meta);
+            loadStoryboardData(); // re-render panel
+        } else {
+            toast(res.error || "Failed to generate grid", "error");
+        }
+    } catch (e) {
+        toast("Error generating grid", "error");
+    } finally {
+        btn.innerHTML = oldText;
+        btn.disabled = false;
+    }
+}
+
+async function sliceGridConcept() {
+    if (!currentCampaign || !currentEpisode) return;
+    
+    let meta = {};
+    try {
+        if (currentEpisode.metadata) {
+            meta = typeof currentEpisode.metadata === 'string' ? JSON.parse(currentEpisode.metadata) : currentEpisode.metadata;
+        }
+    } catch(e) {}
+    
+    if (!meta.grid_image_url) {
+        toast("No grid image found to slice.", "error");
+        return;
+    }
+    
+    const shotsCount = (window.currentRenderedShots || []).length;
+    let cols = 3, rows = 4;
+    
+    if (shotsCount <= 4) { cols = 2; rows = 2; }
+    else if (shotsCount <= 6) { cols = 3; rows = 2; }
+    else if (shotsCount <= 8) { cols = 4; rows = 2; }
+    else if (shotsCount <= 9) { cols = 3; rows = 3; }
+    else if (shotsCount <= 12) { cols = 4; rows = 3; }
+    else if (shotsCount <= 16) { cols = 4; rows = 4; }
+    
+    const input = window.prompt("Nhập tỷ lệ lưới để cắt ảnh (Cột x Dòng). Ví dụ: 3x4 hoặc 4x3", `${cols}x${rows}`);
+    if (!input) return;
+    
+    const parts = input.split('x');
+    if (parts.length === 2) {
+        cols = parseInt(parts[0].trim());
+        rows = parseInt(parts[1].trim());
+    }
+    
+    const btn = document.getElementById('btnSliceGrid');
+    const oldText = btn.innerHTML;
+    btn.innerHTML = 'Slicing...';
+    btn.disabled = true;
+    
+    try {
+        const res = await apiFetch(`/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/slice-grid`, {
+            method: 'POST',
+            body: JSON.stringify({
+                image_url: meta.grid_image_url,
+                cols: cols,
+                rows: rows
+            })
+        });
+        
+        if (res.success) {
+            toast(`Sliced into ${res.sliced_count} images successfully!`, "success");
+            loadStoryboardData(); // re-render to show sliced images
+        } else {
+            toast(res.error || "Failed to slice grid", "error");
+        }
+    } catch (e) {
+        toast("Error slicing grid", "error");
+    } finally {
+        btn.innerHTML = oldText;
+        btn.disabled = false;
+    }
+}
+
+

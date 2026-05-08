@@ -1,0 +1,126 @@
+
+/* ═══════════════════════════════════════════════════════════
+   Production Board UI (8 Zones)
+   ═══════════════════════════════════════════════════════════ */
+
+.production-board {
+    display: grid;
+    grid-template-columns: 280px 1fr 350px;
+    grid-template-rows: auto auto;
+    gap: 16px;
+    padding: 20px;
+    background: #0a1628;
+    border-radius: var(--radius-xl);
+    border: 1px solid rgba(0, 200, 220, 0.2);
+    box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.5);
+    margin-bottom: 24px;
+    animation: fadeUp 0.4s var(--ease-out) both;
+}
+
+/* Zone Base */
+.pb-zone {
+    background: rgba(15, 25, 45, 0.7);
+    border: 1px solid rgba(0, 200, 220, 0.15);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+}
+
+.pb-zone::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 200, 220, 0.5), transparent);
+}
+
+.pb-zone-header {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed rgba(0, 200, 220, 0.2);
+}
+
+.pb-zh-cn {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 0 10px rgba(0, 200, 220, 0.5);
+    letter-spacing: 1px;
+}
+
+.pb-zh-en {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: rgba(0, 200, 220, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-top: 2px;
+}
+
+/* Specific Zones Layout */
+.pb-z1 { grid-column: 1; grid-row: 1; } /* Characters */
+.pb-z2 { grid-column: 2; grid-row: 1; } /* Environment */
+.pb-z3 { grid-column: 3; grid-row: 1 / span 2; } /* Storyboard Panels */
+.pb-z4 { grid-column: 1 / span 2; grid-row: 2; } /* Blocking */
+
+/* Bottom row (Zones 5-8) */
+.pb-bottom-row {
+    grid-column: 1 / span 3;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+}
+
+/* Elements inside Zones */
+.pb-char-list { display: flex; flex-direction: column; gap: 12px; }
+.pb-char-item {
+    display: flex; gap: 12px;
+    background: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+.pb-char-img { width: 48px; height: 64px; border-radius: 4px; object-fit: cover; background: #111; }
+.pb-char-info { display: flex; flex-direction: column; justify-content: center; }
+.pb-char-name { font-size: 13px; font-weight: 600; color: #fff; }
+.pb-char-role { font-size: 11px; color: #fbbf24; margin-top: 2px; }
+
+.pb-env-view { display: flex; flex-direction: column; gap: 12px; height: 100%; }
+.pb-env-img-wrap { width: 100%; height: 160px; border-radius: 8px; overflow: hidden; position: relative; border: 1px solid rgba(0, 200, 220, 0.3); }
+.pb-env-img { width: 100%; height: 100%; object-fit: cover; }
+.pb-env-name { position: absolute; bottom: 0; left: 0; right: 0; padding: 12px 10px 8px; background: linear-gradient(transparent, rgba(0,0,0,0.9)); color: #fff; font-size: 13px; font-weight: 600; }
+.pb-env-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; }
+
+/* Shots / Panels */
+.pb-panels { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 500px; padding-right: 4px; }
+.pb-panel {
+    background: rgba(0,0,0,0.4); border-left: 3px solid #00c8dc; border-radius: 6px;
+    padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.pb-panel-head { display: flex; justify-content: space-between; align-items: center; }
+.pb-panel-num { font-size: 11px; font-weight: 700; color: #00c8dc; background: rgba(0, 200, 220, 0.1); padding: 2px 6px; border-radius: 4px; }
+.pb-panel-time { font-size: 10px; font-family: var(--font-mono); color: #64748b; }
+.pb-panel-title { font-size: 13px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+.pb-panel-action { font-size: 11px; color: #94a3b8; line-height: 1.4; }
+.pb-panel-dialogue { font-size: 11px; color: #fcd34d; background: rgba(252, 211, 77, 0.1); padding: 6px 8px; border-radius: 4px; border-left: 2px solid #fcd34d; font-style: italic; }
+
+/* Pills & Tags */
+.pb-pill-container { display: flex; flex-wrap: wrap; gap: 6px; }
+.pb-pill { font-size: 11px; padding: 4px 10px; border-radius: 99px; background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.1); }
+.pb-pill.glow { background: rgba(0, 200, 220, 0.1); color: #00c8dc; border-color: rgba(0, 200, 220, 0.3); }
+
+/* Blocking List */
+.pb-block-list { display: flex; flex-direction: column; gap: 8px; }
+.pb-block-item { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: #cbd5e1; }
+.pb-block-dot { width: 18px; height: 18px; border-radius: 50%; background: rgba(99, 102, 241, 0.2); color: #818cf8; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+
+/* Responsive */
+@media (max-width: 1200px) {
+    .production-board {
+        grid-template-columns: 1fr 1fr;
+    }
+    .pb-z3 { grid-column: 1 / span 2; grid-row: 3; }
+    .pb-bottom-row { grid-template-columns: 1fr 1fr; }
+}

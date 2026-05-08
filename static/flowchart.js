@@ -4,7 +4,7 @@
  */
 (function () {
     'use strict';
-    const API = '/api/v1/studio';
+    const API = '/api/v1/pod_studio';
     const COL_X = { ref: 60, char: 260, scene: 540, shot: 820, video: 1120 };
     const ROW_GAP = 24;
     const COLORS = { charA:'hsla(210,80%,55%,0.5)', sceneA:'hsla(30,85%,55%,0.5)', videoA:'hsla(145,65%,45%,0.5)', refA:'hsla(320,70%,55%,0.45)', dim:'hsla(0,0%,30%,0.12)' };
@@ -16,8 +16,9 @@
     let dragNode=null, dragOX=0, dragOY=0;
     let nodes=[], edges=[], highlightId=null;
     let showChars=true, showScenes=true, showVideos=true;
-    let _episodeId=null, _dramaId=null;
+    let _episodeId=null, _campaignId=null;
     let _saveTimer=null;
+    let _aspectRatio='16:9'; // campaign aspect ratio for video cards
     let _curAudio=null, _curAudioBtn=null, _curAudioBar=null, _curAudioAnim=null;
 
     const _esc=s=>{const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;};
@@ -28,11 +29,11 @@
     const refImgUrl=path=>`${API}/references/${encodeURIComponent(path.replace(/\\/g,'/').split('/').pop())}`;
 
     /* ── Data ─────────────────────────────────────────── */
-    async function fetchData(epId, dramaId) {
+    async function fetchData(epId, campaignId) {
         const [sb,ch,sc]=await Promise.all([
             fetch(`${API}/episodes/${epId}/storyboards`).then(r=>r.json()),
-            fetch(`${API}/dramas/${dramaId}/characters`).then(r=>r.json()),
-            fetch(`${API}/dramas/${dramaId}/scenes`).then(r=>r.json()),
+            fetch(`${API}/campaigns/${campaignId}/characters`).then(r=>r.json()),
+            fetch(`${API}/campaigns/${campaignId}/scenes`).then(r=>r.json()),
         ]);
         return { shots:sb.items||[], characters:ch.items||ch||[], scenes:sc.items||sc||[] };
     }
@@ -92,9 +93,12 @@
         });
 
         let vy=TOP;
+        const isPortrait = _aspectRatio === '9:16' || _aspectRatio === '3:4';
+        const vidW = isPortrait ? 100 : 170;
+        const vidH = isPortrait ? 200 : 160;
         data.shots.filter(s=>s.video_url).forEach(sh=>{
             const id=`v_${sh.id}`, pos=savedLayout[id];
-            nodes.push({id,type:'video',x:pos?.x??COL_X.video,y:pos?.y??vy,w:170,h:160,data:sh}); vy+=160+ROW_GAP;
+            nodes.push({id,type:'video',x:pos?.x??COL_X.video,y:pos?.y??vy,w:vidW,h:vidH,data:sh}); vy+=vidH+ROW_GAP;
         });
 
         // Edges
@@ -108,7 +112,7 @@
     /* ── Render Nodes ─────────────────────────────────── */
     function renderNodes() {
         nodesLayer.innerHTML='';
-        [{x:COL_X.ref,l:'🖼️ Extra Refs'},{x:COL_X.char,l:'👤 Characters'},{x:COL_X.scene,l:'📍 Scenes'},{x:COL_X.shot,l:'🎬 Shots'},{x:COL_X.video,l:'🎥 Videos'}].forEach(h=>{
+        [{x:COL_X.ref,l:'🖼️ Extra Refs'},{x:COL_X.char,l:'👤 Models & Products'},{x:COL_X.scene,l:'📍 Scenes'},{x:COL_X.shot,l:'🎬 Shots'},{x:COL_X.video,l:'🎥 Videos'}].forEach(h=>{
             const el=document.createElement('div');el.className='fc-col-header';el.style.left=h.x+'px';el.textContent=h.l;nodesLayer.appendChild(el);
         });
         for(const n of nodes) {
@@ -140,18 +144,34 @@
     }
 
     function initVideoPlayers() {
+        const isP = _aspectRatio === '9:16' || _aspectRatio === '3:4';
         nodesLayer.querySelectorAll('.fc-video-wrapper video').forEach(vid => {
             const wrap = vid.closest('.fc-video-wrapper');
+            const fcNode = wrap.closest('.fc-node--video');
             const fill = wrap.querySelector('.fc-video-progress-fill');
             const btn = wrap.querySelector('.fc-video-play-btn');
+            // Add portrait class for CSS targeting
+            if(isP && fcNode) fcNode.classList.add('fc-video-portrait');
             vid.ontimeupdate = () => {
                 if(!vid.duration) return;
                 const pct = (vid.currentTime / vid.duration) * 100;
                 if(fill) fill.style.width = pct + '%';
             };
-            vid.onplay = () => { if(btn) btn.style.opacity = '0'; };
-            vid.onpause = () => { if(btn) btn.style.opacity = '1'; };
-            vid.onended = () => { if(btn) btn.style.opacity = '1'; };
+            vid.onplay = () => {
+                if(btn) btn.style.opacity = '0';
+                if(fcNode) fcNode.classList.add('fc-video-playing');
+                renderEdges();
+            };
+            vid.onpause = () => {
+                if(btn) btn.style.opacity = '1';
+                if(fcNode) fcNode.classList.remove('fc-video-playing');
+                renderEdges();
+            };
+            vid.onended = () => {
+                if(btn) btn.style.opacity = '1';
+                if(fcNode) fcNode.classList.remove('fc-video-playing');
+                renderEdges();
+            };
         });
     }
 
@@ -209,22 +229,28 @@
             h+=`<div class="fc-anchor fc-anchor--in fc-anchor--shot"></div><div class="fc-anchor fc-anchor--out fc-anchor--shot"></div>`;
         } else if(n.type==='video') {
             const sh=n.data, vUrl=videoUrl(sh);
+            const isP = _aspectRatio === '9:16' || _aspectRatio === '3:4';
+            const vidH = isP ? 140 : 90;
             if(vUrl) {
-                h+=`<div class="fc-video-wrapper" onclick="window._fcToggleVideo(this)" style="position:relative; width:100%; height:90px; cursor:pointer; overflow:hidden; border-top-left-radius:8px; border-top-right-radius:8px; background:#000;">
-                        <video class="fc-node-video" src="${vUrl}" preload="metadata" muted playsinline loop style="width:100%; height:100%; object-fit:cover; display:block;"></video>
+                h+=`<div class="fc-video-wrapper" onclick="window._fcToggleVideo(this)" style="position:relative; width:100%; height:${vidH}px; cursor:pointer; overflow:hidden; border-top-left-radius:8px; border-top-right-radius:8px; background:#000;">
+                        <video class="fc-node-video" src="${vUrl}" preload="metadata" muted playsinline loop style="width:100%; height:100%; object-fit:contain; display:block;"></video>
                         <div class="fc-video-play-btn" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:40px; height:40px; background:hsla(0,0%,0%,0.6); border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; pointer-events:none; transition:opacity 0.2s;">
                             <svg viewBox="0 0 24 24" fill="currentColor" style="width:20px; height:20px; margin-left:3px;"><path d="M8 5v14l11-7z"/></svg>
                         </div>
                         <div class="fc-video-progress-bg" style="position:absolute; bottom:0; left:0; width:100%; height:4px; background:hsla(0,0%,100%,0.3);">
                             <div class="fc-video-progress-fill" style="height:100%; width:0%; background:hsl(210,80%,65%); transition:width 0.1s linear;"></div>
                         </div>
+                        ${sh.video_url ? `<button class="fc-video-delete-btn" onclick="event.stopPropagation(); window._fcDeleteVideo(${sh.id})" title="Xoá video">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px; height:14px;"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14"/></svg>
+                        </button>` : ''}
                     </div>`;
             } else {
-                h+=`<div class="fc-node-img-placeholder" style="height:90px">🎥</div>`;
+                h+=`<div class="fc-node-img-placeholder" style="height:${vidH}px">🎥</div>`;
             }
             h+=`<span class="fc-badge fc-badge--video">#${sh.storyboard_number||'?'}</span>`;
             h+=`<div class="fc-node-body"><div class="fc-node-title">Shot #${sh.storyboard_number||'?'}</div>`;
-            h+=`<div class="fc-node-subtitle">${sh.video_url?'✅ Done':'⏳'}</div></div>`;
+            h+=`<div class="fc-node-subtitle">${sh.video_url?'✅ Done':'⏳'}</div>`;
+            h+=`</div>`;
             h+=`<div class="fc-anchor fc-anchor--in fc-anchor--video"></div>`;
         }
         return h;
@@ -393,6 +419,23 @@
         }
     };
 
+    window._fcDeleteVideo=async function(shotId) {
+        if(!confirm('Xoá video cho shot này?')) return;
+        if(!_episodeId) return;
+        try {
+            const res = await fetch(`${API}/episodes/${_episodeId}/storyboards/${shotId}/video`, {method:'DELETE'});
+            const j = await res.json();
+            if(j.success) {
+                if(typeof toast==='function') toast('Đã xoá video','success');
+                reloadFlowchart();
+            } else {
+                if(typeof toast==='function') toast('Xoá thất bại','error');
+            }
+        } catch(e) {
+            if(typeof toast==='function') toast('Lỗi: '+e.message,'error');
+        }
+    };
+
     window._fcToggleVideo=function(wrap) {
         const vid = wrap.querySelector('video');
         if(!vid) return;
@@ -525,14 +568,14 @@
 
         if(!confirm('Bạn có muốn mở browser để render lại video cho shot này không?')) return;
 
-        const drama=window._fc_getDrama?.();
-        if(!drama||!_episodeId) return;
+        const campaign=window._fc_getCampaign?.();
+        if(!campaign||!_episodeId) return;
         let profile='';
-        try{const m=JSON.parse(drama.metadata||'{}');profile=m.browser_profile_name||'';}catch(e){}
+        try{const m=JSON.parse(campaign.metadata||'{}');profile=m.browser_profile_name||'';}catch(e){}
         if(!profile) profile=localStorage.getItem('cs_last_browser_profile')||'';
         if(!profile){if(typeof toast==='function') toast('No browser profile','error');return;}
         let engine='grok';
-        try{const m=JSON.parse(drama.metadata||'{}');engine=m.video_engine||'grok';}catch(e){}
+        try{const m=JSON.parse(campaign.metadata||'{}');engine=m.video_engine||'grok';}catch(e){}
         try{
             btn.innerHTML = '⏳...';
             const res = await fetch(`${API}/episodes/${_episodeId}/gen-videos`,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -549,14 +592,20 @@
                     try{
                         const r=await fetch(`${API}/gen-videos/status/${j.task_id}`);
                         const s=await r.json();
-                        if(!s.success || s.status === 'done' || s.status.startsWith('error')) {
+                        if(!s.success || s.status === 'done' || s.status === 'completed' || s.status?.startsWith('completed') || s.status?.startsWith('error')) {
                             clearInterval(poll);
                             if(btn.dataset.taskId === j.task_id) {
                                 btn.innerHTML = '🔄 Video';
                                 btn.style.color = '';
                                 delete btn.dataset.taskId;
                             }
-                            if(s.status==='done') reloadFlowchart();
+                            const isDone = s.status==='done' || s.status==='completed' || s.status?.startsWith('completed');
+                            if(isDone) {
+                                if(typeof toast==='function') toast('✅ Video đã hoàn tất!','success');
+                                reloadFlowchart();
+                            } else if(s.status?.startsWith('error')) {
+                                if(typeof toast==='function') toast('❌ Video lỗi: ' + s.status,'error');
+                            }
                         }
                     }catch(e){
                         clearInterval(poll);
@@ -589,10 +638,10 @@
             return;
         }
 
-        const drama=window._fc_getDrama?.();
-        if(!drama||!_episodeId) return;
+        const campaign=window._fc_getCampaign?.();
+        if(!campaign||!_episodeId) return;
         let profile='';
-        try{const m=JSON.parse(drama.metadata||'{}');profile=m.browser_profile_name||'';}catch(e){}
+        try{const m=JSON.parse(campaign.metadata||'{}');profile=m.browser_profile_name||'';}catch(e){}
         if(!profile) profile=localStorage.getItem('cs_last_browser_profile')||'';
         if(!profile){if(typeof toast==='function') toast('No browser profile','error');return;}
         
@@ -611,14 +660,20 @@
                     try{
                         const r=await fetch(`${API}/gen-images/status/${j.task_id}`);
                         const s=await r.json();
-                        if(!s.success || s.status === 'done' || s.status.startsWith('error')) {
+                        if(!s.success || s.status === 'done' || s.status === 'completed' || s.status?.startsWith('completed') || s.status?.startsWith('error')) {
                             clearInterval(poll);
                             if(btn.dataset.taskId === j.task_id) {
                                 btn.innerHTML = '🖼️ Screen';
                                 btn.style.color = '';
                                 delete btn.dataset.taskId;
                             }
-                            if(s.status==='done') reloadFlowchart();
+                            const isDone = s.status==='done' || s.status==='completed' || s.status?.startsWith('completed');
+                            if(isDone) {
+                                if(typeof toast==='function') toast('✅ Screen image hoàn tất!','success');
+                                reloadFlowchart();
+                            } else if(s.status?.startsWith('error')) {
+                                if(typeof toast==='function') toast('❌ Screen lỗi: ' + s.status,'error');
+                            }
                         }
                     }catch(e){
                         clearInterval(poll);
@@ -639,8 +694,8 @@
     };
 
     async function reloadFlowchart(){
-        if(!_episodeId||!_dramaId) return;
-        const data=await fetchData(_episodeId,_dramaId);
+        if(!_episodeId||!_campaignId) return;
+        const data=await fetchData(_episodeId,_campaignId);
         const layout=await loadLayout(_episodeId);
         buildGraph(data,layout); renderNodes(); updateStats(data); render();
     }
@@ -719,14 +774,15 @@
 
     /* ── Public ───────────────────────────────────────── */
     async function openFlowchart(){
-        const ep=window._fc_getEpisode?.(), drama=window._fc_getDrama?.();
-        if(!ep||!drama){if(typeof toast==='function') toast('Select an episode first','error');return;}
-        _episodeId=ep.id; _dramaId=drama.id;
+        const ep=window._fc_getEpisode?.(), campaign=window._fc_getCampaign?.();
+        if(!ep||!campaign){if(typeof toast==='function') toast('Select an episode first','error');return;}
+        _episodeId=ep.id; _campaignId=campaign.id;
+        try { const _m=JSON.parse(campaign.metadata||'{}'); _aspectRatio=_m.aspect_ratio||'16:9'; } catch(e) { _aspectRatio='16:9'; }
         createOverlay();
         requestAnimationFrame(()=>overlay.classList.add('visible'));
         nodesLayer.innerHTML='<div class="fc-empty"><div class="fc-empty-icon">⏳</div><div class="fc-empty-text">Loading...</div></div>';
         try{
-            const [data,layout]=await Promise.all([fetchData(ep.id,drama.id),loadLayout(ep.id)]);
+            const [data,layout]=await Promise.all([fetchData(ep.id,campaign.id),loadLayout(ep.id)]);
             if(!data.shots.length){nodesLayer.innerHTML='<div class="fc-empty"><div class="fc-empty-icon">📋</div><div class="fc-empty-text">No storyboard shots.</div></div>';return;}
             buildGraph(data,layout); renderNodes(); updateStats(data); fitToScreen();
         }catch(e){console.error('[FC]',e);nodesLayer.innerHTML=`<div class="fc-empty"><div class="fc-empty-icon">❌</div><div class="fc-empty-text">${e.message}</div></div>`;}

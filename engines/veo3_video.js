@@ -424,13 +424,22 @@ async function sleep(ms) {
                 let actualPercent = null;
                 try {
                     const progressInfo = await page.evaluate(() => {
-                        // Check for the new Veo 3 progress element: videocam icon + percentage text
+                        // 1. Check for exactly percentage text (e.g. "13%")
+                        const elements = document.querySelectorAll('div, span, p');
+                        for (const el of elements) {
+                            const text = (el.textContent || '').trim();
+                            const match = text.match(/^(\d+)%$/);
+                            if (match && el.children.length === 0) {
+                                return { generating: true, percent: parseInt(match[1], 10) };
+                            }
+                        }
+                        
+                        // 2. Check for the new Veo 3 progress element: videocam icon + percentage text
                         const videoIcons = document.querySelectorAll('i.google-symbols');
                         for (const icon of videoIcons) {
-                            if (icon.textContent.trim() === 'videocam') {
+                            if (icon.textContent.trim() === 'videocam' || icon.textContent.trim() === 'play_circle' || icon.textContent.trim() === 'play_arrow') {
                                 const parent = icon.parentElement;
                                 if (parent) {
-                                    // The percentage is usually in the parent or sibling
                                     const textContent = parent.textContent || '';
                                     const match = textContent.match(/(\d+)%/);
                                     if (match) {
@@ -440,11 +449,11 @@ async function sleep(ms) {
                             }
                         }
                         
-                        // Check for spinning/loading indicators
+                        // 3. Check for spinning/loading indicators or blurry placeholders
                         const spinners = document.querySelectorAll('[class*="spinner"], [class*="loading"], [class*="progress"]');
                         if (spinners.length > 0) return { generating: true, percent: null };
                         
-                        // Check for generation status text
+                        // 4. Check for generation status text
                         const text = document.body.innerText;
                         if (text.includes('Đang tạo') || text.includes('Generating') || text.includes('Processing')) return { generating: true, percent: null };
                         
@@ -807,7 +816,9 @@ async function sleep(ms) {
                 if (!videoSaved) {
                     try {
                         const videoBase64 = await page.evaluate(async () => {
-                            const videos = document.querySelectorAll('video');
+                            // VideoFX puts newest items first. Find the first tile or first video.
+                            let container = document.querySelector('[data-tile-id]') || document.querySelector('div[role="feed"] > div') || document;
+                            const videos = container.querySelectorAll('video');
                             for (const vid of videos) {
                                 if (vid.src && vid.src.startsWith('blob:')) {
                                     try {

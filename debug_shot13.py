@@ -4,7 +4,7 @@ import os, sys, importlib.util, asyncio, sqlite3, re
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-studio_routes_path = r"C:\tubecreate-vue\tubecli\data\extensions_external\content_studio\studio_routes.py"
+studio_routes_path = r"C:\tubecreate-vue\tubecli\data\extensions_external\pod_studio\studio_routes.py"
 spec_sr = importlib.util.spec_from_file_location("studio_routes", studio_routes_path)
 studio_routes = importlib.util.module_from_spec(spec_sr)
 spec_sr.loader.exec_module(studio_routes)
@@ -18,7 +18,7 @@ latest_audio = r"C:\tubecreate-vue\tubecli\data\tts_vibevoice\outputs\tts_3927d2
 whisper_result = asyncio.run(whisper_mod.extract_whisper(latest_audio, language=None, model_size="small"))
 segments = whisper_result.get("subtitles", [])
 
-conn = sqlite3.connect(r"C:/tubecreate-vue/tubecli/data/content_studio/content_studio.db")
+conn = sqlite3.connect(r"C:/tubecreate-vue/tubecli/data/pod_studio/pod_studio.db")
 cursor = conn.cursor()
 cursor.execute("SELECT id, narration_text, dialogue, description FROM storyboards WHERE episode_id = 144 ORDER BY storyboard_number ASC")
 shots = cursor.fetchall()

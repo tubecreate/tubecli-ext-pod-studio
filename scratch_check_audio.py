@@ -1,5 +1,5 @@
 import sqlite3, os
-conn = sqlite3.connect(r'C:\tubecreate-vue\tubecli\data\content_studio\content_studio.db')
+conn = sqlite3.connect(r'C:\tubecreate-vue\tubecli\data\pod_studio\pod_studio.db')
 # Find episodes with ep_number=4
 eps = conn.execute("SELECT id, episode_number FROM episodes WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 10").fetchall()
 for ep in eps:

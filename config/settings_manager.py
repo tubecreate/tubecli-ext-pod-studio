@@ -1,5 +1,5 @@
 """
-Content Studio Settings Manager
+POD Studio Settings Manager
 Extension-specific settings with global TubeCLI fallback.
 """
 import os
@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Optional, Tuple
 
-logger = logging.getLogger("ContentStudio.Settings")
+logger = logging.getLogger("PodStudio.Settings")
 
 DEFAULT_SETTINGS = {
     "ai_provider": {

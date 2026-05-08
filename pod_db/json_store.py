@@ -1,5 +1,5 @@
 """
-Content Studio JSON Store
+POD Studio JSON Store
 File-per-project storage with atomic writes for multi-user concurrency.
 Drop-in replacement for database.py (same method signatures).
 """
@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from copy import deepcopy
 
-logger = logging.getLogger("ContentStudio.JsonStore")
+logger = logging.getLogger("PodStudio.JsonStore")
 
 
 def _now() -> str:
@@ -69,7 +69,7 @@ class JsonStore:
         meta_path = os.path.join(self.data_dir, "_meta.json")
         if not os.path.exists(meta_path):
             self._write(meta_path, {
-                "next_drama_id": 1,
+                "next_campaign_id": 1,
                 "next_episode_id": 1,
                 "next_character_id": 1,
                 "next_scene_id": 1,
@@ -111,30 +111,30 @@ class JsonStore:
             os.replace(tmp, meta_path)
 
     # Helper to get project dir
-    def _proj_dir(self, drama_id: int) -> str:
-        d = os.path.join(self.projects_dir, str(drama_id))
+    def _proj_dir(self, campaign_id: int) -> str:
+        d = os.path.join(self.projects_dir, str(campaign_id))
         os.makedirs(d, exist_ok=True)
         return d
 
-    # ── Drama CRUD ──────────────────────────────────────────
+    # ── Ad Campaign CRUD ──────────────────────────────────────────
 
-    def _dramas_index_path(self) -> str:
-        return os.path.join(self.data_dir, "dramas_index.json")
+    def _campaigns_index_path(self) -> str:
+        return os.path.join(self.data_dir, "campaigns_index.json")
 
-    def _load_dramas_index(self) -> List[dict]:
-        return self._read(self._dramas_index_path(), [])
+    def _load_campaigns_index(self) -> List[dict]:
+        return self._read(self._campaigns_index_path(), [])
 
-    def _save_dramas_index(self, index: List[dict]):
-        self._write(self._dramas_index_path(), index)
+    def _save_campaigns_index(self, index: List[dict]):
+        self._write(self._campaigns_index_path(), index)
 
-    def _drama_path(self, drama_id: int) -> str:
-        return os.path.join(self._proj_dir(drama_id), "project.json")
+    def _campaign_path(self, campaign_id: int) -> str:
+        return os.path.join(self._proj_dir(campaign_id), "project.json")
 
-    def create_drama(self, data: dict) -> dict:
+    def create_campaign(self, data: dict) -> dict:
         now = _now()
-        drama_id = self._next_id("next_drama_id")
-        drama = {
-            "id": drama_id,
+        campaign_id = self._next_id("next_campaign_id")
+        campaign = {
+            "id": campaign_id,
             "title": data.get("title", "Untitled"),
             "description": data.get("description", ""),
             "genre": data.get("genre", ""),
@@ -150,106 +150,106 @@ class JsonStore:
             "updated_at": now,
             "deleted_at": None,
         }
-        self._write(self._drama_path(drama_id), drama)
+        self._write(self._campaign_path(campaign_id), campaign)
         # Update index
-        index = self._load_dramas_index()
-        index.append({"id": drama_id, "title": drama["title"], "updated_at": now})
-        self._save_dramas_index(index)
+        index = self._load_campaigns_index()
+        index.append({"id": campaign_id, "title": campaign["title"], "updated_at": now})
+        self._save_campaigns_index(index)
         # Init empty sub-collections
-        self._write(os.path.join(self._proj_dir(drama_id), "characters.json"), [])
-        self._write(os.path.join(self._proj_dir(drama_id), "scenes.json"), [])
-        self._write(os.path.join(self._proj_dir(drama_id), "episodes.json"), [])
-        return drama
+        self._write(os.path.join(self._proj_dir(campaign_id), "characters.json"), [])
+        self._write(os.path.join(self._proj_dir(campaign_id), "scenes.json"), [])
+        self._write(os.path.join(self._proj_dir(campaign_id), "episodes.json"), [])
+        return campaign
 
-    def get_drama(self, drama_id: int) -> Optional[dict]:
-        drama = self._read(self._drama_path(drama_id))
-        if drama and drama.get("deleted_at") is None:
-            return drama
+    def get_campaign(self, campaign_id: int) -> Optional[dict]:
+        campaign = self._read(self._campaign_path(campaign_id))
+        if campaign and campaign.get("deleted_at") is None:
+            return campaign
         return None
 
-    def list_dramas(self) -> List[dict]:
-        """List all dramas with episode count."""
-        index = self._load_dramas_index()
+    def list_campaigns(self) -> List[dict]:
+        """List all campaigns with episode count."""
+        index = self._load_campaigns_index()
         results = []
         for entry in index:
-            drama = self.get_drama(entry["id"])
-            if drama:
-                eps = self._read(os.path.join(self._proj_dir(drama["id"]), "episodes.json"), [])
+            campaign = self.get_campaign(entry["id"])
+            if campaign:
+                eps = self._read(os.path.join(self._proj_dir(campaign["id"]), "episodes.json"), [])
                 active_eps = [e for e in eps if e.get("deleted_at") is None]
-                drama["episode_count"] = len(active_eps)
-                results.append(drama)
+                campaign["episode_count"] = len(active_eps)
+                results.append(campaign)
         results.sort(key=lambda d: d.get("updated_at", ""), reverse=True)
         return results
 
-    def get_drama_full(self, drama_id: int) -> Optional[dict]:
-        d = self.get_drama(drama_id)
+    def get_campaign_full(self, campaign_id: int) -> Optional[dict]:
+        d = self.get_campaign(campaign_id)
         if not d:
             return None
-        eps = self._read(os.path.join(self._proj_dir(drama_id), "episodes.json"), [])
+        eps = self._read(os.path.join(self._proj_dir(campaign_id), "episodes.json"), [])
         d["episodes"] = [
             {"id": e["id"], "episode_number": e["episode_number"], "title": e["title"],
              "status": e.get("status", "draft"), "metadata": e.get("metadata", "{}")}
             for e in eps if e.get("deleted_at") is None
         ]
         d["episodes"].sort(key=lambda e: e["episode_number"])
-        chars = self._read(os.path.join(self._proj_dir(drama_id), "characters.json"), [])
+        chars = self._read(os.path.join(self._proj_dir(campaign_id), "characters.json"), [])
         d["characters"] = [
             {"id": c["id"], "name": c["name"], "role": c.get("role", "")}
             for c in chars if c.get("deleted_at") is None
         ]
-        scenes = self._read(os.path.join(self._proj_dir(drama_id), "scenes.json"), [])
+        scenes = self._read(os.path.join(self._proj_dir(campaign_id), "scenes.json"), [])
         d["scenes"] = [
             {"id": s["id"], "location": s["location"], "time": s["time"]}
             for s in scenes if s.get("deleted_at") is None
         ]
         return d
 
-    def update_drama(self, drama_id: int, data: dict) -> Optional[dict]:
-        drama = self.get_drama(drama_id)
-        if not drama:
+    def update_campaign(self, campaign_id: int, data: dict) -> Optional[dict]:
+        campaign = self.get_campaign(campaign_id)
+        if not campaign:
             return None
         for key in ["title", "description", "genre", "style", "language",
                      "total_episodes", "status", "tags", "metadata"]:
             if key in data:
-                drama[key] = data[key]
-        drama["updated_at"] = _now()
-        self._write(self._drama_path(drama_id), drama)
+                campaign[key] = data[key]
+        campaign["updated_at"] = _now()
+        self._write(self._campaign_path(campaign_id), campaign)
         # Update index title
-        index = self._load_dramas_index()
+        index = self._load_campaigns_index()
         for entry in index:
-            if entry["id"] == drama_id:
-                entry["title"] = drama["title"]
-                entry["updated_at"] = drama["updated_at"]
-        self._save_dramas_index(index)
-        return drama
+            if entry["id"] == campaign_id:
+                entry["title"] = campaign["title"]
+                entry["updated_at"] = campaign["updated_at"]
+        self._save_campaigns_index(index)
+        return campaign
 
-    def delete_drama(self, drama_id: int) -> bool:
-        drama = self.get_drama(drama_id)
-        if drama:
-            drama["deleted_at"] = _now()
-            self._write(self._drama_path(drama_id), drama)
+    def delete_campaign(self, campaign_id: int) -> bool:
+        campaign = self.get_campaign(campaign_id)
+        if campaign:
+            campaign["deleted_at"] = _now()
+            self._write(self._campaign_path(campaign_id), campaign)
         return True
 
     # ── Episode CRUD ────────────────────────────────────────
 
-    def _episodes_path(self, drama_id: int) -> str:
-        return os.path.join(self._proj_dir(drama_id), "episodes.json")
+    def _episodes_path(self, campaign_id: int) -> str:
+        return os.path.join(self._proj_dir(campaign_id), "episodes.json")
 
-    def _load_episodes(self, drama_id: int) -> List[dict]:
-        return self._read(self._episodes_path(drama_id), [])
+    def _load_episodes(self, campaign_id: int) -> List[dict]:
+        return self._read(self._episodes_path(campaign_id), [])
 
-    def _save_episodes(self, drama_id: int, episodes: List[dict]):
-        self._write(self._episodes_path(drama_id), episodes)
+    def _save_episodes(self, campaign_id: int, episodes: List[dict]):
+        self._write(self._episodes_path(campaign_id), episodes)
 
-    def create_episode(self, drama_id: int, data: dict) -> dict:
+    def create_episode(self, campaign_id: int, data: dict) -> dict:
         now = _now()
-        episodes = self._load_episodes(drama_id)
+        episodes = self._load_episodes(campaign_id)
         active = [e for e in episodes if e.get("deleted_at") is None]
         next_num = max([e.get("episode_number", 0) for e in active], default=0) + 1
         ep_id = self._next_id("next_episode_id")
         ep = {
             "id": ep_id,
-            "drama_id": drama_id,
+            "campaign_id": campaign_id,
             "episode_number": data.get("episode_number", next_num),
             "title": data.get("title", f"Episode {next_num}"),
             "content": data.get("content", ""),
@@ -266,12 +266,12 @@ class JsonStore:
             "deleted_at": None,
         }
         episodes.append(ep)
-        self._save_episodes(drama_id, episodes)
+        self._save_episodes(campaign_id, episodes)
         return ep
 
     def get_episode(self, episode_id: int) -> Optional[dict]:
         # Need to search across all projects - use reverse index
-        index = self._load_dramas_index()
+        index = self._load_campaigns_index()
         for entry in index:
             episodes = self._load_episodes(entry["id"])
             for ep in episodes:
@@ -279,9 +279,9 @@ class JsonStore:
                     return ep
         return None
 
-    def _find_drama_for_episode(self, episode_id: int) -> Optional[int]:
-        """Find which drama contains this episode."""
-        index = self._load_dramas_index()
+    def _find_campaign_for_episode(self, episode_id: int) -> Optional[int]:
+        """Find which campaign contains this episode."""
+        index = self._load_campaigns_index()
         for entry in index:
             episodes = self._load_episodes(entry["id"])
             for ep in episodes:
@@ -289,17 +289,17 @@ class JsonStore:
                     return entry["id"]
         return None
 
-    def list_episodes(self, drama_id: int) -> List[dict]:
-        episodes = self._load_episodes(drama_id)
+    def list_episodes(self, campaign_id: int) -> List[dict]:
+        episodes = self._load_episodes(campaign_id)
         result = [e for e in episodes if e.get("deleted_at") is None]
         result.sort(key=lambda e: e.get("episode_number", 0))
         return result
 
     def update_episode(self, episode_id: int, data: dict) -> Optional[dict]:
-        drama_id = self._find_drama_for_episode(episode_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_episode(episode_id)
+        if campaign_id is None:
             return None
-        episodes = self._load_episodes(drama_id)
+        episodes = self._load_episodes(campaign_id)
         for ep in episodes:
             if ep["id"] == episode_id:
                 for key in ["title", "content", "script_content", "description",
@@ -307,46 +307,46 @@ class JsonStore:
                     if key in data:
                         ep[key] = data[key]
                 ep["updated_at"] = _now()
-                self._save_episodes(drama_id, episodes)
+                self._save_episodes(campaign_id, episodes)
                 return ep
         return None
 
     # ── Character CRUD ──────────────────────────────────────
 
-    def _chars_path(self, drama_id: int) -> str:
-        return os.path.join(self._proj_dir(drama_id), "characters.json")
+    def _chars_path(self, campaign_id: int) -> str:
+        return os.path.join(self._proj_dir(campaign_id), "characters.json")
 
-    def _load_chars(self, drama_id: int) -> List[dict]:
-        return self._read(self._chars_path(drama_id), [])
+    def _load_chars(self, campaign_id: int) -> List[dict]:
+        return self._read(self._chars_path(campaign_id), [])
 
-    def _save_chars(self, drama_id: int, chars: List[dict]):
-        self._write(self._chars_path(drama_id), chars)
+    def _save_chars(self, campaign_id: int, chars: List[dict]):
+        self._write(self._chars_path(campaign_id), chars)
 
-    def list_characters(self, drama_id: int) -> List[dict]:
-        chars = self._load_chars(drama_id)
+    def list_characters(self, campaign_id: int) -> List[dict]:
+        chars = self._load_chars(campaign_id)
         result = [c for c in chars if c.get("deleted_at") is None]
         result.sort(key=lambda c: (c.get("sort_order", 0), c.get("id", 0)))
         return result
 
     def get_character(self, char_id: int) -> Optional[dict]:
-        for entry in self._load_dramas_index():
+        for entry in self._load_campaigns_index():
             for c in self._load_chars(entry["id"]):
                 if c["id"] == char_id and c.get("deleted_at") is None:
                     return c
         return None
 
-    def _find_drama_for_character(self, char_id: int) -> Optional[int]:
-        for entry in self._load_dramas_index():
+    def _find_campaign_for_character(self, char_id: int) -> Optional[int]:
+        for entry in self._load_campaigns_index():
             for c in self._load_chars(entry["id"]):
                 if c["id"] == char_id:
                     return entry["id"]
         return None
 
-    def create_character(self, drama_id: int, data: dict) -> dict:
+    def create_character(self, campaign_id: int, data: dict) -> dict:
         now = _now()
         char_id = self._next_id("next_character_id")
         char = {
-            "id": char_id, "drama_id": drama_id,
+            "id": char_id, "campaign_id": campaign_id,
             "name": data.get("name", ""), "role": data.get("role", ""),
             "description": data.get("description", ""),
             "appearance": data.get("appearance", ""),
@@ -359,16 +359,16 @@ class JsonStore:
             "voice_provider": data.get("voice_provider", ""),
             "created_at": now, "updated_at": now, "deleted_at": None,
         }
-        chars = self._load_chars(drama_id)
+        chars = self._load_chars(campaign_id)
         chars.append(char)
-        self._save_chars(drama_id, chars)
+        self._save_chars(campaign_id, chars)
         return char
 
     def update_character(self, char_id: int, data: dict) -> Optional[dict]:
-        drama_id = self._find_drama_for_character(char_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_character(char_id)
+        if campaign_id is None:
             return None
-        chars = self._load_chars(drama_id)
+        chars = self._load_chars(campaign_id)
         for c in chars:
             if c["id"] == char_id:
                 for key in ["name", "role", "description", "appearance", "personality",
@@ -376,83 +376,84 @@ class JsonStore:
                     if key in data:
                         c[key] = data[key]
                 c["updated_at"] = _now()
-                self._save_chars(drama_id, chars)
+                self._save_chars(campaign_id, chars)
                 return c
         return None
 
     def delete_character(self, char_id: int) -> bool:
-        drama_id = self._find_drama_for_character(char_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_character(char_id)
+        if campaign_id is None:
             return True
-        chars = self._load_chars(drama_id)
+        chars = self._load_chars(campaign_id)
         for c in chars:
             if c["id"] == char_id:
                 c["deleted_at"] = _now()
-        self._save_chars(drama_id, chars)
+        self._save_chars(campaign_id, chars)
         return True
 
     # ── Scene CRUD ──────────────────────────────────────────
 
-    def _scenes_path(self, drama_id: int) -> str:
-        return os.path.join(self._proj_dir(drama_id), "scenes.json")
+    def _scenes_path(self, campaign_id: int) -> str:
+        return os.path.join(self._proj_dir(campaign_id), "scenes.json")
 
-    def _load_scenes(self, drama_id: int) -> List[dict]:
-        return self._read(self._scenes_path(drama_id), [])
+    def _load_scenes(self, campaign_id: int) -> List[dict]:
+        return self._read(self._scenes_path(campaign_id), [])
 
-    def _save_scenes(self, drama_id: int, scenes: List[dict]):
-        self._write(self._scenes_path(drama_id), scenes)
+    def _save_scenes(self, campaign_id: int, scenes: List[dict]):
+        self._write(self._scenes_path(campaign_id), scenes)
 
-    def list_scenes(self, drama_id: int) -> List[dict]:
-        scenes = self._load_scenes(drama_id)
+    def list_scenes(self, campaign_id: int) -> List[dict]:
+        scenes = self._load_scenes(campaign_id)
         return [s for s in scenes if s.get("deleted_at") is None]
 
     def get_scene(self, scene_id: int) -> Optional[dict]:
-        for entry in self._load_dramas_index():
+        for entry in self._load_campaigns_index():
             for s in self._load_scenes(entry["id"]):
                 if s["id"] == scene_id and s.get("deleted_at") is None:
                     return s
         return None
 
-    def _find_drama_for_scene(self, scene_id: int) -> Optional[int]:
-        for entry in self._load_dramas_index():
+    def _find_campaign_for_scene(self, scene_id: int) -> Optional[int]:
+        for entry in self._load_campaigns_index():
             for s in self._load_scenes(entry["id"]):
                 if s["id"] == scene_id:
                     return entry["id"]
         return None
 
     def update_scene(self, scene_id: int, data: dict) -> Optional[dict]:
-        drama_id = self._find_drama_for_scene(scene_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_scene(scene_id)
+        if campaign_id is None:
             return None
-        scenes = self._load_scenes(drama_id)
+        scenes = self._load_scenes(campaign_id)
         for s in scenes:
             if s["id"] == scene_id:
-                for key in ["location", "time", "prompt", "description", "image_url", "status"]:
+                for key in ["location", "time", "prompt", "description", "image_url", "status",
+                             "lighting_style", "color_palette", "material_refs", "mood"]:
                     if key in data:
                         s[key] = data[key]
                 s["updated_at"] = _now()
-                self._save_scenes(drama_id, scenes)
+                self._save_scenes(campaign_id, scenes)
                 return s
         return None
 
     # ── Storyboard CRUD ─────────────────────────────────────
 
-    def _sb_path(self, drama_id: int, episode_id: int) -> str:
-        d = os.path.join(self._proj_dir(drama_id), "storyboards")
+    def _sb_path(self, campaign_id: int, episode_id: int) -> str:
+        d = os.path.join(self._proj_dir(campaign_id), "storyboards")
         os.makedirs(d, exist_ok=True)
         return os.path.join(d, f"ep_{episode_id}.json")
 
-    def _load_sbs(self, drama_id: int, episode_id: int) -> List[dict]:
-        return self._read(self._sb_path(drama_id, episode_id), [])
+    def _load_sbs(self, campaign_id: int, episode_id: int) -> List[dict]:
+        return self._read(self._sb_path(campaign_id, episode_id), [])
 
-    def _save_sbs(self, drama_id: int, episode_id: int, sbs: List[dict]):
-        self._write(self._sb_path(drama_id, episode_id), sbs)
+    def _save_sbs(self, campaign_id: int, episode_id: int, sbs: List[dict]):
+        self._write(self._sb_path(campaign_id, episode_id), sbs)
 
     def list_storyboards(self, episode_id: int) -> List[dict]:
-        drama_id = self._find_drama_for_episode(episode_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_episode(episode_id)
+        if campaign_id is None:
             return []
-        sbs = self._load_sbs(drama_id, episode_id)
+        sbs = self._load_sbs(campaign_id, episode_id)
         result = [sb for sb in sbs if sb.get("deleted_at") is None]
         result.sort(key=lambda sb: sb.get("storyboard_number", 0))
         for sb in result:
@@ -461,7 +462,7 @@ class JsonStore:
         return result
 
     def get_storyboard(self, sb_id: int) -> Optional[dict]:
-        for entry in self._load_dramas_index():
+        for entry in self._load_campaigns_index():
             for ep in self._load_episodes(entry["id"]):
                 for sb in self._load_sbs(entry["id"], ep["id"]):
                     if sb["id"] == sb_id and sb.get("deleted_at") is None:
@@ -469,8 +470,8 @@ class JsonStore:
         return None
 
     def _find_ctx_for_sb(self, sb_id: int):
-        """Returns (drama_id, episode_id) for a storyboard."""
-        for entry in self._load_dramas_index():
+        """Returns (campaign_id, episode_id) for a storyboard."""
+        for entry in self._load_campaigns_index():
             for ep in self._load_episodes(entry["id"]):
                 for sb in self._load_sbs(entry["id"], ep["id"]):
                     if sb["id"] == sb_id:
@@ -478,10 +479,10 @@ class JsonStore:
         return None, None
 
     def update_storyboard(self, sb_id: int, data: dict) -> Optional[dict]:
-        drama_id, episode_id = self._find_ctx_for_sb(sb_id)
-        if drama_id is None:
+        campaign_id, episode_id = self._find_ctx_for_sb(sb_id)
+        if campaign_id is None:
             return None
-        sbs = self._load_sbs(drama_id, episode_id)
+        sbs = self._load_sbs(campaign_id, episode_id)
         for sb in sbs:
             if sb["id"] == sb_id:
                 for key in ["title", "location", "time", "shot_type", "angle", "movement",
@@ -493,28 +494,28 @@ class JsonStore:
                     if key in data:
                         sb[key] = data[key]
                 sb["updated_at"] = _now()
-                self._save_sbs(drama_id, episode_id, sbs)
+                self._save_sbs(campaign_id, episode_id, sbs)
                 return sb
         return None
 
     def clear_storyboards(self, episode_id: int):
         """Soft-delete all storyboards for an episode."""
-        drama_id = self._find_drama_for_episode(episode_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_episode(episode_id)
+        if campaign_id is None:
             return
         now = _now()
-        sbs = self._load_sbs(drama_id, episode_id)
+        sbs = self._load_sbs(campaign_id, episode_id)
         for sb in sbs:
             if sb.get("deleted_at") is None:
                 sb["deleted_at"] = now
-        self._save_sbs(drama_id, episode_id, sbs)
+        self._save_sbs(campaign_id, episode_id, sbs)
 
     def get_existing_storyboards_summary(self, episode_id: int) -> List[dict]:
         """Get minimal storyboard info for append mode."""
-        drama_id = self._find_drama_for_episode(episode_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_episode(episode_id)
+        if campaign_id is None:
             return []
-        sbs = self._load_sbs(drama_id, episode_id)
+        sbs = self._load_sbs(campaign_id, episode_id)
         return [
             {"storyboard_number": sb["storyboard_number"], "description": sb.get("description", "")}
             for sb in sbs if sb.get("deleted_at") is None
@@ -522,9 +523,9 @@ class JsonStore:
 
     # ── Bulk save helpers (for AI agents) ───────────────────
 
-    def save_characters_dedup(self, drama_id: int, episode_id: int, characters: List[dict]) -> List[dict]:
+    def save_characters_dedup(self, campaign_id: int, episode_id: int, characters: List[dict]) -> List[dict]:
         """Save characters with smart dedup by name."""
-        existing = {c["name"]: c for c in self.list_characters(drama_id)}
+        existing = {c["name"]: c for c in self.list_characters(campaign_id)}
         saved = []
         for ch in characters:
             name = ch.get("name", "").strip()
@@ -540,15 +541,15 @@ class JsonStore:
                 self.update_character(ex["id"], update_data)
                 saved.append(ex)
             else:
-                new_ch = self.create_character(drama_id, ch)
+                new_ch = self.create_character(campaign_id, ch)
                 existing[name] = new_ch
                 saved.append(new_ch)
         return saved
 
-    def save_scenes_dedup(self, drama_id: int, episode_id: int, scenes: List[dict]) -> List[dict]:
+    def save_scenes_dedup(self, campaign_id: int, episode_id: int, scenes: List[dict]) -> List[dict]:
         """Save scenes with smart dedup by location+time."""
         now = _now()
-        existing = {f"{s['location']}|{s['time']}": s for s in self.list_scenes(drama_id)}
+        existing = {f"{s['location']}|{s['time']}": s for s in self.list_scenes(campaign_id)}
         saved = []
         for sc in scenes:
             loc = sc.get("location", "").strip()
@@ -562,15 +563,19 @@ class JsonStore:
             else:
                 scene_id = self._next_id("next_scene_id")
                 new_scene = {
-                    "id": scene_id, "drama_id": drama_id, "episode_id": episode_id,
+                    "id": scene_id, "campaign_id": campaign_id, "episode_id": episode_id,
                     "location": loc, "time": time_s,
                     "prompt": sc.get("prompt", ""), "description": sc.get("description", ""),
+                    "lighting_style": sc.get("lighting_style", ""),
+                    "color_palette": sc.get("color_palette", ""),
+                    "material_refs": sc.get("material_refs", ""),
+                    "mood": sc.get("mood", ""),
                     "storyboard_count": 1, "image_url": "", "status": "pending",
                     "created_at": now, "updated_at": now, "deleted_at": None,
                 }
-                scenes_list = self._load_scenes(drama_id)
+                scenes_list = self._load_scenes(campaign_id)
                 scenes_list.append(new_scene)
-                self._save_scenes(drama_id, scenes_list)
+                self._save_scenes(campaign_id, scenes_list)
                 existing[key] = new_scene
                 saved.append(new_scene)
         return saved
@@ -578,8 +583,8 @@ class JsonStore:
     def save_storyboards_bulk(self, episode_id: int, storyboards: List[dict], append: bool = False) -> List[dict]:
         """Save complete storyboard set."""
         now = _now()
-        drama_id = self._find_drama_for_episode(episode_id)
-        if drama_id is None:
+        campaign_id = self._find_campaign_for_episode(episode_id)
+        if campaign_id is None:
             return []
 
         # Determine start number
@@ -588,10 +593,10 @@ class JsonStore:
         if ep:
             ep_num = ep.get("episode_number", 1)
             # Check previous episodes for continuous numbering
-            all_eps = self.list_episodes(drama_id)
+            all_eps = self.list_episodes(campaign_id)
             for prev_ep in all_eps:
                 if prev_ep["episode_number"] < ep_num:
-                    prev_sbs = self._load_sbs(drama_id, prev_ep["id"])
+                    prev_sbs = self._load_sbs(campaign_id, prev_ep["id"])
                     active = [s for s in prev_sbs if s.get("deleted_at") is None]
                     if active:
                         mx = max(s.get("storyboard_number", 0) for s in active)
@@ -601,14 +606,14 @@ class JsonStore:
         if not append:
             self.clear_storyboards(episode_id)
         else:
-            existing = self._load_sbs(drama_id, episode_id)
+            existing = self._load_sbs(campaign_id, episode_id)
             active = [s for s in existing if s.get("deleted_at") is None]
             if active:
                 mx = max(s.get("storyboard_number", 0) for s in active)
                 if mx >= start_number:
                     start_number = mx + 1
 
-        sbs = self._load_sbs(drama_id, episode_id)
+        sbs = self._load_sbs(campaign_id, episode_id)
         saved = []
         for i, sb_data in enumerate(storyboards, start_number):
             sb_id = self._next_id("next_storyboard_id")
@@ -643,14 +648,14 @@ class JsonStore:
             }
             # Save metadata fields
             sb_meta = {}
-            for mkey in ["reference_asset_names", "reference_effect_names", "illustrate_layout"]:
+            for mkey in ["reference_asset_names", "reference_effect_names", "illustrate_layout", "spatial_position"]:
                 if sb_data.get(mkey):
                     sb_meta[mkey] = sb_data[mkey]
             if sb_meta:
                 sb["metadata"] = json.dumps(sb_meta)
             sbs.append(sb)
             saved.append(sb)
-        self._save_sbs(drama_id, episode_id, sbs)
+        self._save_sbs(campaign_id, episode_id, sbs)
         return saved
 
     # ── Pipeline Jobs CRUD ──────────────────────────────────
@@ -674,7 +679,7 @@ class JsonStore:
             "source_title": data.get("source_title", ""),
             "status": "pending", "error_message": "",
             "preset_name": data.get("preset_name", ""),
-            "pipeline_template": data.get("pipeline_template", "drama_scene"),
+            "pipeline_template": data.get("pipeline_template", "campaign_scene"),
             "content_format": data.get("content_format", "Educational / Learning"),
             "visual_style": data.get("visual_style", "Default"),
             "max_episodes": data.get("max_episodes", 1),
@@ -691,7 +696,7 @@ class JsonStore:
             "upload_targets": json.dumps(data.get("upload_targets", [])) if isinstance(data.get("upload_targets"), list) else data.get("upload_targets", "[]"),
             "upload_privacy": data.get("upload_privacy", "private"),
             "gallery_category_id": data.get("gallery_category_id"),
-            "drama_id": data.get("drama_id"),
+            "campaign_id": data.get("campaign_id"),
             "episode_ids": data.get("episode_ids", "[]"),
             "uploaded_video_ids": data.get("uploaded_video_ids", "[]"),
             "output_video_path": data.get("output_video_path", ""),
@@ -720,7 +725,7 @@ class JsonStore:
         jobs = self._load_jobs()
         for j in jobs:
             if j["id"] == job_id:
-                for key in ["source_title", "status", "error_message", "drama_id",
+                for key in ["source_title", "status", "error_message", "campaign_id",
                              "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
                              "preset_name", "pipeline_template", "content_format", "visual_style",
                              "max_episodes", "language", "voice_preset", "browser_profiles",
@@ -768,7 +773,7 @@ class JsonStore:
             "channel_id": data.get("channel_id", ""),
             "channel_name": data.get("channel_name", ""),
             "preset_name": data.get("preset_name", ""),
-            "pipeline_template": data.get("pipeline_template", "drama_scene"),
+            "pipeline_template": data.get("pipeline_template", "campaign_scene"),
             "content_format": data.get("content_format", "Educational / Learning"),
             "visual_style": data.get("visual_style", "Default"),
             "max_episodes": data.get("max_episodes", 1),
@@ -918,6 +923,9 @@ class JsonStore:
             "image_url": data.get("image_url", ""),
             "reference_images": json.dumps(data.get("reference_images", [])) if isinstance(data.get("reference_images"), list) else data.get("reference_images", "[]"),
             "tags": data.get("tags", ""),
+            "fabric_material": data.get("fabric_material", ""),
+            "accessory_material": data.get("accessory_material", ""),
+            "is_primary": data.get("is_primary", 0),
             "metadata": json.dumps(data.get("metadata", {})) if isinstance(data.get("metadata"), dict) else data.get("metadata", "{}"),
             "sort_order": data.get("sort_order", 0),
             "category_ids": data.get("category_ids", []),
@@ -948,7 +956,7 @@ class JsonStore:
             if i["id"] == item_id:
                 for key in ["name", "char_type", "gender", "age_range", "role_type",
                              "appearance", "personality", "voice_style", "image_url",
-                             "tags", "sort_order"]:
+                             "tags", "sort_order", "fabric_material", "accessory_material", "is_primary"]:
                     if key in data:
                         i[key] = data[key]
                 for key in ["reference_images", "metadata"]:

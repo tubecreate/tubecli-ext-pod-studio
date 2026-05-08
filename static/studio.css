@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════
-   Content Studio — Design System
-   Dark theme inspired by Huobao Drama Studio
+   POD Studio — Design System
+   Dark theme inspired by Huobao Ad Campaign Studio
    ═══════════════════════════════════════════════════════════ */
 
 :root {
@@ -1615,7 +1615,7 @@ select.input {
 .pq-delete-btn:hover { color: var(--error); }
 
 /* ═══════════════════════════════════════════════════════════
-   Character Gallery — Tab Layout
+   Product & Model Gallery — Tab Layout
    ═══════════════════════════════════════════════════════════ */
 
 /* Replaced fullscreen class with just a fade-in animation on the main panel */
@@ -2047,3 +2047,217 @@ select.input {
     from { opacity: 0; transform: scale(0.85); }
     to   { opacity: 1; transform: scale(1); }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Scene Panorama Upload Zone
+   ═══════════════════════════════════════════════════════════ */
+
+.panorama-upload-zone {
+    width: 100%;
+    min-height: 180px;
+    border: 2px dashed rgba(0, 200, 220, 0.25);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    cursor: pointer;
+    transition: border-color 0.3s, background 0.3s;
+    background: rgba(0, 200, 220, 0.02);
+}
+.panorama-upload-zone:hover {
+    border-color: rgba(0, 200, 220, 0.5);
+    background: rgba(0, 200, 220, 0.05);
+}
+.panorama-upload-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(0, 200, 220, 0.1);
+    box-shadow: inset 0 0 30px rgba(0, 200, 220, 0.1);
+}
+.panorama-upload-zone.has-image {
+    border-style: solid;
+    border-color: rgba(0, 200, 220, 0.3);
+    cursor: default;
+}
+
+.panorama-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 180px;
+    color: var(--text-3);
+    gap: 10px;
+    font-size: 13px;
+    padding: 20px;
+}
+.panorama-placeholder svg { opacity: 0.4; }
+
+.panorama-img-wrap {
+    position: relative;
+    width: 100%;
+}
+.panorama-img-wrap img {
+    width: 100%;
+    max-height: 350px;
+    object-fit: cover;
+    display: block;
+}
+.panorama-img-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 12px 16px 10px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.85));
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+}
+.panorama-img-overlay .panorama-label {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+}
+.panorama-img-overlay .panorama-actions {
+    display: flex;
+    gap: 6px;
+}
+.panorama-img-overlay .panorama-actions button {
+    font-size: 11px;
+    padding: 3px 8px;
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+}
+.panorama-img-overlay .panorama-actions button:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Production Board UI (8 Zones)
+   ═══════════════════════════════════════════════════════════ */
+
+.production-board {
+    display: grid;
+    grid-template-columns: minmax(200px, 22%) 1fr minmax(260px, 30%);
+    grid-template-rows: auto auto;
+    gap: 10px;
+    padding: 12px;
+    background: #0a1628;
+    border-radius: var(--radius-xl);
+    border: 1px solid rgba(0, 200, 220, 0.2);
+    box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.5);
+    margin-bottom: 16px;
+    animation: fadeUp 0.4s var(--ease-out) both;
+}
+
+/* Zone Base */
+.pb-zone {
+    background: rgba(15, 25, 45, 0.7);
+    border: 1px solid rgba(0, 200, 220, 0.15);
+    border-radius: 10px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+}
+
+.pb-zone::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 200, 220, 0.5), transparent);
+}
+
+.pb-zone-header {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed rgba(0, 200, 220, 0.2);
+}
+
+.pb-zh-cn {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 0 10px rgba(0, 200, 220, 0.5);
+    letter-spacing: 0.5px;
+}
+
+.pb-zh-en {
+    font-size: 9px;
+    font-family: var(--font-mono);
+    color: rgba(0, 200, 220, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-top: 1px;
+}
+
+/* Specific Zones Layout */
+.pb-z1 { grid-column: 1; grid-row: 1; } /* Characters */
+.pb-z2 { grid-column: 2; grid-row: 1; } /* Environment */
+.pb-z3 { grid-column: 3; grid-row: 1 / span 2; } /* Storyboard Panels */
+.pb-z4 { grid-column: 1 / span 2; grid-row: 2; } /* Blocking */
+
+/* Bottom row (Zones 5-8) */
+.pb-bottom-row {
+    grid-column: 1 / span 3;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+/* Elements inside Zones */
+.pb-char-list { display: flex; flex-direction: column; gap: 8px; }
+.pb-char-item {
+    display: flex; gap: 8px;
+    background: rgba(0,0,0,0.3); padding: 6px; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+.pb-char-img { width: 44px; height: 58px; border-radius: 4px; object-fit: cover; background: #111; flex-shrink: 0; }
+.pb-char-info { display: flex; flex-direction: column; justify-content: center; }
+.pb-char-name { font-size: 12px; font-weight: 600; color: #fff; }
+.pb-char-role { font-size: 10px; color: #fbbf24; margin-top: 1px; }
+
+.pb-env-view { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.pb-env-img-wrap { width: 100%; height: 140px; border-radius: 6px; overflow: hidden; position: relative; border: 1px solid rgba(0, 200, 220, 0.3); }
+.pb-env-img { width: 100%; height: 100%; object-fit: cover; }
+.pb-env-name { position: absolute; bottom: 0; left: 0; right: 0; padding: 8px 8px 6px; background: linear-gradient(transparent, rgba(0,0,0,0.9)); color: #fff; font-size: 12px; font-weight: 600; }
+.pb-env-desc { font-size: 11px; color: #94a3b8; line-height: 1.4; }
+
+/* Shots / Panels */
+.pb-panels { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; max-height: 420px; padding-right: 3px; }
+.pb-panel {
+    background: rgba(0,0,0,0.4); border-left: 3px solid #00c8dc; border-radius: 5px;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 5px;
+}
+.pb-panel-head { display: flex; justify-content: space-between; align-items: center; }
+.pb-panel-num { font-size: 10px; font-weight: 700; color: #00c8dc; background: rgba(0, 200, 220, 0.1); padding: 1px 5px; border-radius: 3px; }
+.pb-panel-time { font-size: 9px; font-family: var(--font-mono); color: #64748b; }
+.pb-panel-title { font-size: 12px; font-weight: 600; color: #fff; }
+.pb-panel-action { font-size: 11px; color: #94a3b8; line-height: 1.3; }
+.pb-panel-dialogue { font-size: 11px; color: #fcd34d; background: rgba(252, 211, 77, 0.1); padding: 4px 6px; border-radius: 4px; border-left: 2px solid #fcd34d; font-style: italic; }
+
+/* Pills & Tags */
+.pb-pill-container { display: flex; flex-wrap: wrap; gap: 4px; }
+.pb-pill { font-size: 10px; padding: 3px 8px; border-radius: 99px; background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.1); }
+.pb-pill.glow { background: rgba(0, 200, 220, 0.1); color: #00c8dc; border-color: rgba(0, 200, 220, 0.3); }
+
+/* Blocking List */
+.pb-block-list { display: flex; flex-direction: column; gap: 6px; }
+.pb-block-item { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; color: #cbd5e1; }
+.pb-block-dot { width: 16px; height: 16px; border-radius: 50%; background: rgba(99, 102, 241, 0.2); color: #818cf8; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+
+/* Responsive */
+@media (max-width: 1200px) {
+    .production-board {
+        grid-template-columns: 1fr 1fr;
+    }
+    .pb-z3 { grid-column: 1 / span 2; grid-row: 3; }
+    .pb-bottom-row { grid-template-columns: 1fr 1fr; }
+}
+

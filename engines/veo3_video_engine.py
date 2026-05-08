@@ -12,7 +12,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("ContentStudio.Veo3VideoEngine")
+logger = logging.getLogger("PodStudio.Veo3VideoEngine")
 
 # Path to browser extension node_modules
 BROWSER_EXT_DIR = Path(__file__).parents[4] / "tubecli" / "extensions" / "browser"
@@ -22,7 +22,7 @@ VEO3_JS_SCRIPT = Path(__file__).parent / "veo3_video.js"
 def get_output_dir() -> str:
     try:
         from tubecli.config import DATA_DIR
-        out_dir = os.path.join(str(DATA_DIR), "content_studio", "veo3_videos")
+        out_dir = os.path.join(str(DATA_DIR), "pod_studio", "veo3_videos")
     except Exception:
         out_dir = str(Path(__file__).parent.parent / "outputs" / "veo3_videos")
     os.makedirs(out_dir, exist_ok=True)

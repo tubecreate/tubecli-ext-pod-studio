@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Content Studio AI - User Guide</title>
+    <title>POD Studio AI - User Guide</title>
     <style>
         :root {
             --bg-body: #0c0e14;
@@ -79,12 +79,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>Content Studio AI</h1>
+        <h1>POD Studio AI</h1>
         <p style="text-align: center; font-size: 1.1rem;">The ultimate AI-powered screenplay and storyboard pipeline.</p>
 
         <div class="card">
             <h2>Overview</h2>
-            <p>Content Studio is an advanced AI extension inside TubeCLI designed to automate the process of translating and adapting literature into professional screenplays and storyboards. It uses AI agents to break down raw text, extract characters, map scenes, and generate detailed video production prompts.</p>
+            <p>POD Studio is an advanced AI extension inside TubeCLI designed to automate the process of translating and adapting literature into professional screenplays and storyboards. It uses AI agents to break down raw text, extract characters, map scenes, and generate detailed video production prompts.</p>
         </div>
 
         <h2>Core Pipeline Workflow</h2>
@@ -94,7 +94,7 @@
                 <div class="step-number">1</div>
                 <div class="step-content">
                     <h3>Raw Content & Organization</h3>
-                    <p>Start by creating a <b>Project (Drama)</b> and adding instances for each <b>Episode</b>. Paste your source material (novel chapters, rough ideas, or raw script) into the <span class="highlight">01 Raw Content</span> tab.</p>
+                    <p>Start by creating a <b>Project (Ad Campaign)</b> and adding instances for each <b>Episode</b>. Paste your source material (novel chapters, rough ideas, or raw script) into the <span class="highlight">01 Raw Content</span> tab.</p>
                 </div>
             </div>
 
@@ -102,15 +102,15 @@
                 <div class="step-number">2</div>
                 <div class="step-content">
                     <h3>AI Rewrite</h3>
-                    <p>Switch to the <span class="highlight">02 AI Rewrite</span> tab. The Script Rewriter agent will transform your raw text into a standard cinematic screenplay format with clear character dialogues, stage directions, and narrative flow. You can use the chat interface on the right to instruct the AI (e.g., "Make the dialogue more dramatic").</p>
+                    <p>Switch to the <span class="highlight">02 AI Rewrite</span> tab. The Script Rewriter agent will transform your raw text into a standard cinematic screenplay format with clear character dialogues, stage directions, and narrative flow. You can use the chat interface on the right to instruct the AI (e.g., "Make the dialogue more campaigntic").</p>
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-number">3</div>
                 <div class="step-content">
-                    <h3>Extract Characters & Scenes</h3>
-                    <p>In the <span class="highlight">03 Extract</span> tab, click <b>Extract Characters & Scenes</b>. The AI will analyze the script and generate a database of all characters (roles, appearances, personalities) and locations. The system automatically deduplicates existing characters across episodes to maintain continuity.</p>
+                    <h3>Extract Models & Products & Scenes</h3>
+                    <p>In the <span class="highlight">03 Extract</span> tab, click <b>Extract Models & Products & Scenes</b>. The AI will analyze the script and generate a database of all characters (roles, appearances, personalities) and locations. The system automatically deduplicates existing characters across episodes to maintain continuity.</p>
                 </div>
             </div>
 
@@ -125,7 +125,7 @@
 
         <h2>Configuration & Settings</h2>
         <div class="card">
-            <p>Content Studio requires a configured AI Provider to function. While it inherits global TubeCLI settings by default, you can override them:</p>
+            <p>POD Studio requires a configured AI Provider to function. While it inherits global TubeCLI settings by default, you can override them:</p>
             <ul>
                 <li>Click the <b>Settings icon</b> in the top right corner.</li>
                 <li><b>Language:</b> Set the target language for your scripts (e.g., Vietnamese, English, Korean).</li>
@@ -136,12 +136,12 @@
 
         <h2>Advanced Tip: Writing the Next Episode (Ep 2, 3...)</h2>
         <div class="card" style="border-color: var(--accent); background: var(--bg-body);">
-            <p>The system is designed to maintain <b>continuity</b> for the entire series using a shared database of Characters and Scenes for each Project. To write Episode 2 based on Episode 1:</p>
+            <p>The system is designed to maintain <b>continuity</b> for the entire series using a shared database of Models & Products and Scenes for each Project. To write Episode 2 based on Episode 1:</p>
             <ul>
                 <li><b>Step 1:</b> In the left sidebar, click <code>+ Add Episode</code> under your project name to create <b>Ep 2</b>. Click on Ep 2 to select it.</li>
                 <li><b>Step 2:</b> Paste any raw content for the new episode into the <b>01 Raw Content</b> tab. If you want the AI to freely generate the next part without a source, leave it blank.</li>
                 <li><b>Step 3:</b> Switch to <b>02 AI Rewrite</b>. In the chat panel on the right, instruct the AI: <i>"This is episode 2. Using the existing characters, continue the story from the end of episode 1. The male lead should discover the truth..."</i></li>
-                <li><b>Step 4:</b> The backend automatically provides the AI with the list of Characters & Scenes from Episode 1. The AI will utilize this context to write a seamless Episode 2 without breaking plot continuity.</li>
+                <li><b>Step 4:</b> The backend automatically provides the AI with the list of Models & Products & Scenes from Episode 1. The AI will utilize this context to write a seamless Episode 2 without breaking plot continuity.</li>
             </ul>
         </div>
         

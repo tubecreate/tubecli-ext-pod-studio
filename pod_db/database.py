@@ -1,5 +1,5 @@
 """
-Content Studio Database Manager
+POD Studio Database Manager
 Singleton SQLite connection with CRUD helpers.
 """
 import os
@@ -9,9 +9,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
-from db.schema import SCHEMA_SQL
+from pod_db.schema import SCHEMA_SQL
 
-logger = logging.getLogger("ContentStudio.DB")
+logger = logging.getLogger("PodStudio.DB")
 
 
 def _now() -> str:
@@ -19,7 +19,7 @@ def _now() -> str:
 
 
 class Database:
-    """SQLite database manager for Content Studio."""
+    """SQLite database manager for POD Studio."""
 
     _instance: Optional["Database"] = None
 
@@ -94,12 +94,12 @@ class Database:
     def _dicts(self, rows) -> List[dict]:
         return [dict(r) for r in rows]
 
-    # ── Drama CRUD ──────────────────────────────────────────
+    # ── Ad Campaign CRUD ──────────────────────────────────────────
 
-    def create_drama(self, data: dict) -> dict:
+    def create_campaign(self, data: dict) -> dict:
         now = _now()
         cur = self.conn.execute(
-            """INSERT INTO dramas (title, description, genre, style, language,
+            """INSERT INTO campaigns (title, description, genre, style, language,
                total_episodes, status, tags, metadata, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -116,47 +116,47 @@ class Database:
             ),
         )
         self.conn.commit()
-        return self.get_drama(cur.lastrowid)
+        return self.get_campaign(cur.lastrowid)
 
-    def get_drama(self, drama_id: int) -> Optional[dict]:
+    def get_campaign(self, campaign_id: int) -> Optional[dict]:
         row = self.conn.execute(
-            "SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL",
-            (drama_id,),
+            "SELECT * FROM campaigns WHERE id = ? AND deleted_at IS NULL",
+            (campaign_id,),
         ).fetchone()
         return self._dict(row)
 
-    def list_dramas(self) -> List[dict]:
-        """Lightweight listing: only drama metadata + episode count for sidebar."""
+    def list_campaigns(self) -> List[dict]:
+        """Lightweight listing: only campaign metadata + episode count for sidebar."""
         rows = self.conn.execute(
             """SELECT d.*, 
-                      (SELECT COUNT(*) FROM episodes e WHERE e.drama_id = d.id AND e.deleted_at IS NULL) as episode_count
-               FROM dramas d 
+                      (SELECT COUNT(*) FROM episodes e WHERE e.campaign_id = d.id AND e.deleted_at IS NULL) as episode_count
+               FROM campaigns d 
                WHERE d.deleted_at IS NULL 
                ORDER BY d.updated_at DESC"""
         ).fetchall()
-        dramas = self._dicts(rows)
-        return dramas
+        campaigns = self._dicts(rows)
+        return campaigns
 
-    def get_drama_full(self, drama_id: int) -> Optional[dict]:
-        """Full drama with episodes, characters, scenes (used when selecting a project)."""
-        d = self.get_drama(drama_id)
+    def get_campaign_full(self, campaign_id: int) -> Optional[dict]:
+        """Full campaign with episodes, characters, scenes (used when selecting a project)."""
+        d = self.get_campaign(campaign_id)
         if not d:
             return None
         d["episodes"] = self._dicts(self.conn.execute(
-            "SELECT id, episode_number, title, status, metadata FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
+            "SELECT id, episode_number, title, status, metadata FROM episodes WHERE campaign_id = ? AND deleted_at IS NULL ORDER BY episode_number",
             (d["id"],),
         ).fetchall())
         d["characters"] = self._dicts(self.conn.execute(
-            "SELECT id, name, role FROM characters WHERE drama_id = ? AND deleted_at IS NULL",
+            "SELECT id, name, role FROM characters WHERE campaign_id = ? AND deleted_at IS NULL",
             (d["id"],),
         ).fetchall())
         d["scenes"] = self._dicts(self.conn.execute(
-            "SELECT id, location, time FROM scenes WHERE drama_id = ? AND deleted_at IS NULL",
+            "SELECT id, location, time FROM scenes WHERE campaign_id = ? AND deleted_at IS NULL",
             (d["id"],),
         ).fetchall())
         return d
 
-    def update_drama(self, drama_id: int, data: dict) -> Optional[dict]:
+    def update_campaign(self, campaign_id: int, data: dict) -> Optional[dict]:
         fields = []
         values = []
         for key in ["title", "description", "genre", "style", "language",
@@ -165,40 +165,40 @@ class Database:
                 fields.append(f"{key} = ?")
                 values.append(data[key])
         if not fields:
-            return self.get_drama(drama_id)
+            return self.get_campaign(campaign_id)
         fields.append("updated_at = ?")
         values.append(_now())
-        values.append(drama_id)
+        values.append(campaign_id)
         self.conn.execute(
-            f"UPDATE dramas SET {', '.join(fields)} WHERE id = ?", values
+            f"UPDATE campaigns SET {', '.join(fields)} WHERE id = ?", values
         )
         self.conn.commit()
-        return self.get_drama(drama_id)
+        return self.get_campaign(campaign_id)
 
-    def delete_drama(self, drama_id: int) -> bool:
+    def delete_campaign(self, campaign_id: int) -> bool:
         self.conn.execute(
-            "UPDATE dramas SET deleted_at = ? WHERE id = ?", (_now(), drama_id)
+            "UPDATE campaigns SET deleted_at = ? WHERE id = ?", (_now(), campaign_id)
         )
         self.conn.commit()
         return True
 
     # ── Episode CRUD ────────────────────────────────────────
 
-    def create_episode(self, drama_id: int, data: dict) -> dict:
+    def create_episode(self, campaign_id: int, data: dict) -> dict:
         now = _now()
         # Get next episode number
         row = self.conn.execute(
-            "SELECT MAX(episode_number) as mx FROM episodes WHERE drama_id = ? AND deleted_at IS NULL",
-            (drama_id,),
+            "SELECT MAX(episode_number) as mx FROM episodes WHERE campaign_id = ? AND deleted_at IS NULL",
+            (campaign_id,),
         ).fetchone()
         next_num = (row["mx"] or 0) + 1 if row else 1
 
         cur = self.conn.execute(
-            """INSERT INTO episodes (drama_id, episode_number, title, content,
+            """INSERT INTO episodes (campaign_id, episode_number, title, content,
                script_content, description, status, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                drama_id, next_num,
+                campaign_id, next_num,
                 data.get("title", f"Episode {next_num}"),
                 data.get("content", ""),
                 data.get("script_content", ""),
@@ -216,10 +216,10 @@ class Database:
         ).fetchone()
         return self._dict(row)
 
-    def list_episodes(self, drama_id: int) -> List[dict]:
+    def list_episodes(self, campaign_id: int) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT * FROM episodes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY episode_number",
-            (drama_id,),
+            "SELECT * FROM episodes WHERE campaign_id = ? AND deleted_at IS NULL ORDER BY episode_number",
+            (campaign_id,),
         ).fetchall()
         return self._dicts(rows)
 
@@ -243,20 +243,20 @@ class Database:
 
     # ── Character CRUD ──────────────────────────────────────
 
-    def list_characters(self, drama_id: int) -> List[dict]:
+    def list_characters(self, campaign_id: int) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT * FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY sort_order, id",
-            (drama_id,),
+            "SELECT * FROM characters WHERE campaign_id = ? AND deleted_at IS NULL ORDER BY sort_order, id",
+            (campaign_id,),
         ).fetchall()
         return self._dicts(rows)
 
-    def create_character(self, drama_id: int, data: dict) -> dict:
+    def create_character(self, campaign_id: int, data: dict) -> dict:
         now = _now()
         cur = self.conn.execute(
-            """INSERT INTO characters (drama_id, name, role, description, appearance,
+            """INSERT INTO characters (campaign_id, name, role, description, appearance,
                personality, voice_style, image_url, reference_images, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (drama_id, data.get("name", ""), data.get("role", ""),
+            (campaign_id, data.get("name", ""), data.get("role", ""),
              data.get("description", ""), data.get("appearance", ""),
              data.get("personality", ""), data.get("voice_style", ""),
              data.get("image_url", ""), data.get("reference_images", "[]"),
@@ -289,10 +289,10 @@ class Database:
 
     # ── Scene CRUD ──────────────────────────────────────────
 
-    def list_scenes(self, drama_id: int) -> List[dict]:
+    def list_scenes(self, campaign_id: int) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT * FROM scenes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id",
-            (drama_id,),
+            "SELECT * FROM scenes WHERE campaign_id = ? AND deleted_at IS NULL ORDER BY id",
+            (campaign_id,),
         ).fetchall()
         return self._dicts(rows)
 
@@ -350,10 +350,10 @@ class Database:
 
     # ── Bulk save helpers (for AI agents) ───────────────────
 
-    def save_characters_dedup(self, drama_id: int, episode_id: int, characters: List[dict]) -> List[dict]:
+    def save_characters_dedup(self, campaign_id: int, episode_id: int, characters: List[dict]) -> List[dict]:
         """Save characters with smart dedup by name. Returns saved characters."""
         now = _now()
-        existing = {c["name"]: c for c in self.list_characters(drama_id)}
+        existing = {c["name"]: c for c in self.list_characters(campaign_id)}
         saved = []
         for ch in characters:
             name = ch.get("name", "").strip()
@@ -372,7 +372,7 @@ class Database:
                 saved.append(ex)
             else:
                 # Create new
-                new_ch = self.create_character(drama_id, ch)
+                new_ch = self.create_character(campaign_id, ch)
                 existing[name] = new_ch
                 saved.append(new_ch)
             # Link to episode
@@ -388,10 +388,10 @@ class Database:
         self.conn.commit()
         return saved
 
-    def save_scenes_dedup(self, drama_id: int, episode_id: int, scenes: List[dict]) -> List[dict]:
+    def save_scenes_dedup(self, campaign_id: int, episode_id: int, scenes: List[dict]) -> List[dict]:
         """Save scenes with smart dedup by location+time."""
         now = _now()
-        existing = {f"{s['location']}|{s['time']}": s for s in self.list_scenes(drama_id)}
+        existing = {f"{s['location']}|{s['time']}": s for s in self.list_scenes(campaign_id)}
         saved = []
         for sc in scenes:
             loc = sc.get("location", "").strip()
@@ -404,9 +404,9 @@ class Database:
                 saved.append(existing[key])
             else:
                 cur = self.conn.execute(
-                    """INSERT INTO scenes (drama_id, episode_id, location, time, prompt,
+                    """INSERT INTO scenes (campaign_id, episode_id, location, time, prompt,
                        description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (drama_id, episode_id, loc, time_s,
+                    (campaign_id, episode_id, loc, time_s,
                      sc.get("prompt", ""), sc.get("description", ""),
                      "pending", now, now),
                 )
@@ -431,16 +431,16 @@ class Database:
         start_number = 1
         
         # Determine continuous starting number across episodes
-        ep_row = self.conn.execute("SELECT drama_id, episode_number FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+        ep_row = self.conn.execute("SELECT campaign_id, episode_number FROM episodes WHERE id = ?", (episode_id,)).fetchone()
         if ep_row:
-            drama_id, ep_num = ep_row["drama_id"], ep_row["episode_number"]
+            campaign_id, ep_num = ep_row["campaign_id"], ep_row["episode_number"]
             # Get max storyboard_number from all previous episodes
             prev_mx_row = self.conn.execute("""
                 SELECT MAX(s.storyboard_number) as mx
                 FROM storyboards s
                 JOIN episodes e ON s.episode_id = e.id
-                WHERE e.drama_id = ? AND e.episode_number < ? AND s.deleted_at IS NULL
-            """, (drama_id, ep_num)).fetchone()
+                WHERE e.campaign_id = ? AND e.episode_number < ? AND s.deleted_at IS NULL
+            """, (campaign_id, ep_num)).fetchone()
             if prev_mx_row and prev_mx_row["mx"] is not None:
                 start_number = prev_mx_row["mx"] + 1
 
@@ -520,7 +520,7 @@ class Database:
                 data.get("source_title", ""),
                 "pending",
                 data.get("preset_name", ""),
-                data.get("pipeline_template", "drama_scene"),
+                data.get("pipeline_template", "campaign_scene"),
                 data.get("content_format", "Educational / Learning"),
                 data.get("visual_style", "Default"),
                 data.get("max_episodes", 1),
@@ -562,7 +562,7 @@ class Database:
     def update_pipeline_job(self, job_id: int, data: dict) -> Optional[dict]:
         fields = []
         values = []
-        for key in ["source_title", "status", "error_message", "drama_id",
+        for key in ["source_title", "status", "error_message", "campaign_id",
                      "episode_ids", "uploaded_video_ids", "output_video_path", "extracted_text",
                      "preset_name", "pipeline_template", "content_format", "visual_style", 
                      "max_episodes", "language", "voice_preset", "browser_profiles",
@@ -610,7 +610,7 @@ class Database:
                 data.get("channel_id", ""),
                 data.get("channel_name", ""),
                 data.get("preset_name", ""),
-                data.get("pipeline_template", "drama_scene"),
+                data.get("pipeline_template", "campaign_scene"),
                 data.get("content_format", "Educational / Learning"),
                 data.get("visual_style", "Default"),
                 data.get("max_episodes", 1),
@@ -661,7 +661,7 @@ class Database:
         self.conn.commit()
         return True
 
-    # ── Character Gallery ────────────────────────────────────
+    # ── Product & Model Gallery ────────────────────────────────────
 
     # -- Categories --
 

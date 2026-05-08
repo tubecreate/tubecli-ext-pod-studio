@@ -1,5 +1,5 @@
 """
-Migrate Content Studio data from SQLite to JSON file storage.
+Migrate POD Studio data from SQLite to JSON file storage.
 Run this once after upgrading to JSON-based storage.
 Optimized: uses direct file writes instead of per-record API calls.
 """
@@ -9,7 +9,7 @@ import json
 import sqlite3
 import logging
 
-logger = logging.getLogger("ContentStudio.Migration")
+logger = logging.getLogger("PodStudio.Migration")
 
 
 def migrate(db_path: str, json_data_dir: str):
@@ -40,33 +40,33 @@ def migrate(db_path: str, json_data_dir: str):
 
     # ID counters — we'll assign new sequential IDs
     id_counters = {
-        "drama": 0, "episode": 0, "character": 0,
+        "campaign": 0, "episode": 0, "character": 0,
         "scene": 0, "storyboard": 0, "pipeline_job": 0,
         "channel_watcher": 0, "gallery_category": 0,
         "gallery_item": 0, "preset": 0,
     }
-    drama_map = {}
+    campaign_map = {}
     episode_map = {}
     char_map = {}
     scene_map = {}
 
-    # ── 1. Dramas ──
-    dramas = [dict(r) for r in conn.execute(
-        "SELECT * FROM dramas WHERE deleted_at IS NULL"
+    # ── 1. Ad Campaigns ──
+    campaigns = [dict(r) for r in conn.execute(
+        "SELECT * FROM campaigns WHERE deleted_at IS NULL"
     ).fetchall()]
-    logger.info(f"Migrating {len(dramas)} dramas...")
-    dramas_index = []
+    logger.info(f"Migrating {len(campaigns)} campaigns...")
+    campaigns_index = []
 
-    for d in dramas:
+    for d in campaigns:
         old_id = d["id"]
-        id_counters["drama"] += 1
-        new_id = id_counters["drama"]
-        drama_map[old_id] = new_id
+        id_counters["campaign"] += 1
+        new_id = id_counters["campaign"]
+        campaign_map[old_id] = new_id
 
         proj_dir = os.path.join(projects_dir, str(new_id))
         os.makedirs(proj_dir, exist_ok=True)
 
-        drama = {
+        campaign = {
             "id": new_id, "title": d.get("title", "Untitled"),
             "description": d.get("description", ""),
             "genre": d.get("genre", ""), "style": d.get("style", "realistic"),
@@ -80,29 +80,29 @@ def migrate(db_path: str, json_data_dir: str):
             "created_at": d["created_at"], "updated_at": d["updated_at"],
             "deleted_at": None,
         }
-        _write(os.path.join(proj_dir, "project.json"), drama)
-        dramas_index.append({"id": new_id, "title": drama["title"], "updated_at": drama["updated_at"]})
+        _write(os.path.join(proj_dir, "project.json"), campaign)
+        campaigns_index.append({"id": new_id, "title": campaign["title"], "updated_at": campaign["updated_at"]})
 
-    _write(os.path.join(json_data_dir, "dramas_index.json"), dramas_index)
+    _write(os.path.join(json_data_dir, "campaigns_index.json"), campaigns_index)
 
     # ── 2. Episodes ──
     episodes = [dict(r) for r in conn.execute(
-        "SELECT * FROM episodes WHERE deleted_at IS NULL ORDER BY drama_id, episode_number"
+        "SELECT * FROM episodes WHERE deleted_at IS NULL ORDER BY campaign_id, episode_number"
     ).fetchall()]
     logger.info(f"Migrating {len(episodes)} episodes...")
 
-    # Group by drama
-    eps_by_drama = {}
+    # Group by campaign
+    eps_by_campaign = {}
     for e in episodes:
-        new_drama_id = drama_map.get(e["drama_id"])
-        if not new_drama_id:
+        new_campaign_id = campaign_map.get(e["campaign_id"])
+        if not new_campaign_id:
             continue
         id_counters["episode"] += 1
         new_id = id_counters["episode"]
         episode_map[e["id"]] = new_id
 
         ep = {
-            "id": new_id, "drama_id": new_drama_id,
+            "id": new_id, "campaign_id": new_campaign_id,
             "episode_number": e["episode_number"],
             "title": e.get("title", ""), "content": e.get("content", ""),
             "script_content": e.get("script_content", ""),
@@ -114,33 +114,33 @@ def migrate(db_path: str, json_data_dir: str):
             "created_at": e["created_at"], "updated_at": e["updated_at"],
             "deleted_at": None,
         }
-        eps_by_drama.setdefault(new_drama_id, []).append(ep)
+        eps_by_campaign.setdefault(new_campaign_id, []).append(ep)
 
-    for did, eps in eps_by_drama.items():
+    for did, eps in eps_by_campaign.items():
         _write(os.path.join(projects_dir, str(did), "episodes.json"), eps)
-    # Write empty episodes for dramas with none
-    for did in drama_map.values():
+    # Write empty episodes for campaigns with none
+    for did in campaign_map.values():
         ep_path = os.path.join(projects_dir, str(did), "episodes.json")
         if not os.path.exists(ep_path):
             _write(ep_path, [])
 
-    # ── 3. Characters ──
+    # ── 3. Models & Products ──
     chars = [dict(r) for r in conn.execute(
         "SELECT * FROM characters WHERE deleted_at IS NULL"
     ).fetchall()]
     logger.info(f"Migrating {len(chars)} characters...")
 
-    chars_by_drama = {}
+    chars_by_campaign = {}
     for c in chars:
-        new_drama_id = drama_map.get(c["drama_id"])
-        if not new_drama_id:
+        new_campaign_id = campaign_map.get(c["campaign_id"])
+        if not new_campaign_id:
             continue
         id_counters["character"] += 1
         new_id = id_counters["character"]
         char_map[c["id"]] = new_id
 
         char = {
-            "id": new_id, "drama_id": new_drama_id,
+            "id": new_id, "campaign_id": new_campaign_id,
             "name": c.get("name", ""), "role": c.get("role", ""),
             "description": c.get("description", ""),
             "appearance": c.get("appearance", ""),
@@ -154,11 +154,11 @@ def migrate(db_path: str, json_data_dir: str):
             "created_at": c["created_at"], "updated_at": c["updated_at"],
             "deleted_at": None,
         }
-        chars_by_drama.setdefault(new_drama_id, []).append(char)
+        chars_by_campaign.setdefault(new_campaign_id, []).append(char)
 
-    for did in drama_map.values():
+    for did in campaign_map.values():
         _write(os.path.join(projects_dir, str(did), "characters.json"),
-               chars_by_drama.get(did, []))
+               chars_by_campaign.get(did, []))
 
     # ── 4. Scenes ──
     scenes = [dict(r) for r in conn.execute(
@@ -166,17 +166,17 @@ def migrate(db_path: str, json_data_dir: str):
     ).fetchall()]
     logger.info(f"Migrating {len(scenes)} scenes...")
 
-    scenes_by_drama = {}
+    scenes_by_campaign = {}
     for s in scenes:
-        new_drama_id = drama_map.get(s["drama_id"])
-        if not new_drama_id:
+        new_campaign_id = campaign_map.get(s["campaign_id"])
+        if not new_campaign_id:
             continue
         id_counters["scene"] += 1
         new_id = id_counters["scene"]
         scene_map[s["id"]] = new_id
 
         scene = {
-            "id": new_id, "drama_id": new_drama_id,
+            "id": new_id, "campaign_id": new_campaign_id,
             "episode_id": episode_map.get(s.get("episode_id")),
             "location": s["location"], "time": s["time"],
             "prompt": s.get("prompt", ""), "description": s.get("description", ""),
@@ -185,11 +185,11 @@ def migrate(db_path: str, json_data_dir: str):
             "created_at": s["created_at"], "updated_at": s["updated_at"],
             "deleted_at": None,
         }
-        scenes_by_drama.setdefault(new_drama_id, []).append(scene)
+        scenes_by_campaign.setdefault(new_campaign_id, []).append(scene)
 
-    for did in drama_map.values():
+    for did in campaign_map.values():
         _write(os.path.join(projects_dir, str(did), "scenes.json"),
-               scenes_by_drama.get(did, []))
+               scenes_by_campaign.get(did, []))
 
     # ── 5. Storyboards ──
     storyboards = [dict(r) for r in conn.execute(
@@ -202,23 +202,23 @@ def migrate(db_path: str, json_data_dir: str):
     for row in conn.execute("SELECT storyboard_id, character_id FROM storyboard_characters").fetchall():
         sb_chars.setdefault(row["storyboard_id"], []).append(row["character_id"])
 
-    # Group by (drama_id, episode_id)
+    # Group by (campaign_id, episode_id)
     sbs_by_ep = {}
     for sb in storyboards:
         new_ep_id = episode_map.get(sb["episode_id"])
         if not new_ep_id:
             continue
-        # Find drama for this episode
-        new_drama_id = None
-        for old_did, new_did in drama_map.items():
+        # Find campaign for this episode
+        new_campaign_id = None
+        for old_did, new_did in campaign_map.items():
             ep_path = os.path.join(projects_dir, str(new_did), "episodes.json")
             if os.path.exists(ep_path):
                 with open(ep_path, "r", encoding="utf-8") as f:
                     eps = json.load(f)
                 if any(e["id"] == new_ep_id for e in eps):
-                    new_drama_id = new_did
+                    new_campaign_id = new_did
                     break
-        if not new_drama_id:
+        if not new_campaign_id:
             continue
 
         id_counters["storyboard"] += 1
@@ -243,7 +243,7 @@ def migrate(db_path: str, json_data_dir: str):
                      "subtitle_url", "composed_video_url", "status", "metadata"]:
             new_sb[key] = sb.get(key) if sb.get(key) is not None else ""
 
-        sbs_by_ep.setdefault((new_drama_id, new_ep_id), []).append(new_sb)
+        sbs_by_ep.setdefault((new_campaign_id, new_ep_id), []).append(new_sb)
 
     for (did, eid), sbs in sbs_by_ep.items():
         sb_dir = os.path.join(projects_dir, str(did), "storyboards")
@@ -259,8 +259,8 @@ def migrate(db_path: str, json_data_dir: str):
             id_counters["pipeline_job"] += 1
             j_new = dict(j)
             j_new["id"] = id_counters["pipeline_job"]
-            if j.get("drama_id") and j["drama_id"] in drama_map:
-                j_new["drama_id"] = drama_map[j["drama_id"]]
+            if j.get("campaign_id") and j["campaign_id"] in campaign_map:
+                j_new["campaign_id"] = campaign_map[j["campaign_id"]]
             new_jobs.append(j_new)
         _write(os.path.join(json_data_dir, "pipeline_jobs.json"), new_jobs)
     except Exception as e:
@@ -332,7 +332,7 @@ def migrate(db_path: str, json_data_dir: str):
 
     # ── Update ID counters in _meta.json (one write) ──
     store._set_next_ids({
-        "next_drama_id": id_counters["drama"] + 1,
+        "next_campaign_id": id_counters["campaign"] + 1,
         "next_episode_id": id_counters["episode"] + 1,
         "next_character_id": id_counters["character"] + 1,
         "next_scene_id": id_counters["scene"] + 1,
@@ -352,13 +352,13 @@ def migrate(db_path: str, json_data_dir: str):
     except Exception:
         logger.warning(f"Could not rename old DB, please manually remove: {db_path}")
 
-    logger.info(f"✅ Migration complete! {len(drama_map)} dramas, {len(episode_map)} episodes, "
+    logger.info(f"✅ Migration complete! {len(campaign_map)} campaigns, {len(episode_map)} episodes, "
                 f"{len(char_map)} characters, {len(scene_map)} scenes, {id_counters['storyboard']} storyboards")
     return True
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    db = sys.argv[1] if len(sys.argv) > 1 else r"C:\tubecreate-vue\tubecli\data\content_studio\content_studio.db"
-    out = sys.argv[2] if len(sys.argv) > 2 else r"C:\tubecreate-vue\tubecli\data\content_studio"
+    db = sys.argv[1] if len(sys.argv) > 1 else r"C:\tubecreate-vue\tubecli\data\pod_studio\pod_studio.db"
+    out = sys.argv[2] if len(sys.argv) > 2 else r"C:\tubecreate-vue\tubecli\data\pod_studio"
     migrate(db, out)

@@ -5,10 +5,10 @@ import os
 sys.path.append(r'C:\tubecreate-vue')
 sys.stdout.reconfigure(encoding='utf-8')
 
-from tubecli.data.extensions_external.content_studio.engines.ffmpeg_video_engine import build_ffmpeg_video
+from tubecli.data.extensions_external.pod_studio.engines.ffmpeg_video_engine import build_ffmpeg_video
 
 async def test_build():
-    conn = sqlite3.connect(r'C:\tubecreate-vue\tubecli\data\content_studio\content_studio.db')
+    conn = sqlite3.connect(r'C:\tubecreate-vue\tubecli\data\pod_studio\pod_studio.db')
     conn.row_factory = sqlite3.Row
     ep = dict(conn.execute('SELECT * FROM episodes WHERE id=137').fetchone() or {})
     if not ep:

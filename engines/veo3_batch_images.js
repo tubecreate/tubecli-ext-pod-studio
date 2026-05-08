@@ -415,6 +415,8 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
             currentOutput = job.output;
             currentSaved = false;
             let newTileFirstSeen = 0; // Timestamp when new tile was first detected
+            let retryCount = 0;
+            const maxRetries = 3; // Max retries per job on generation errors
 
             try {
                 // Find prompt input
@@ -540,53 +542,91 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                     let tileHasError = false;
                     try {
                         tileHasError = await page.evaluate((targetTileId) => {
-                            const body = document.body.innerText;
-                            if (body.includes('Không thành công') || body.includes('could not be generated') || body.includes('không thể tạo')) {
-                                return true;
-                            }
+                            // Check specific error tile first
                             if (targetTileId) {
                                 const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
                                 if (tile) {
                                     const tileText = tile.innerText || '';
-                                    if (tileText.includes('Không thành công') || tileText.includes('error')) return true;
+                                    if (tileText.includes('Không thành công') || tileText.includes('could not be generated') || 
+                                        tileText.includes('error') || tileText.includes('unusual activity') ||
+                                        tileText.includes('không thể tạo')) return true;
                                 }
+                            }
+                            // Global check
+                            const body = document.body.innerText;
+                            if (body.includes('Không thành công') || body.includes('could not be generated') || 
+                                body.includes('không thể tạo') || body.includes('unusual activity')) {
+                                return true;
                             }
                             return false;
                         }, newTileId);
                     } catch(e) {}
 
                     if (tileHasError) {
-                        log('⚠️ Generation error detected! Clicking retry...');
-                        // Find and click the refresh button (same pattern as veo3_video.js)
+                        retryCount++;
+                        log(`⚠️ Generation error detected! Retry attempt ${retryCount}/${maxRetries}...`);
+                        
+                        if (retryCount > maxRetries) {
+                            log(`❌ Max retries (${maxRetries}) exceeded — skipping this job`);
+                            break;
+                        }
+                        
+                        // Find and click the refresh/retry button
                         let retryClicked = false;
                         try {
                             retryClicked = await page.evaluate(() => {
+                                // Strategy A: Find button toolbar with refresh icon (3 or 4 buttons)
                                 const allDivs = document.querySelectorAll('div');
                                 for (const div of allDivs) {
                                     const buttons = div.querySelectorAll(':scope > button');
-                                    if (buttons.length !== 3) continue;
-                                    const iconTexts = [];
+                                    if (buttons.length < 2 || buttons.length > 5) continue;
                                     let refreshBtn = null;
                                     for (const btn of buttons) {
                                         const icon = btn.querySelector('i');
                                         const iconText = icon ? icon.textContent.trim() : '';
-                                        iconTexts.push(iconText);
-                                        if (iconText === 'refresh') refreshBtn = btn;
+                                        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                                        if (iconText === 'refresh' || iconText === 'replay' || iconText === 'autorenew' ||
+                                            ariaLabel.includes('retry') || ariaLabel.includes('refresh') || ariaLabel.includes('tạo lại')) {
+                                            refreshBtn = btn;
+                                        }
                                     }
-                                    if (iconTexts.includes('refresh') && iconTexts.includes('undo') && iconTexts.includes('delete_forever') && refreshBtn) {
+                                    if (refreshBtn) {
                                         refreshBtn.click();
                                         return true;
                                     }
                                 }
+                                
+                                // Strategy B: Any visible button with refresh-like icon anywhere
+                                const refreshIcons = document.querySelectorAll('i');
+                                for (const icon of refreshIcons) {
+                                    const txt = icon.textContent.trim();
+                                    if (txt === 'refresh' || txt === 'replay' || txt === 'autorenew') {
+                                        const btn = icon.closest('button');
+                                        if (btn && btn.offsetParent !== null) {
+                                            btn.click();
+                                            return true;
+                                        }
+                                    }
+                                }
+                                
+                                // Strategy C: Button with retry/refresh aria-label
+                                const retryBtns = document.querySelectorAll('button[aria-label*="retry"], button[aria-label*="Retry"], button[aria-label*="refresh"], button[aria-label*="Tạo lại"]');
+                                if (retryBtns.length > 0) {
+                                    retryBtns[0].click();
+                                    return true;
+                                }
+                                
                                 return false;
                             });
                         } catch(e) {}
                         
                         if (retryClicked) {
                             log('✅ Clicked retry button. Waiting for regeneration...');
-                            prevTileCount = currentTileCount; // Reset tile tracking
+                            // Reset tile tracking for the retry
+                            newTileFirstSeen = 0;
+                            prevTileCount = currentTileCount;
                             prevTileIds = currentTileIds;
-                            await sleep(5000);
+                            await sleep(8000);
                         } else {
                             log('❌ Could not find retry button — skipping this job');
                             break;
@@ -595,10 +635,35 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                     }
 
                     // New tile detected! Now check if it's still generating (percentage overlay)
+                    // IMPORTANT: Only check the SPECIFIC new tile, NOT all tiles.
+                    // ImageFX generates 2 tiles per prompt — we only need ONE to be ready.
                     let stillGenerating = false;
                     try {
                         stillGenerating = await page.evaluate((targetTileId) => {
-                            // Check for percentage text on tiles (e.g. "30%", "99%")
+                            // If we have a specific tile ID, only check THAT tile
+                            if (targetTileId) {
+                                const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
+                                if (tile) {
+                                    const tileText = tile.innerText || '';
+                                    // Check percentage on this specific tile
+                                    if (tileText.match(/\d{1,3}%/)) return true;
+                                    // Check for placeholder icons
+                                    const icons = tile.querySelectorAll('i');
+                                    for (const icon of icons) {
+                                        const txt = icon.textContent.trim();
+                                        if (txt === 'image' || txt === 'photo' || txt === 'hourglass_empty') return true;
+                                    }
+                                    // Check for error state (don't count errors as "still generating")
+                                    if (tileText.includes('Không thành công') || tileText.includes('error') || tileText.includes('unusual')) return false;
+                                    // Check if tile has a real finished image
+                                    const img = tile.querySelector('img');
+                                    if (!img || !img.src || img.naturalWidth < 300) return true;
+                                    // Has a real image — done!
+                                    return false;
+                                }
+                            }
+                            
+                            // Fallback: no specific tile ID — check if ANY percentage is on page
                             const allText = document.body.innerText;
                             const percentMatch = allText.match(/(\d{1,3})%/);
                             if (percentMatch) {
@@ -606,35 +671,17 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                                 if (pct > 0 && pct < 100) return true;
                             }
                             
-                            // Check specific tile if we found it
-                            if (targetTileId) {
-                                const tile = document.querySelector(`[data-tile-id="${targetTileId}"]`);
-                                if (tile) {
-                                    const tileText = tile.innerText || '';
-                                    if (tileText.match(/\d{1,3}%/)) return true;
-                                    // Check for loading indicators within the tile
-                                    const hasSpinner = tile.querySelector('[class*="spinner"], [class*="loading"], [class*="progress"], [role="progressbar"]');
-                                    if (hasSpinner) return true;
-                                    // Check if tile has a real finished image (not just a placeholder)
-                                    const img = tile.querySelector('img');
-                                    if (!img || !img.src || img.naturalWidth < 500) return true;
-                                }
-                            }
-                            
-                            // Global checks
-                            const spinners = document.querySelectorAll('[class*="spinner"], [class*="loading"], [role="progressbar"]');
-                            if (spinners.length > 0) return true;
-                            if (allText.includes('Đang tạo') || allText.includes('Generating') || allText.includes('Processing')) return true;
+                            // Check global loading indicators
+                            if (allText.includes('Đang tạo') || allText.includes('Generating')) return true;
                             
                             return false;
                         }, newTileId);
                     } catch(e) {}
 
                     // Enforce minimum wait time: at least 15s after new tile appears
-                    // This prevents downloading a low-res preview before the full image is ready
                     const elapsedSinceNewTile = newTileFirstSeen ? (Date.now() - newTileFirstSeen) / 1000 : 0;
                     if (newTileFirstSeen && elapsedSinceNewTile < 15) {
-                        log(`New tile appeared ${Math.round(elapsedSinceNewTile)}s ago — waiting at least 15s before download...`);
+                        log(`New tile appeared ${Math.round(elapsedSinceNewTile)}s ago — waiting at least 15s...`);
                         stillGenerating = true;
                     }
 
@@ -645,7 +692,7 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
                     log(`New tile ready! ID: ${newTileId || 'unknown'}, Count: ${prevTileCount} → ${currentTileCount}`);
 
-                    // Strategy 1: Right-click the NEW tile → Tải xuống → 1K
+                    // Strategy 1: Right-click the NEW tile → Download menu → 1K
                     if (!currentSaved) {
                         try {
                             // Target the specific new tile, or the first tile (newest)
@@ -667,28 +714,70 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
                                 };
                                 page.on('response', dlHandler);
 
-                                await tile.click({ button: 'right' }); await sleep(2000);
-                                let dlItem = page.locator('text="Tải xuống"').first();
+                                // Try clicking the tile first to select it
+                                await tile.click(); await sleep(1500);
+                                
+                                // Look for download button in the tile's action bar
                                 let menuOk = false;
-                                try { menuOk = await dlItem.isVisible({ timeout: 2000 }); } catch(e) {}
-
+                                
+                                // Method A: Three-button action bar (refresh, undo, delete_forever)
+                                // After clicking a tile, a download icon/button may appear
+                                try {
+                                    const dlBtn = page.locator('button:has(i:text("download")), button:has(i:text("file_download")), button[aria-label*="ownload"]').first();
+                                    if (await dlBtn.isVisible({ timeout: 2000 })) {
+                                        await dlBtn.click(); await sleep(2000);
+                                        log('Clicked direct download button');
+                                        menuOk = true;
+                                    }
+                                } catch(e) {}
+                                
+                                // Method B: Right-click context menu
                                 if (!menuOk) {
-                                    await page.keyboard.press('Escape'); await sleep(500);
-                                    await tile.hover(); await sleep(1000);
-                                    const mb = tile.locator('button:has(i:text("more_vert")), button[aria-label*="menu"]').first();
-                                    try { if (await mb.isVisible({ timeout: 2000 })) { await mb.click(); await sleep(2000); try { menuOk = await dlItem.isVisible({ timeout: 2000 }); } catch(e) {} } } catch(e) {}
+                                    await tile.click({ button: 'right' }); await sleep(2000);
+                                    // Try both Vietnamese and English
+                                    let dlItem = null;
+                                    for (const txt of ['Tải xuống', 'Download', 'Tải về', 'Save']) {
+                                        const item = page.locator(`text="${txt}"`).first();
+                                        try { if (await item.isVisible({ timeout: 1000 })) { dlItem = item; break; } } catch(e) {}
+                                    }
+                                    
+                                    if (!dlItem) {
+                                        // Try hover → more_vert menu
+                                        await page.keyboard.press('Escape'); await sleep(500);
+                                        await tile.hover(); await sleep(1000);
+                                        const mb = tile.locator('button:has(i:text("more_vert")), button[aria-label*="menu"], button[aria-label*="thêm"]').first();
+                                        try { 
+                                            if (await mb.isVisible({ timeout: 2000 })) { 
+                                                await mb.click(); await sleep(2000); 
+                                                for (const txt of ['Tải xuống', 'Download', 'Tải về']) {
+                                                    const item = page.locator(`text="${txt}"`).first();
+                                                    try { if (await item.isVisible({ timeout: 1000 })) { dlItem = item; break; } } catch(e) {}
+                                                }
+                                            } 
+                                        } catch(e) {}
+                                    }
+                                    
+                                    if (dlItem) {
+                                        menuOk = true;
+                                        await dlItem.hover(); await sleep(2000);
+                                        // Try 1K or highest resolution
+                                        let resClicked = false;
+                                        for (const res of ['1K', '2K', '4K']) {
+                                            const resBtn = page.locator(`text="${res}"`).first();
+                                            try {
+                                                if (await resBtn.isVisible({ timeout: 1500 })) {
+                                                    await resBtn.hover(); await sleep(500); await resBtn.click();
+                                                    log(`Clicked ${res} download`);
+                                                    resClicked = true;
+                                                    break;
+                                                }
+                                            } catch(e) {}
+                                        }
+                                        if (!resClicked) { await dlItem.click(); }
+                                    }
                                 }
 
                                 if (menuOk) {
-                                    await dlItem.hover(); await sleep(2000);
-                                    const r1k = page.locator('text="1K"').first();
-                                    try {
-                                        if (await r1k.isVisible({ timeout: 3000 })) {
-                                            await r1k.hover(); await sleep(500); await r1k.click();
-                                            log('Clicked 1K download');
-                                        } else { await dlItem.click(); }
-                                    } catch(e) { await dlItem.click(); }
-
                                     for (let w = 0; w < 45 && !currentSaved && !dlUrl; w++) await sleep(1000);
 
                                     if (!currentSaved && dlUrl) {

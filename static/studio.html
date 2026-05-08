@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Content Studio — AI Drama Writer</title>
-    <link rel="stylesheet" href="/content-studio-static/studio.css?v=20260425_gallery_tab">
-    <link rel="stylesheet" href="/content-studio-static/flowchart.css?v=20260502">
+    <title>POD Studio — AI Campaign Writer</title>
+    <link rel="stylesheet" href="/pod-studio-static/studio.css?v=20260425_gallery_tab">
+    <link rel="stylesheet" href="/pod-studio-static/flowchart.css?v=20260502">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -14,7 +14,7 @@
         <header class="topbar">
             <div class="topbar-left">
                 <span class="topbar-icon">🎬</span>
-                <h1 class="topbar-title">Content Studio</h1>
+                <h1 class="topbar-title">POD Studio</h1>
                 <span class="topbar-badge" id="projectCount">0 projects</span>
             </div>
             <div class="topbar-right">
@@ -22,19 +22,19 @@
                     <span style="width:8px;height:8px;border-radius:50%;background:#666;flex-shrink:0;transition:background 0.3s;" id="aiModelDot"></span>
                     <span id="aiModelLabel" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">Loading...</span>
                 </div>
-                <a href="/content-studio/settings" class="btn btn-ghost" id="btnSettings">
+                <a href="/pod-studio/settings" class="btn btn-ghost" id="btnSettings">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     Settings
                 </a>
                 <button class="btn btn-ghost" onclick="toggleGalleryView()" id="btnGallery">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-                    Character Gallery
+                    Product & Model Gallery
                 </button>
                 <button class="btn btn-outline" onclick="togglePipelineView()" id="btnAutoPipeline" style="border-color: var(--accent); color: var(--accent);">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                     Pipeline Queue
                 </button>
-                <button class="btn btn-primary" onclick="showCreateDrama()">
+                <button class="btn btn-primary" onclick="showCreateCampaign()">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     New Project
                 </button>
@@ -52,7 +52,7 @@
                     <!-- Populated by JS -->
                 </div>
                 <div class="sidebar-bottom">
-                    <button class="btn btn-sm btn-ghost sidebar-new-btn" onclick="showCreateDrama()">
+                    <button class="btn btn-sm btn-ghost sidebar-new-btn" onclick="showCreateCampaign()">
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         New Project
                     </button>
@@ -64,9 +64,9 @@
                 <!-- Default state: Welcome -->
                 <div class="welcome-state" id="welcomeState">
                     <div class="welcome-icon">🎬</div>
-                    <h2 class="welcome-title">Content Studio</h2>
-                    <p class="welcome-desc">AI-powered drama & novel content creation platform.<br>Create a project to get started.</p>
-                    <button class="btn btn-primary btn-lg" onclick="showCreateDrama()">
+                    <h2 class="welcome-title">POD Studio</h2>
+                    <p class="welcome-desc">AI-powered campaign & novel content creation platform.<br>Create a project to get started.</p>
+                    <button class="btn btn-primary btn-lg" onclick="showCreateCampaign()">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         Create First Project
                     </button>
@@ -81,7 +81,7 @@
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
                             </button>
                             <div class="editor-identity">
-                                <h2 class="editor-title" id="editorTitle">Drama Title</h2>
+                                <h2 class="editor-title" id="editorTitle">Campaign Title</h2>
                                 <span class="editor-chip" id="editorChip">Episode 1</span>
                             </div>
                         </div>
@@ -193,7 +193,7 @@
                                 <div class="toolbar-right">
                                     <button class="btn btn-primary btn-sm" id="btnExtract" onclick="doExtract()">
                                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                                        Extract Characters & Scenes
+                                        Extract Models & Products & Scenes
                                     </button>
                                 </div>
                             </div>
@@ -202,18 +202,18 @@
                                     <div class="empty-visual">
                                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                                     </div>
-                                    <div class="empty-title">Extract Characters & Scenes</div>
+                                    <div class="empty-title">Extract Models & Products & Scenes</div>
                                     <div class="empty-desc">AI analyzes the script and extracts character profiles and scene locations with smart deduplication.</div>
                                     <button class="btn btn-primary" onclick="doExtract()">
                                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                                         Start Extraction
                                     </button>
                                 </div>
-                                <!-- Characters grid -->
+                                <!-- Models & Products grid -->
                                 <div class="extract-section" id="charsSection" style="display:none">
                                     <div class="extract-section-head">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                        <span>Characters</span>
+                                        <span>Models & Products</span>
                                         <span class="tag tag-accent" id="charsCount">0</span>
                                     </div>
                                     <div class="extract-grid" id="charsGrid"></div>
@@ -227,14 +227,47 @@
                                     </div>
                                     <div class="extract-grid" id="scenesGrid"></div>
                                 </div>
+
+                                <!-- Scene Panorama (single location image) -->
+                                <div class="extract-section" id="panoramaSection" style="display:none">
+                                    <div class="extract-section-head">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                                        <span>Scene Panorama</span>
+                                        <span class="tag tag-accent">spatial map</span>
+                                        <div style="margin-left:auto; display:flex; gap:6px;">
+                                            <button class="btn btn-sm btn-ghost" onclick="copyPanoramaPrompt()" title="Copy AI prompt to generate a full Production Design Board with character angles, environment, storyboard cuts, floor plan + camera map">📋 Copy Board Prompt</button>
+                                            <button class="btn btn-sm btn-ghost" onclick="triggerPanoramaUpload()">📷 Upload</button>
+                                        </div>
+                                    </div>
+                                    <div id="panoramaUploadZone" class="panorama-upload-zone" onclick="triggerPanoramaUpload()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="event.preventDefault();this.classList.remove('drag-over');handlePanoramaDrop(event)">
+                                        <div id="panoramaContent">
+                                            <div class="panorama-placeholder">
+                                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                                                <span>Drop panoramic scene image here or click to upload</span>
+                                                <span style="font-size:11px;color:var(--text-3);">This image will be used as the spatial map for camera blocking</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="panoramaLocationInfo" style="display:none; margin-top:8px; padding:8px 12px; background:var(--bg-2); border-radius:8px; border:1px solid var(--border);">
+                                        <div style="display:flex; gap:12px; align-items:center; font-size:12px; color:var(--text-2);">
+                                            <span>📍 <span id="panoramaLocationName">—</span></span>
+                                            <span>🕐 <span id="panoramaLocationTime">—</span></span>
+                                            <span>🎨 <span id="panoramaLocationMood">—</span></span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
                         <!-- Step 3: Storyboard -->
                         <div class="step-panel" id="stepStoryboard" style="display:none">
                             <div class="step-toolbar">
-                                <div class="toolbar-left">
+                                <div class="toolbar-left" style="display:flex; align-items:center;">
                                     <span class="char-count" id="sbCount"></span>
+                                    <div class="view-toggles" id="sbViewToggles" style="display:none; margin-left: 12px; gap: 4px; background: var(--bg-2); padding: 2px; border-radius: 6px; border: 1px solid var(--border);">
+                                        <button class="btn btn-sm" id="btnViewBoard" onclick="toggleSbView('board')" style="background: var(--bg-0); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,0.2);">📊 Board</button>
+                                        <button class="btn btn-sm btn-ghost" id="btnViewList" onclick="toggleSbView('list')" style="color: var(--text-3);">📋 List</button>
+                                    </div>
                                 </div>
                                 <div class="toolbar-right">
 
@@ -259,6 +292,29 @@
                                     AI Storyboard
                                 </button>
                             </div>
+                            <div id="gridConceptPanel" style="display:none; margin-bottom:20px; padding:15px; border:1px solid var(--border); border-radius:8px; background:var(--bg-1);">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                    <div>
+                                        <div style="font-weight:600; font-size:14px; color:var(--text-1);">🎨 Master Concept Grid</div>
+                                        <div style="font-size:11px; color:var(--text-3);">Generates a single collage image for character consistency across shots.</div>
+                                    </div>
+                                    <div style="display:flex; gap:8px;">
+                                        <button class="btn btn-sm btn-outline" title="Copy Prompt" onclick="copyGridPrompt()">📝 Copy Prompt</button>
+                                        <label class="btn btn-sm btn-outline" style="cursor:pointer; margin:0;" title="Upload Image Manually">
+                                            <input type="file" style="display:none;" id="uploadGridFile" accept="image/*" onchange="uploadGridManual(event)">
+                                            📤 Upload
+                                        </label>
+                                        <button class="btn btn-sm btn-outline" id="btnGenGrid" onclick="generateGridConcept()">Gen Grid Image</button>
+                                        <button class="btn btn-sm btn-primary" id="btnSliceGrid" onclick="sliceGridConcept()" style="display:none;">✂️ Auto-Slice & Apply</button>
+                                    </div>
+                                </div>
+                                <div id="gridImageContainer" style="width:100%; min-height:60px; display:flex; align-items:center; justify-content:center; background:var(--bg-2); border-radius:6px; overflow:hidden; position:relative;">
+                                    <div id="gridImagePlaceholder" style="color:var(--text-3); font-size:12px; padding:20px;">No grid generated yet</div>
+                                    <img id="gridImagePreview" src="" style="width:100%; display:none;">
+                                </div>
+                            </div>
+                            
+                            <div id="productionBoard" class="production-board" style="display:none"></div>
                             <div class="sb-list" id="sbList" style="display:none"></div>
                         </div>
 
@@ -665,7 +721,7 @@
                                 </div>
                                 
                                 <!-- Hidden config fields -->
-                                <input type="hidden" id="apPipeline" value="drama_scene">
+                                <input type="hidden" id="apPipeline" value="campaign_scene">
                                 <input type="hidden" id="apLanguage" value="vi">
                                 <input type="hidden" id="apContentFormat" value="Educational / Learning">
                                 <input type="hidden" id="apMaxEpisodes" value="1">
@@ -708,7 +764,7 @@
                 </div>
             </main>
 
-            <!-- ===== Character Gallery View (Main Panel Tab) ===== -->
+            <!-- ===== Product & Model Gallery View (Main Panel Tab) ===== -->
             <main class="main-panel" id="galleryView" style="display:none; flex-direction: row; padding: 0; background: var(--bg-0);">
                 <!-- Gallery Sidebar -->
                 <aside class="gallery-sidebar">
@@ -717,7 +773,7 @@
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
                         </div>
                         <div>
-                            <div class="gallery-sidebar-title">Character Gallery</div>
+                            <div class="gallery-sidebar-title">Product & Model Gallery</div>
                             <div class="gallery-sidebar-desc">Thư viện nhân vật tham chiếu</div>
                         </div>
                     </div>
@@ -746,7 +802,7 @@
                 <div class="gallery-main">
                     <div class="gallery-main-header">
                         <div class="gallery-main-header-left">
-                            <h2 class="gallery-main-title" id="galleryCurrentCategoryName">All Characters</h2>
+                            <h2 class="gallery-main-title" id="galleryCurrentCategoryName">All Models & Products</h2>
                             <span class="gallery-main-count" id="galleryItemCount">0 characters</span>
                         </div>
                         <div class="gallery-main-header-right">
@@ -756,7 +812,7 @@
                             </div>
                             <button class="btn btn-primary" onclick="showGalleryItemModal()" id="btnNewCharItem">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                                Add Character
+                                Add Model/Product
                             </button>
                         </div>
                     </div>
@@ -801,7 +857,7 @@
             <div class="overlay" id="galleryItemModal" style="display:none">
                 <div class="modal card" style="max-width: 800px; width: 90%;">
                     <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
-                        <h2 class="modal-title" id="galItemModalTitle">Add Character</h2>
+                        <h2 class="modal-title" id="galItemModalTitle">Add Model/Product</h2>
                         <button class="btn btn-outline" style="padding: 4px 8px; border: none; font-size: 16px; background: transparent; color: var(--text-2);" onclick="document.getElementById('galleryItemModal').style.display='none'">✕</button>
                     </div>
                     <div class="modal-form" style="padding: 20px; display:flex; flex-direction:row; gap:24px;">
@@ -867,16 +923,48 @@
                                 </div>
                             </div>
 
+                            <!-- ⭐ Primary Product Toggle -->
+                            <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--bg-2); cursor:pointer;" id="galItemPrimaryToggle" onclick="togglePrimaryProduct()">
+                                <span id="galItemPrimaryStar" style="font-size:20px; transition:all 0.2s;">☆</span>
+                                <div>
+                                    <div style="font-size:12px; font-weight:600; color:var(--text-1);" id="galItemPrimaryLabel">Mark as Primary Product</div>
+                                    <div style="font-size:10px; color:var(--text-3);">AI sẽ focus vào sản phẩm này, giữ nguyên ảnh gốc & mô tả chính xác trong mọi shot.</div>
+                                </div>
+                                <input type="hidden" id="galItemIsPrimary" value="0">
+                            </div>
+
                             <div style="display:flex; gap:12px;">
                                 <div class="form-group" style="flex:1;">
                                     <label class="form-label">Type</label>
                                     <select id="galItemCharType" class="input">
-                                        <optgroup label="👥 Characters">
+                                        <optgroup label="👥 Models & Products">
                                             <option value="individual">👤 Individual</option>
                                             <option value="duo">👥 Duo / Pair</option>
                                             <option value="friend_group">🤝 Friend Group</option>
                                             <option value="crowd">👨‍👩‍👧‍👦 Crowd / Many</option>
                                             <option value="creature">🐾 Creature / Pet</option>
+                                        </optgroup>
+                                        <optgroup label="👗 Costume & Fabric">
+                                            <option value="costume_full">👗 Full Costume Set</option>
+                                            <option value="fabric_swatch">🧵 Fabric Swatch / Material</option>
+                                            <option value="pattern_design">🎨 Pattern / Embroidery Design</option>
+                                        </optgroup>
+                                        <optgroup label="💎 Accessories & Jewelry">
+                                            <option value="hair_accessory">💇 Hair Accessory</option>
+                                            <option value="earring">💎 Earring / Jewelry</option>
+                                            <option value="necklace">📿 Necklace / Pendant</option>
+                                            <option value="bracelet">⌚ Bracelet / Bangle</option>
+                                            <option value="other_accessory">🎀 Other Accessory</option>
+                                        </optgroup>
+                                        <optgroup label="🏛️ Environment & Scene">
+                                            <option value="location">🏛️ Location / Setting</option>
+                                            <option value="architecture">🏠 Architecture Detail</option>
+                                            <option value="nature">🌿 Nature / Landscape</option>
+                                        </optgroup>
+                                        <optgroup label="💡 Lighting & Mood">
+                                            <option value="lighting_ref">💡 Lighting Reference</option>
+                                            <option value="color_palette">🎨 Color Palette</option>
+                                            <option value="mood_board">🌫️ Mood Board</option>
                                         </optgroup>
                                         <optgroup label="📊 Graphic / Assets">
                                             <option value="chart">📊 Chart (Pie, Bar, Line)</option>
@@ -929,6 +1017,17 @@
                             <div class="form-group">
                                 <label class="form-label">Appearance Details</label>
                                 <textarea id="galItemAppearance" class="input" rows="4" placeholder="Detailed visual description..."></textarea>
+                            </div>
+
+                            <div style="display:flex; gap:12px;">
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">🧵 Fabric & Material</label>
+                                    <textarea id="galItemFabric" class="input" rows="2" placeholder="e.g. White silk (白色真丝绸), Chiffon organza, Matte cloud silk + sheer smoke gauze..."></textarea>
+                                </div>
+                                <div class="form-group" style="flex:1;">
+                                    <label class="form-label">💎 Accessory Material</label>
+                                    <textarea id="galItemAccessoryMaterial" class="input" rows="2" placeholder="e.g. White jade carved hairpin, Pearl & crystal inlay, Moonlight glass tassel..."></textarea>
+                                </div>
                             </div>
 
                             <div class="form-group">
@@ -1111,7 +1210,7 @@
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
                         </div>
                         <div>
-                            <h2 class="modal-title" id="wizardTitle">New Drama Project</h2>
+                            <h2 class="modal-title" id="wizardTitle">New Campaign Project</h2>
                             <p class="modal-desc" id="wizardDesc" style="display:none">Step 1: Project Information</p>
                         </div>
                     </div>
@@ -1157,7 +1256,7 @@
                             <label class="field" style="flex: 1.5;">
                                 <span class="field-label">Content Format <span class="required">*</span></span>
                                 <select id="wizContentFormat" class="input">
-                                    <option value="Drama / Narrative" selected>🎬 Phim / Drama (Mặc định)</option>
+                                    <option value="Campaign / Narrative" selected>🎬 Phim / Campaign (Mặc định)</option>
                                     <option value="Commercial / Advertisement">🛒 Quảng cáo / Thương hiệu</option>
                                     <option value="Podcast / Talkshow">🎙️ Podcast / Talkshow</option>
                                     <option value="Educational / Learning">📚 Giáo dục / Bài giảng</option>
@@ -1250,7 +1349,19 @@
                         </div>
                         <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
                             <label class="field" style="flex: 1;">
-                                <span class="field-label" style="font-size:11px;">👥 Character Gallery</span>
+                                <span class="field-label" style="font-size:11px;">🎬 Scene Gen Mode</span>
+                                <select id="wizSceneGenMode" class="input" onchange="onSceneGenModeChange()">
+                                    <option value="per_shot">Per-Shot Screen (Mặc định)</option>
+                                    <option value="panoramic_grid">🖼️ Scene Panoramic Grid</option>
+                                </select>
+                            </label>
+                            <label class="field" style="flex: 2;">
+                                <span class="field-label" style="font-size:11px; color:var(--text-3);" id="wizSceneGenModeHint">Mỗi shot tạo ảnh riêng lẻ qua AI.</span>
+                            </label>
+                        </div>
+                        <div class="field-row" style="display:flex;gap:10px; margin-bottom: 12px;">
+                            <label class="field" style="flex: 1;">
+                                <span class="field-label" style="font-size:11px;">👥 Product & Model Gallery</span>
                                 <select id="wizGalleryCategory" class="input">
                                     <option value="">None (AI generates new)</option>
                                     <!-- Populated by JS -->
@@ -1343,8 +1454,8 @@
                         <label class="field">
                             <span class="field-label">🔧 Pipeline Template</span>
                             <select id="wizPipelineTemplate" class="input" onchange="wizUpdatePipelinePreview()">
-                                <option value="drama_scene">🎞 Drama Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video)</option>
-                                <option value="drama_full">📺 Drama Slideshow (Raw → Rewrite → Extract → Storyboard → Images → Audio → Video)</option>
+                                <option value="campaign_scene">🎞 Campaign Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video)</option>
+                                <option value="campaign_full">📺 Campaign Slideshow (Raw → Rewrite → Extract → Storyboard → Images → Audio → Video)</option>
                                 <option value="audio_story">🎧 Audio Story (Raw → Rewrite → Audio → Video)</option>
                                 <option value="content_only">📝 Content Only (Raw → Rewrite)</option>
                                 <option value="custom">🎬 Custom (chọn steps)</option>
@@ -1887,7 +1998,7 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/content-studio-static/studio2.js?v=20260427_profilepicker"></script>
-    <script src="/content-studio-static/flowchart.js?v=20260502"></script>
+    <script src="/pod-studio-static/studio2.js?v=20260427_profilepicker"></script>
+    <script src="/pod-studio-static/flowchart.js?v=20260502"></script>
 </body>
 </html>

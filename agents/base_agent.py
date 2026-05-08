@@ -1,12 +1,12 @@
 """
-Content Studio Base Agent
+POD Studio Base Agent
 OpenAI-compatible AI agent with SSE streaming support.
 """
 import json
 import logging
 from typing import AsyncGenerator, List, Dict, Any, Optional
 
-logger = logging.getLogger("ContentStudio.Agent")
+logger = logging.getLogger("PodStudio.Agent")
 
 # Language-specific system prompt appendages
 LANGUAGE_PROMPTS = {
@@ -21,7 +21,7 @@ LANGUAGE_PROMPTS = {
 
 
 class ContentAgent:
-    """Base class for Content Studio AI agents.
+    """Base class for POD Studio AI agents.
     Uses httpx to call OpenAI-compatible API with SSE streaming."""
 
     def __init__(self, agent_type: str, system_prompt: str):
@@ -36,18 +36,18 @@ class ContentAgent:
         base_prompt = self.system_prompt
 
         # ── Skill-based Format Override ──
-        # Instead of hacking/neutering the drama prompt, load a dedicated
+        # Instead of hacking/neutering the campaign prompt, load a dedicated
         # skill template that REPLACES the system prompt entirely.
         if context:
-            content_format = context.get("content_format", "Drama / Narrative")
-            if content_format and "Drama" not in content_format and "Phim" not in content_format:
+            content_format = context.get("content_format", "Ad Campaign / Narrative")
+            if content_format and "Ad Campaign" not in content_format and "Phim" not in content_format:
                 skill_prompt = self._load_format_skill(content_format)
                 if skill_prompt:
                     base_prompt = skill_prompt
                     logger.info(f"[{self.agent_type}] Loaded skill template for: {content_format}")
                 else:
                     # Fallback: generic override if no skill file found
-                    base_prompt += f"\n\n## CRITICAL FORMAT OVERRIDE\nThe user requested CONTENT FORMAT: [{content_format}]. ADAPT your output completely to this format instead of a standard drama."
+                    base_prompt += f"\n\n## CRITICAL FORMAT OVERRIDE\nThe user requested CONTENT FORMAT: [{content_format}]. ADAPT your output completely to this format instead of a standard campaign."
                     logger.warning(f"[{self.agent_type}] No skill file for '{content_format}', using generic override")
 
         # ── Gallery-First Injection ──
@@ -73,7 +73,7 @@ class ContentAgent:
                     "\n\n## GALLERY-FIRST CHARACTER SELECTION (HIGHEST PRIORITY)\n"
                     "You have a CHARACTER GALLERY with pre-defined characters. "
                     "You MUST follow this strict selection algorithm:\n\n"
-                    "### Available Gallery Characters:\n"
+                    "### Available Gallery Models & Products:\n"
                     f"{roster_text}\n\n"
                     "### Selection Rules:\n"
                     "1. **GALLERY FIRST**: For EVERY character or visual actor in the script, "
@@ -353,7 +353,7 @@ class ContentAgent:
         """Load a dedicated system prompt from a format skill JSON file.
         
         Skill files live in agents/format_skills/*.json and contain
-        per-agent system prompts that REPLACE the default drama prompts entirely.
+        per-agent system prompts that REPLACE the default campaign prompts entirely.
         """
         import os
         
@@ -492,3 +492,82 @@ class ContentAgent:
             if chunk != "\x00REASONING\x00":
                 result.append(chunk)
         return "".join(result)
+
+    async def chat_stream_with_vision(self, user_message: str, image_b64: str,
+                                       language: str, base_url: str, api_key: str,
+                                       model: str, temperature: float = 0.7,
+                                       context: Optional[dict] = None,
+                                       image_mime: str = "image/jpeg") -> AsyncGenerator[str, None]:
+        """Stream AI response with vision (image input) support.
+        Uses OpenAI-compatible multimodal message format."""
+        import httpx
+
+        messages = self._build_messages(user_message, language, context)
+
+        # Convert the last user message to multimodal format with image
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                text_content = messages[i]["content"]
+                messages[i]["content"] = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{image_mime};base64,{image_b64}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": text_content
+                    }
+                ]
+                break
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 16384,
+            "stream": True,
+        }
+
+        try:
+            t = httpx.Timeout(connect=60.0, read=600.0, write=60.0, pool=60.0)
+            async with httpx.AsyncClient(timeout=t) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        body_text = body.decode(errors="replace")[:500]
+                        yield f"❌ [VISION ERROR] HTTP {response.status_code}: {body_text}"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            reasoning = delta.get("reasoning_content", "")
+                            if reasoning:
+                                yield "\x00REASONING\x00"
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            logger.error(f"Vision streaming error: {e}")
+            yield f"❌ [VISION ERROR] {str(e)[:300]}"
+
