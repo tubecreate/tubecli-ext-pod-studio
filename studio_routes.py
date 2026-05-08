@@ -1466,6 +1466,13 @@ async def _autopilot_runner(campaign_id: int):
                         pass
                 
                 if isinstance(parsed_array, list) and len(parsed_array) > 0:
+                    is_panorama = meta.get("scene_gen_mode") == "panorama"
+                    pano_cuts = meta.get("panorama_cuts", [])
+                    if is_panorama and pano_cuts:
+                        for i, shot in enumerate(parsed_array):
+                            if i < len(pano_cuts):
+                                shot["reference_images"] = json.dumps([pano_cuts[i]])
+                                
                     _db().save_storyboards_bulk(ep_id, parsed_array, append=False)
                     logger.info(f"Autopilot: Saved {len(parsed_array)} storyboard shots for episode {ep_id}")
                 else:
@@ -1887,6 +1894,25 @@ async def upload_panorama(episode_id: int, request: Request):
 
     _db().update_episode(episode_id, {"metadata": json.dumps(meta)})
     logger.info(f"Panorama uploaded for episode {episode_id}: {filename}")
+
+    # Auto-split panorama if applicable
+    try:
+        import board_splitter
+        prefix = f"ep{episode_id}_{timestamp}_"
+        split_res = board_splitter.split_production_board(filepath, output_dir=ref_dir, prefix=prefix)
+        # Collect generated relative URLs
+        cuts = []
+        for c in split_res.get("storyboard_cuts", []):
+            cuts.append(f"/api/v1/pod_studio/references/{c['filename']}")
+        meta["panorama_cuts"] = cuts
+        
+        if "zone5_floorplan" in split_res.get("zones", {}):
+            meta["panorama_floorplan"] = f"/api/v1/pod_studio/references/{split_res['zones']['zone5_floorplan']['filename']}"
+            
+        _db().update_episode(episode_id, {"metadata": json.dumps(meta)})
+        logger.info(f"Panorama auto-split successful for episode {episode_id}. Found {len(cuts)} cuts.")
+    except Exception as e:
+        logger.error(f"Failed to split panorama: {e}")
 
     return {
         "success": True,
@@ -3506,7 +3532,18 @@ async def generate_storyboard(episode_id: int, request: Request):
                     # ── Incremental save: save this chunk's shots immediately ──
                     # So if a later chunk fails, these shots are already in DB
                     try:
-                        for _cs in shots:
+                        ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+                        is_panorama = ep_meta.get("scene_gen_mode") == "panorama"
+                        pano_cuts = ep_meta.get("panorama_cuts", [])
+                        
+                        for _cs_idx, _cs in enumerate(shots):
+                            # Assign reference images from cuts if applicable
+                            global_idx = len(all_shots) - len(shots) + _cs_idx
+                            if is_panorama and pano_cuts and global_idx < len(pano_cuts):
+                                _cs["reference_images"] = json.dumps([pano_cuts[global_idx]])
+                            else:
+                                _cs["reference_images"] = "[]"
+                                
                             _cs_names = _cs.get("character_names", [])
                             _cs_ids = []
                             for _cn in (_cs_names or []):

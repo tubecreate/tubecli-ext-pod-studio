@@ -639,7 +639,7 @@ class JsonStore:
                 "narration_text": sb_data.get("narration_text", ""),
                 "duration": sb_data.get("duration", 10),
                 "composed_image": "", "first_frame_image": "", "last_frame_image": "",
-                "reference_images": "[]", "video_url": "",
+                "reference_images": sb_data.get("reference_images", "[]"), "video_url": "",
                 "tts_audio_url": "", "subtitle_url": "", "composed_video_url": "",
                 "status": "pending",
                 "character_ids": sb_data.get("character_ids", []),
