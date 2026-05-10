@@ -16,9 +16,45 @@ logger = logging.getLogger("PodStudio.Routes")
 
 router = APIRouter()
 
+# ── Extension directory for static files ──
+_ext_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+# ── Static Pages ────────────────────────────────────────────
+
+@router.get("/pod-studio", include_in_schema=False, response_class=HTMLResponse)
+async def pod_studio_page():
+    """Serve the POD Studio HTML page."""
+    html_path = os.path.join(_ext_dir, "static", "studio.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h1>POD Studio – HTML not found</h1>", status_code=404)
+
+
+@router.get("/pod-studio-static/{filepath:path}", include_in_schema=False)
+async def pod_studio_static(filepath: str):
+    """Serve static files (CSS, JS) for the POD Studio UI."""
+    file_path = os.path.join(_ext_dir, "static", filepath)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(404, f"Static file not found: {filepath}")
+
+
+@router.get("/pod-studio/settings", include_in_schema=False, response_class=HTMLResponse)
+async def pod_studio_settings_page():
+    """Serve the POD Studio Settings HTML page."""
+    html_path = os.path.join(_ext_dir, "static", "settings.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h1>POD Studio Settings – HTML not found</h1>", status_code=404)
+
+
 # Gallery item type classification for injection logic
 CHARACTER_TYPES = {"individual", "duo", "crowd", "group", "couple", "family"}
 ASSET_TYPES = {"chart", "diagram", "infographic", "table", "screenshot", "object", "screen"}
+ENVIRONMENT_TYPES = {"location", "architecture", "interior_design", "exterior", "nature", "lighting_ref", "color_palette", "mood_board"}
 EFFECT_TYPES = {"holographic", "thought_bubble", "overlay", "transition", "particle", "glow", "data_panel"}
 
 
@@ -847,6 +883,7 @@ async def _autopilot_runner(campaign_id: int):
                 "title": title
             })
             ep_id = new_ep["id"]
+            logger.info(f"Autopilot: created/got ep_id={ep_id}, ep_num={ep_num}")
 
             # Context for continuity and visual styles
             content_format = meta.get("content_format", "Ad Campaign / Narrative")
@@ -890,6 +927,25 @@ async def _autopilot_runner(campaign_id: int):
                             "number": prev.get("episode_number", idx),
                             "ending_script_context": prev_script[-3000:]
                         }
+
+            # Inject spatial continuity context from series outline
+            shared_spatial_map = outline.get("shared_spatial_map")
+            if shared_spatial_map:
+                context["shared_spatial_map"] = shared_spatial_map
+                context["spatial_zone"] = ep_plan.get("spatial_zone", "")
+                context["camera_start_position"] = ep_plan.get("camera_start_position", "")
+                context["camera_end_position"] = ep_plan.get("camera_end_position", "")
+                context["total_episodes"] = total
+                context["current_episode_number"] = idx + 1
+                # Find connection info for this zone
+                zone_id = ep_plan.get("spatial_zone", "")
+                zones = shared_spatial_map.get("zones", [])
+                for z in zones:
+                    if z.get("zone_id") == zone_id:
+                        context["current_zone_description"] = z.get("description", "")
+                        context["zone_connection"] = z.get("connection_description", "")
+                        break
+                logger.info(f"Autopilot: spatial context injected — zone={zone_id}, ep {idx+1}/{total}")
 
             # 2. Flow: Novel Writer
             _novel_prompt = f"Episode Title: {title}\nPlot Outline: {plot_outline}"
@@ -1040,6 +1096,7 @@ async def _autopilot_runner(campaign_id: int):
             # SKIP for formats that have no characters at all
             # Note: Presentation format NOW has a Presenter character, so do NOT skip
             _skip_ref_images = False
+            _scene_gen_mode = meta.get("scene_gen_mode", "per_shot")  # Set early so 4d always has it
             if _skip_ref_images:
                 logger.info(f"Autopilot: Skipping char/scene image gen for Presentation format (handled at step 5b)")
             
@@ -1053,14 +1110,14 @@ async def _autopilot_runner(campaign_id: int):
                 if _fresh_campaign:
                     _fresh_meta = json.loads(_fresh_campaign.get("metadata", "{}") or "{}")
                     # Merge fresh settings into current meta (keep autopilot_status etc.)
-                    for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video"):
+                    for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video", "image_engine", "image_browser_profile"):
                         if _fk in _fresh_meta:
                             meta[_fk] = _fresh_meta[_fk]
                 
                 # Get browser profile, aspect ratio, and engine from campaign metadata
-                char_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                char_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                 char_aspect_ratio = meta.get("aspect_ratio", "16:9")
-                image_engine = meta.get("video_engine", "grok")  # Use same engine as video
+                image_engine = meta.get("image_engine") or meta.get("video_engine", "grok")  # Separate image engine
                 logger.info(f"Autopilot image engine from metadata: '{image_engine}'")
                 all_chars = _db().list_characters(campaign_id)
                 def _has_real_image(url):
@@ -1076,9 +1133,15 @@ async def _autopilot_runner(campaign_id: int):
                 chars_needing_images = [c for c in all_chars if c.get("appearance", "").strip() and not _has_real_image(c.get("image_url", ""))]
                 
                 # Also collect scenes needing images for batch mode
+                # SKIP individual scene image gen in panorama mode — panorama handles scenes
+                _scene_gen_mode = meta.get("scene_gen_mode", "per_shot")
                 scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
                 all_scenes = _db().list_scenes(campaign_id)
-                scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
+                if _scene_gen_mode == "panoramic_grid":
+                    scenes_needing_images = []  # Panorama mode: skip individual scene image gen
+                    logger.info(f"Autopilot: Panorama mode — skipping individual scene image gen")
+                else:
+                    scenes_needing_images = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
                 total_images_needed = len(chars_needing_images) + len(scenes_needing_images)
                 
                 logger.info(f"Autopilot image gen: ep {ep_num}, all_chars={len(all_chars)}, chars_need={len(chars_needing_images)}, all_scenes={len(all_scenes)}, scenes_need={len(scenes_needing_images)}, engine={image_engine}")
@@ -1090,11 +1153,63 @@ async def _autopilot_runner(campaign_id: int):
                     for s in all_scenes[:3]:
                         logger.info(f"  DEBUG scene '{s.get('location','')[:30]}': location={bool(s.get('location','').strip())}, image_url={bool(s.get('image_url','').strip())}")
                 
-                if total_images_needed > 0 and image_engine == 'veo3':
-                    # ─── VEO3 BATCH MODE: 1 browser, 1 project, all images ───
-                    logger.info(f"Autopilot: BATCH generating {total_images_needed} images via Veo3")
-                    meta["autopilot_status"] = f"running {idx+1}/{total} - batch gen {total_images_needed} images (Veo3)"
-                    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                logger.info(f"Autopilot: total_images_needed={total_images_needed}, image_engine={image_engine}, _scene_gen_mode={_scene_gen_mode}")
+                if total_images_needed > 0 and image_engine in ('veo3', 'chatgpt'):
+                    if image_engine == 'chatgpt':
+                        # ─── CHATGPT BATCH MODE ───
+                        logger.info(f"Autopilot: BATCH generating {total_images_needed} images via ChatGPT")
+                        meta["autopilot_status"] = f"running {idx+1}/{total} - batch gen {total_images_needed} images (ChatGPT)"
+                        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                        
+                        import sys as _sys_chatgpt_char
+                        _engines_dir_c = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines")
+                        if _engines_dir_c not in _sys_chatgpt_char.path:
+                            _sys_chatgpt_char.path.insert(0, _engines_dir_c)
+                        from chatgpt_image_engine import batch_generate as chatgpt_char_batch
+                        
+                        # Build fake shots from chars + scenes
+                        chatgpt_char_jobs = []
+                        for c in chars_needing_images:
+                            chatgpt_char_jobs.append({
+                                "id": c["id"],
+                                "image_prompt": f"{c.get('name','Character')}: {c.get('appearance','')}"
+                            })
+                        for s in scenes_needing_images:
+                            chatgpt_char_jobs.append({
+                                "id": s["id"],
+                                "image_prompt": f"Scene: {s.get('location','')}"
+                            })
+                        
+                        async def _chatgpt_char_progress(done, total_s, shot_id, status, path=None):
+                            meta["autopilot_status"] = f"running {idx+1}/{total} - img {done}/{total_s} (ChatGPT)"
+                            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                        
+                        chatgpt_char_results = await chatgpt_char_batch(
+                            shots=chatgpt_char_jobs,
+                            profile_name=char_profile,
+                            episode_id=ep_id,
+                            headless=False,
+                            overwrite=False,
+                            progress_callback=_chatgpt_char_progress,
+                        )
+                        
+                        # Update DB with results
+                        for r in chatgpt_char_results:
+                            if r.get("status") == "success" and r.get("path"):
+                                sid = r["shot_id"]
+                                # Check if it's a char or scene
+                                if any(c["id"] == sid for c in chars_needing_images):
+                                    _db().update_character(sid, {"image_url": r["path"]})
+                                else:
+                                    _db().update_scene(sid, {"image_url": r["path"]})
+                        
+                        _chatgpt_ok = sum(1 for r in chatgpt_char_results if r.get("status") == "success")
+                        logger.info(f"ChatGPT char/scene batch: {_chatgpt_ok}/{total_images_needed} OK")
+                    else:
+                        # ─── VEO3 BATCH MODE: 1 browser, 1 project, all images ───
+                        logger.info(f"Autopilot: BATCH generating {total_images_needed} images via Veo3")
+                        meta["autopilot_status"] = f"running {idx+1}/{total} - batch gen {total_images_needed} images (Veo3)"
+                        _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
                     
                     from pathlib import Path
                     batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
@@ -1197,7 +1312,7 @@ async def _autopilot_runner(campaign_id: int):
                         try: os.remove(jobs_file)
                         except: pass
                 
-                elif chars_needing_images and image_engine != 'veo3':
+                elif chars_needing_images and image_engine not in ('veo3', 'chatgpt'):
                     # ─── GROK PER-IMAGE MODE (legacy) ───
                     logger.info(f"Autopilot: generating ref images for {len(chars_needing_images)} chars (grok)")
                     from pathlib import Path
@@ -1255,92 +1370,36 @@ async def _autopilot_runner(campaign_id: int):
                 import traceback
                 logger.error(f"Autopilot char image gen error: {e}\n{traceback.format_exc()}")
 
-              # 4c. Flow: Check for remaining scenes without images (handles batch failures)
-              meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
-              _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
-            
+              # 4c. Flow: Check for remaining scenes without images
               try:
-                scene_engine = meta.get("video_engine", "grok")
-                scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
-                scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
-                scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
-                
-                # Re-check scenes from DB (batch may have partially completed)
-                all_scenes = _db().list_scenes(campaign_id)
-                remaining_scenes = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
-                
-                if remaining_scenes:
-                    logger.info(f"Autopilot: {len(remaining_scenes)} scenes still need images after batch (engine={scene_engine})")
-                    meta["autopilot_status"] = f"running {idx+1}/{total} - gen remaining {len(remaining_scenes)} scene images"
+                if _scene_gen_mode == "panoramic_grid":
+                    logger.info(f"Autopilot: Panorama mode - skipping scene retry (4c)")
+                else:
+                    meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
                     _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
-                    
-                    from pathlib import Path
-                    top_dir = Path(_ext_dir).parents[2]
-                    browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
-                    try:
-                        from tubecli.config import DATA_DIR
-                        profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
-                    except:
-                        profiles_dir = str(top_dir / "data" / "browser_profiles")
-                    ref_dir = _get_ref_dir()
-                    from datetime import datetime as _dt
-                    
-                    if scene_engine == 'veo3':
-                        # Retry remaining scenes via batch
-                        batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
-                        retry_jobs = []
-                        retry_scene_map = {}
-                        for scene_obj in remaining_scenes:
-                            sid = scene_obj["id"]
-                            slocation = scene_obj.get("location", "Unknown")
-                            stime = scene_obj.get("time", "")
-                            sdesc = scene_obj.get("description", "")
-                            scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
-                            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-                            out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
-                            job_id = f"scene_{sid}"
-                            retry_jobs.append({"id": job_id, "prompt": scene_prompt, "output": out_path})
-                            retry_scene_map[job_id] = scene_obj
-                        
-                        jobs_file = os.path.join(ref_dir, "_batch_retry_jobs.json")
-                        with open(jobs_file, "w", encoding="utf-8") as f:
-                            json.dump(retry_jobs, f, ensure_ascii=False)
-                        
-                        cmd = ["node", batch_script, "--profile", scene_profile, "--jobs", jobs_file, "--profiles-dir", profiles_dir, "--aspect-ratio", scene_aspect_ratio, "--timeout", "120"]
-                        env = os.environ.copy()
-                        env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+                    scene_engine = meta.get("video_engine", "grok")
+                    scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                    scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
+                    scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
+                    all_scenes = _db().list_scenes(campaign_id)
+                    remaining_scenes = [s for s in all_scenes if s.get("location", "").strip() and not _has_real_image(s.get("image_url", ""))]
+                    if remaining_scenes:
+                        logger.info(f"Autopilot: {len(remaining_scenes)} scenes still need images (engine={scene_engine})")
+                        from pathlib import Path
+                        top_dir = Path(_ext_dir).parents[2]
+                        browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
                         try:
-                            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=browser_ext_dir, env=env)
-                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150 * len(retry_jobs))
-                            stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
-                            for line in stdout_text.splitlines():
-                                line = line.strip()
-                                if not line.startswith("{"): continue
-                                try:
-                                    result = json.loads(line)
-                                    rid = result.get("id", "")
-                                    if result.get("status") == "success" and rid in retry_scene_map:
-                                        rpath = result.get("path", "")
-                                        if os.path.exists(rpath):
-                                            _db().update_scene(retry_scene_map[rid]["id"], {"image_url": rpath})
-                                            logger.info(f"  ✓ Retry scene: {retry_scene_map[rid].get('location', '')[:30]}")
-                                except: pass
-                        except Exception as be:
-                            logger.error(f"Retry batch error: {be}")
-                        finally:
-                            try: os.remove(jobs_file)
-                            except: pass
-                    else:
-                        # Grok per-image mode
+                            from tubecli.config import DATA_DIR
+                            profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+                        except:
+                            profiles_dir = str(top_dir / "data" / "browser_profiles")
+                        ref_dir = _get_ref_dir()
+                        from datetime import datetime as _dt
                         gen_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
                         for si, scene_obj in enumerate(remaining_scenes):
                             sid = scene_obj["id"]
                             slocation = scene_obj.get("location", "Unknown")
-                            stime = scene_obj.get("time", "")
-                            sdesc = scene_obj.get("description", "")
-                            meta["autopilot_status"] = f"running {idx+1}/{total} - scene ref {si+1}/{len(remaining_scenes)}: {slocation[:30]}"
-                            _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
-                            scene_prompt = _build_scene_ref_prompt(slocation, stime, sdesc, scene_visual_style, scene_aspect_ratio)
+                            scene_prompt = _build_scene_ref_prompt(slocation, scene_obj.get("time",""), scene_obj.get("description",""), scene_visual_style, scene_aspect_ratio)
                             ts = _dt.now().strftime("%Y%m%d_%H%M%S")
                             out_path = os.path.join(ref_dir, f"scene_{sid}_ai_{ts}.png")
                             cmd = ["node", gen_script, "--profile", scene_profile, "--prompt", scene_prompt, "--output", out_path, "--profiles-dir", profiles_dir, "--timeout", "120"]
@@ -1349,29 +1408,296 @@ async def _autopilot_runner(campaign_id: int):
                             try:
                                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=browser_ext_dir, env=env)
                                 stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
-                                stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
-                                img_ok = False
-                                if stdout_text:
-                                    for line in reversed(stdout_text.splitlines()):
-                                        if line.strip().startswith("{"):
-                                            try:
-                                                result = json.loads(line.strip())
-                                                if result.get("status") == "success" and os.path.exists(out_path):
-                                                    _db().update_scene(sid, {"image_url": out_path})
-                                                    img_ok = True
-                                                    logger.info(f"  ✓ Scene image: {slocation[:30]}")
-                                                    break
-                                            except: pass
-                                if not img_ok:
-                                    logger.warning(f"  ✗ Scene gen failed: {slocation[:30]}")
+                                for line in reversed(stdout_b.decode("utf-8", errors="replace").strip().splitlines()):
+                                    if line.strip().startswith("{"):
+                                        try:
+                                            result = json.loads(line.strip())
+                                            if result.get("status") == "success" and os.path.exists(out_path):
+                                                _db().update_scene(sid, {"image_url": out_path})
+                                                break
+                                        except: pass
                             except Exception as ce:
-                                logger.warning(f"  ✗ Failed scene: {slocation[:30]}: {ce}")
-                                continue
-                else:
-                    logger.info(f"Autopilot: all scenes have images ✓")
+                                logger.warning(f"  Failed scene: {slocation[:30]}: {ce}")
+                    else:
+                        logger.info(f"Autopilot: all scenes have images")
               except Exception as e:
                 import traceback
-                logger.error(f"Autopilot scene image gen error: {e}\n{traceback.format_exc()}")
+                logger.error(f"Autopilot scene image gen error: {e}")
+
+            # 4d. Flow: Auto-generate Scene Panorama (panoramic_grid mode only)
+            logger.info(f"Autopilot: 4d check -- _scene_gen_mode={_scene_gen_mode}, _skip_ref_images={_skip_ref_images}")
+            if _scene_gen_mode == "panoramic_grid" and not _skip_ref_images:
+              try:
+                # Check if panorama already exists for this episode
+                ep_meta_pano = json.loads(ep_plan.get("metadata", "{}") or "{}")
+                existing_pano = ep_meta_pano.get("panorama_image_url", "")
+                
+                if existing_pano:
+                    logger.info(f"Autopilot: Panorama already exists for ep {ep_num} — skipping gen")
+                else:
+                    logger.info(f"Autopilot: Generating Scene Panorama for ep {ep_num}")
+                    meta["autopilot_status"] = f"running {idx+1}/{total} - generating Scene Panorama"
+                    _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                    
+                    # Build panorama prompt from extracted scenes + characters
+                    all_scenes_pano = _db().list_scenes(campaign_id)
+                    all_chars_pano = _db().list_characters(campaign_id)
+                    
+                    # Scene info
+                    main_scene = all_scenes_pano[0] if all_scenes_pano else {}
+                    pano_location = main_scene.get("location", "a cinematic interior space")
+                    pano_time = main_scene.get("time", "Day")
+                    pano_mood = main_scene.get("mood", main_scene.get("description", "dramatic cinematic"))
+                    pano_lighting = main_scene.get("lighting_style", "Natural cinematic lighting")
+                    pano_desc = main_scene.get("description", "")
+                    pano_style = _get_visual_style(campaign) if campaign else "Realistic"
+                    
+                    # Detect architecture mode from campaign metadata
+                    _pano_meta = json.loads(campaign.get("metadata", "{}") or "{}")
+                    _pano_content_format = _pano_meta.get("content_format", "")
+                    _is_architecture = "Architecture" in _pano_content_format or "Interior" in _pano_content_format
+                    
+                    # Detect aspect ratio for layout direction
+                    _pano_aspect = _pano_meta.get("aspect_ratio", "16:9")
+                    _is_portrait = _pano_aspect in ("9:16", "3:4")
+                    _is_square = _pano_aspect == "1:1"
+                    if _is_portrait:
+                        _layout_dir = f"\nIMAGE ASPECT RATIO: {_pano_aspect} (PORTRAIT). Layout ALL zones VERTICALLY (stacked top-to-bottom, 100% width each). "
+                        _layout_dir += "Character/furniture reference in VERTICAL strip. Storyboard cuts in VERTICAL column.\n"
+                    elif _is_square:
+                        _layout_dir = f"\nIMAGE ASPECT RATIO: 1:1 (SQUARE). Use 2x2 grid, storyboard spans full width in middle.\n"
+                    else:
+                        _layout_dir = f"\nIMAGE ASPECT RATIO: {_pano_aspect} (LANDSCAPE). Layout zones in HORIZONTAL grid: top row side-by-side, storyboard full width, bottom row side-by-side.\n"
+                    
+                    # Characters info
+                    main_chars = [c for c in all_chars_pano if c.get("role") not in ("product", "prop")]
+                    products = [c for c in all_chars_pano if c.get("role") in ("product", "prop", "hero_product")]
+                    
+                    char_desc_block = "\n".join([
+                        f"  - {c.get('name', 'Character')}: {(c.get('appearance', '') or '')[:150]}"
+                        for c in main_chars[:3]
+                    ])
+                    product_desc_block = "\n".join([
+                        f"  - {c.get('name', 'Product')}: {(c.get('appearance', '') or '')[:120]}"
+                        for c in products[:2]
+                    ])
+                    
+                    # Scene descriptions for all scenes
+                    all_scenes_desc = "\n".join([
+                        f"Scene {i+1}: {s.get('location', '')} - {s.get('time', '')} - {s.get('description', '')}"
+                        for i, s in enumerate(all_scenes_pano[:6])
+                    ])
+                    
+                    _storyboard_dir = "VERTICAL column" if _is_portrait else "horizontally"
+                    script_excerpt = (script[:2000] if script else "").replace("\n", " ").strip()
+                    
+                    if _is_architecture:
+                        space_desc_block = "\n".join([
+                            f"  - {c.get('name', 'Space')}: {(c.get('appearance', '') or '')[:150]}"
+                            for c in all_chars_pano[:4]
+                        ])
+                        panorama_prompt = (
+                            f"Create a professional cinematic PRODUCTION DESIGN BOARD for ARCHITECTURE / INTERIOR — a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628).\n"
+                            f"CRITICAL: This is ARCHITECTURE ONLY. ZERO people, ZERO characters. Only spaces, furniture, materials, light.{_layout_dir}\n"
+                            f"ZONE 1 — FURNITURE + MATERIAL REFERENCE\n"
+                            f"Show key furniture items and material swatches from the space:\n{space_desc_block}\n\n"
+                            f"ZONE 2 — ENVIRONMENT / SET DESIGN\n"
+                            f"Main establishing shot: {pano_location} — {pano_time}. NO PEOPLE.\n"
+                            f"{pano_desc}\nLighting: {pano_lighting}\nMood: {pano_mood}\n\n"
+                            f"ZONE 3 — STORYBOARD\n"
+                            f"Sequential cinematic camera movements arranged {_storyboard_dir} through the EMPTY space. NO PEOPLE.\n"
+                            f"{all_scenes_desc}\n\n"
+                            f"ZONE 4 — FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n"
+                        )
+                    else:
+                        _char_dir = "VERTICAL strip (stacked top-to-bottom)" if _is_portrait else "horizontal strip"
+                        panorama_prompt = (
+                            f"Create a professional cinematic PRODUCTION DESIGN BOARD — a single comprehensive reference sheet image with ALL zones on a dark navy background.{_layout_dir}\n"
+                            f"ZONE 1 — CHARACTER + OBJECT REFERENCE\n"
+                            f"Show main characters from multiple angles in a {_char_dir}:\n{char_desc_block}\n"
+                            f"{('HERO PRODUCT:\n' + product_desc_block) if product_desc_block else ''}\n\n"
+                            f"ZONE 2 — ENVIRONMENT / SET DESIGN\n"
+                            f"Main establishing shot: {pano_location} — {pano_time}\n"
+                            f"{pano_desc}\nLighting: {pano_lighting}\nMood: {pano_mood}\n\n"
+                            f"ZONE 3 — STORYBOARD\n"
+                            f"Sequential cinematic cuts arranged {_storyboard_dir}.\n"
+                            f"{all_scenes_desc}\n\n"
+                            f"ZONE 4 — FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n"
+                        )
+                    
+                    # Add spatial map context if available
+                    _spatial_map = outline.get("shared_spatial_map") if outline else None
+                    _ep_zone = ep_plan.get("spatial_zone", "")
+                    if _spatial_map and _spatial_map.get("zones"):
+                        _all_zones = _spatial_map["zones"]
+                        _zone_labels = "\n".join([
+                            f"  {'→ ' if z.get('zone_id') == _ep_zone else '  '}"
+                            f"Zone {z.get('zone_id', '?')}: {z.get('name', '')} — {z.get('description', '')[:100]}"
+                            f"{' [CURRENT SCENE - HIGHLIGHT THIS ZONE]' if z.get('zone_id') == _ep_zone else ''}"
+                            for z in _all_zones
+                        ])
+                        _connections = "\n".join([
+                            f"  Zone {z.get('zone_id', '?')} → Zone {', '.join(z.get('connects_to', []))}: {z.get('connection_description', 'connected')}"
+                            for z in _all_zones if z.get("connects_to")
+                        ])
+                        panorama_prompt += (
+                            f"CRITICAL: Show the COMPLETE connected floor plan of the ENTIRE space (all {len(_all_zones)} zones).\n"
+                            f"This is Screen {idx+1} of {total} — the camera is currently in Zone {_ep_zone}.\n"
+                            f"OVERALL SPACE: {_spatial_map.get('description', '')}\n"
+                            f"ALL ZONES (show all, highlight current):\n{_zone_labels}\n"
+                            f"CONNECTIONS between zones:\n{_connections}\n"
+                            f"Draw the FULL floor plan with ALL zones connected. Highlight Zone {_ep_zone} with a colored border/glow.\n"
+                            f"Show camera position in Zone {_ep_zone} with numbered icons and movement arrows.\n"
+                            f"Show doorways/passages between zones with labeled arrows.\n\n"
+                        )
+                    else:
+                        panorama_prompt += ("Top-down view with camera positions" + (" (no character icons, architecture only)." if _is_architecture else " and character placement.") + "\n\n")
+                    
+                    if _is_architecture:
+                        panorama_prompt += (
+                            f"Style: {pano_style}, 8K ultra-detailed, professional ARCHITECTURAL production design board. NO PEOPLE anywhere.\n"
+                            f"{'Script context: ' + script_excerpt[:500] if script_excerpt else ''}"
+                        )
+                    else:
+                        panorama_prompt += (
+                            f"Style: {pano_style}, 8K ultra-detailed, professional production design board.\n"
+                            f"{'Script context: ' + script_excerpt[:500] if script_excerpt else ''}"
+                        )
+                    
+                    # Collect character ref images for the generation
+                    char_ref_images = []
+                    for c in all_chars_pano:
+                        img_url = c.get("image_url", "")
+                        if not img_url:
+                            continue
+                        resolved_path = None
+                        # Case 1: Direct file path
+                        if not img_url.startswith("/api/") and not img_url.startswith("http"):
+                            if os.path.isfile(img_url):
+                                resolved_path = img_url
+                        # Case 2: Gallery API path - resolve to actual file
+                        elif img_url.startswith("/api/v1/pod_studio/gallery/image/"):
+                            gallery_filename = img_url.split("/")[-1]
+                            # Gallery images stored in gallery dir or references dir
+                            for _search_dir in [_get_gallery_dir(), _get_ref_dir()]:
+                                _gpath = os.path.join(_search_dir, gallery_filename)
+                                if os.path.isfile(_gpath):
+                                    resolved_path = _gpath
+                                    break
+                        # Case 3: References API path
+                        elif img_url.startswith("/api/v1/pod_studio/references/"):
+                            ref_filename = img_url.split("/")[-1]
+                            _rpath = os.path.join(_get_ref_dir(), ref_filename)
+                            if os.path.isfile(_rpath):
+                                resolved_path = _rpath
+                        if resolved_path:
+                            char_ref_images.append(resolved_path)
+                            logger.info(f"  Panorama ref image: {c.get('name', '?')} -> {resolved_path}")
+                        else:
+                            logger.info(f"  Panorama ref image NOT resolved: {c.get('name', '?')} -> {img_url}")
+                    
+                    # Generate using selected image engine
+                    _pano_engine = meta.get("image_engine") or meta.get("video_engine", "grok")
+                    _pano_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or "Default"
+                    
+                    ref_dir = _get_ref_dir()
+                    from datetime import datetime as _dtPano
+                    pano_ts = _dtPano.now().strftime("%Y%m%d_%H%M%S")
+                    pano_out = os.path.join(ref_dir, f"panorama_ep{ep_id}_{pano_ts}.png")
+                    
+                    # Build a single-job batch for the panorama
+                    pano_jobs = [{"id": f"panorama_{ep_id}", "prompt": panorama_prompt, "output": pano_out, "ref_images": char_ref_images}]
+                    
+                    from pathlib import Path as _PathPano
+                    top_dir_pano = _PathPano(_ext_dir).parents[2]
+                    browser_ext_dir_pano = str(top_dir_pano / "tubecli" / "extensions" / "browser")
+                    try:
+                        from tubecli.config import DATA_DIR
+                        profiles_dir_pano = os.path.join(str(DATA_DIR), "browser_profiles")
+                    except:
+                        profiles_dir_pano = str(top_dir_pano / "data" / "browser_profiles")
+                    
+                    pano_saved = False
+                    
+                    if _pano_engine == "chatgpt":
+                        import sys as _sys_pano
+                        _engines_dir_pano = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines")
+                        if _engines_dir_pano not in _sys_pano.path:
+                            _sys_pano.path.insert(0, _engines_dir_pano)
+                        from chatgpt_image_engine import batch_generate as pano_chatgpt_gen
+                        logger.info(f"Panorama gen: sending {len(char_ref_images)} ref images to ChatGPT")
+                        pano_results = await pano_chatgpt_gen(
+                            shots=[{"id": ep_id, "image_prompt": panorama_prompt, "ref_images": char_ref_images}],
+                            profile_name=_pano_profile,
+                            episode_id=ep_id,
+                            headless=False,
+                            overwrite=True,
+                        )
+                        for r in pano_results:
+                            if r.get("status") == "success" and r.get("path"):
+                                pano_out = r["path"]
+                                pano_saved = True
+                    else:
+                        # Grok / Veo3 — use batch script
+                        if _pano_engine == "veo3":
+                            batch_script_pano = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
+                        else:
+                            batch_script_pano = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+                        
+                        pano_jobs_file = os.path.join(ref_dir, f"_panorama_job_{ep_id}.json")
+                        with open(pano_jobs_file, "w", encoding="utf-8") as f:
+                            json.dump(pano_jobs, f, ensure_ascii=False)
+                        
+                        if _pano_engine == "veo3":
+                            pano_cmd = ["node", batch_script_pano, "--profile", _pano_profile, "--jobs", pano_jobs_file, "--profiles-dir", profiles_dir_pano, "--timeout", "120"]
+                        else:
+                            # Grok single image
+                            pano_cmd = ["node", batch_script_pano, "--profile", _pano_profile, "--prompt", panorama_prompt, "--output", pano_out, "--profiles-dir", profiles_dir_pano, "--timeout", "120"]
+                        
+                        env_pano = os.environ.copy()
+                        env_pano["NODE_PATH"] = os.path.join(browser_ext_dir_pano, "node_modules")
+                        
+                        try:
+                            proc_pano = await asyncio.create_subprocess_exec(
+                                *pano_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                cwd=browser_ext_dir_pano,
+                                env=env_pano,
+                            )
+                            stdout_pano, _ = await asyncio.wait_for(proc_pano.communicate(), timeout=180)
+                            stdout_pano_text = stdout_pano.decode("utf-8", errors="replace").strip()
+                            for line in stdout_pano_text.splitlines():
+                                if line.strip().startswith("{"):
+                                    try:
+                                        result = json.loads(line.strip())
+                                        if result.get("status") == "success":
+                                            rpath = result.get("path", pano_out)
+                                            if os.path.isfile(rpath) and os.path.getsize(rpath) > 5000:
+                                                pano_out = rpath
+                                                pano_saved = True
+                                    except: pass
+                        except Exception as pe:
+                            logger.error(f"Panorama gen subprocess error: {pe}")
+                        finally:
+                            try: os.remove(pano_jobs_file)
+                            except: pass
+                    
+                    if pano_saved and os.path.isfile(pano_out):
+                        # Save to episode metadata
+                        pano_filename = os.path.basename(pano_out)
+                        ep_meta_pano["panorama_image_url"] = f"/api/v1/pod_studio/references/{pano_filename}"
+                        ep_meta_pano["panorama_image_path"] = pano_out
+                        ep_meta_pano["scene_mode"] = True
+                        if all_scenes_pano:
+                            ep_meta_pano["scene_location"] = all_scenes_pano[0].get("location", "")
+                        _db().update_episode(ep_id, {"metadata": json.dumps(ep_meta_pano)})
+                        logger.info(f"Autopilot: Scene Panorama generated for ep {ep_num}: {pano_filename}")
+                    else:
+                        logger.warning(f"Autopilot: Panorama gen failed or empty for ep {ep_num}")
+              except Exception as e:
+                import traceback
+                logger.error(f"Autopilot panorama gen error: {e}\n{traceback.format_exc()}")
 
             # 5. Flow: Storyboard Breaker
             import re as _re_ap
@@ -1486,14 +1812,14 @@ async def _autopilot_runner(campaign_id: int):
             # to preserve text accuracy — AI video generation would corrupt text otherwise.
             if content_format == "Presentation / Screen":
                 try:
-                    screen_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                    screen_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                     screen_shots = _db().list_storyboards(ep_id)
                     # For Presentation: regenerate ALL screens (overwrite). Previous runs may have
                     # saved wrong images. Only require image_prompt to be present.
                     screen_pending = [s for s in screen_shots if s.get("image_prompt", "").strip()]
                     
                     if screen_pending:
-                        image_engine = meta.get("video_engine", "grok")
+                        image_engine = meta.get("image_engine") or meta.get("video_engine", "grok")
                         meta["autopilot_status"] = f"running {idx+1}/{total} - generating {len(screen_pending)} screens ({image_engine})"
                         meta["autopilot_progress"] = int(((idx + 0.7) / total) * 100)
                         _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
@@ -1590,6 +1916,35 @@ async def _autopilot_runner(campaign_id: int):
                                 pass
                             
                             logger.info(f"Autopilot Veo3 Screen Gen: {screen_ok}/{len(screen_pending)} screens for ep {ep_num}")
+                        elif image_engine == "chatgpt":
+                            # ChatGPT: Use chatgpt_image_engine.batch_generate
+                            import sys as _sys_chatgpt
+                            _ext_dir_chatgpt = os.path.dirname(os.path.abspath(__file__))
+                            _engines_dir_chatgpt = os.path.join(_ext_dir_chatgpt, "engines")
+                            if _engines_dir_chatgpt not in _sys_chatgpt.path:
+                                _sys_chatgpt.path.insert(0, _engines_dir_chatgpt)
+                            from chatgpt_image_engine import batch_generate as chatgpt_batch_generate
+                            
+                            async def _chatgpt_screen_progress(done, total_s, shot_id, status, path=None):
+                                if path:
+                                    _db().update_storyboard(shot_id, {"composed_image": path, "status": "image_done"})
+                                meta["autopilot_status"] = f"running {idx+1}/{total} - screen {done}/{total_s} (ChatGPT)"
+                                _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
+                            
+                            chatgpt_results = await chatgpt_batch_generate(
+                                shots=screen_pending,
+                                profile_name=screen_profile,
+                                episode_id=ep_id,
+                                headless=False,
+                                overwrite=False,
+                                progress_callback=_chatgpt_screen_progress,
+                            )
+                            
+                            screen_ok = sum(1 for r in chatgpt_results if r.get("status") == "success")
+                            logger.info(f"Autopilot ChatGPT Screen Gen: {screen_ok}/{len(screen_pending)} screens for ep {ep_num}")
+                            
+                            if any(r.get("message") == "RATE_LIMIT_REACHED" for r in chatgpt_results):
+                                logger.error("Rate limit during ChatGPT screen gen.")
                         else:
                             # ─── GROK: Use grok_image_engine.batch_generate ───
                             import sys as _sys_scr
@@ -1854,6 +2209,282 @@ async def upload_character_ref(char_id: int, request: Request):
     db.update_character(char_id, {"reference_images": json.dumps(refs), "image_url": filepath})
     
     return {"status": "ok", "path": filepath, "filename": filename}
+
+
+
+@router.post("/api/v1/pod_studio/campaigns/{campaign_id}/episodes/{episode_id}/generate-panorama")
+async def generate_panorama_api(campaign_id: int, episode_id: int):
+    """Generate Scene Panorama via ChatGPT browser automation (button trigger)."""
+    campaign = _db().get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    ep = _db().get_episode(episode_id)
+    if not ep:
+        raise HTTPException(404, "Episode not found")
+    
+    meta = json.loads(campaign.get("metadata", "{}") or "{}")
+    
+    # Collect scene and character data
+    all_scenes = _db().list_scenes(campaign_id)
+    all_chars = _db().list_characters(campaign_id)
+    
+    main_scene = all_scenes[0] if all_scenes else {}
+    pano_location = main_scene.get("location", "a cinematic interior space")
+    pano_time = main_scene.get("time", "Day")
+    pano_mood = main_scene.get("mood", main_scene.get("description", "dramatic cinematic"))
+    pano_lighting = main_scene.get("lighting_style", "Natural cinematic lighting")
+    pano_desc = main_scene.get("description", "")
+    pano_style = _get_visual_style(campaign) if campaign else "Realistic"
+    
+    # Detect architecture mode from campaign metadata
+    _api_content_format = meta.get("content_format", "")
+    _api_is_architecture = "Architecture" in _api_content_format or "Interior" in _api_content_format
+    
+    # Detect aspect ratio for layout direction
+    _api_aspect = meta.get("aspect_ratio", "16:9")
+    _api_is_portrait = _api_aspect in ("9:16", "3:4")
+    _api_is_square = _api_aspect == "1:1"
+    if _api_is_portrait:
+        _api_layout_dir = f"\nIMAGE ASPECT RATIO: {_api_aspect} (PORTRAIT). Layout ALL zones VERTICALLY (stacked top-to-bottom, 100% width each). "
+        _api_layout_dir += "Character/furniture reference in VERTICAL strip. Storyboard cuts in VERTICAL column.\n"
+    elif _api_is_square:
+        _api_layout_dir = f"\nIMAGE ASPECT RATIO: 1:1 (SQUARE). Use 2x2 grid, storyboard spans full width in middle.\n"
+    else:
+        _api_layout_dir = f"\nIMAGE ASPECT RATIO: {_api_aspect} (LANDSCAPE). Layout zones in HORIZONTAL grid: top row side-by-side, storyboard full width, bottom row side-by-side.\n"
+    _api_storyboard_dir = "VERTICAL column" if _api_is_portrait else "horizontally"
+    
+    main_chars = [c for c in all_chars if c.get("role") not in ("product", "prop")]
+    products = [c for c in all_chars if c.get("role") in ("product", "prop", "hero_product")]
+    
+    char_desc_block = "\n".join([
+        f"  - {c.get('name', 'Character')}: {(c.get('appearance', '') or '')[:150]}"
+        for c in main_chars[:3]
+    ])
+    product_desc_block = "\n".join([
+        f"  - {c.get('name', 'Product')}: {(c.get('appearance', '') or '')[:120]}"
+        for c in products[:2]
+    ])
+    
+    all_scenes_desc = "\n".join([
+        f"Scene {i+1}: {s.get('location', '')} - {s.get('time', '')} - {s.get('description', '')}"
+        for i, s in enumerate(all_scenes[:6])
+    ])
+    
+    script = ep.get("script_content", "") or ep.get("content", "") or ""
+    script_excerpt = (script[:2000] if script else "").replace("\n", " ").strip()
+    
+    if _api_is_architecture:
+        # Architecture mode: NO characters, focus on space/materials/light
+        space_desc_block = "\n".join([
+            f"  - {c.get('name', 'Space')}: {(c.get('appearance', '') or '')[:150]}"
+            for c in all_chars[:4]
+        ])
+        panorama_prompt = (
+            f"Create a professional cinematic PRODUCTION DESIGN BOARD for ARCHITECTURE / INTERIOR — a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628).\n"
+            f"CRITICAL: This is ARCHITECTURE ONLY. ZERO people, ZERO characters. Only spaces, furniture, materials, light.{_api_layout_dir}\n"
+            f"ZONE 1 — FURNITURE + MATERIAL REFERENCE\n"
+            f"Show key furniture items and material swatches from the space:\n{space_desc_block}\n\n"
+            f"ZONE 2 — ENVIRONMENT / SET DESIGN\n"
+            f"Main establishing shot: {pano_location} — {pano_time}. NO PEOPLE.\n"
+            f"{pano_desc}\nLighting: {pano_lighting}\nMood: {pano_mood}\n\n"
+            f"ZONE 3 — STORYBOARD\n"
+            f"Sequential cinematic camera movements arranged {_api_storyboard_dir} through the EMPTY space. NO PEOPLE.\n"
+            f"{all_scenes_desc}\n\n"
+            f"ZONE 4 — FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n"
+        )
+    else:
+        _api_char_dir = "VERTICAL strip (stacked top-to-bottom)" if _api_is_portrait else "horizontal strip"
+        panorama_prompt = (
+            f"Create a professional cinematic PRODUCTION DESIGN BOARD — a single comprehensive reference sheet image with ALL zones on a dark navy background.{_api_layout_dir}\n"
+            f"ZONE 1 — CHARACTER + OBJECT REFERENCE\n"
+            f"Show main characters from multiple angles in a {_api_char_dir}:\n{char_desc_block}\n"
+            f"{('HERO PRODUCT:\n' + product_desc_block) if product_desc_block else ''}\n\n"
+            f"ZONE 2 — ENVIRONMENT / SET DESIGN\n"
+            f"Main establishing shot: {pano_location} — {pano_time}\n"
+            f"{pano_desc}\nLighting: {pano_lighting}\nMood: {pano_mood}\n\n"
+            f"ZONE 3 — STORYBOARD\n"
+            f"Sequential cinematic cuts arranged {_api_storyboard_dir}.\n"
+            f"{all_scenes_desc}\n\n"
+            f"ZONE 4 — FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n"
+        )
+    
+    # Add spatial map context if available in campaign metadata
+    _api_outline = meta.get("series_outline", {})
+    _api_spatial_map = _api_outline.get("shared_spatial_map") if isinstance(_api_outline, dict) else None
+    _api_episodes = _api_outline.get("episodes", []) if isinstance(_api_outline, dict) else []
+    
+    # Find this episode's zone
+    _api_ep_zone = ""
+    _api_ep_idx = 0
+    _api_total = len(_api_episodes)
+    for _ei, _ep in enumerate(_api_episodes):
+        if _ep.get("episode_number") == ep.get("episode_number"):
+            _api_ep_zone = _ep.get("spatial_zone", "")
+            _api_ep_idx = _ei
+            break
+    
+    if _api_spatial_map and _api_spatial_map.get("zones"):
+        _api_zones = _api_spatial_map["zones"]
+        _api_zone_labels = "\n".join([
+            f"  {'→ ' if z.get('zone_id') == _api_ep_zone else '  '}"
+            f"Zone {z.get('zone_id', '?')}: {z.get('name', '')} — {z.get('description', '')[:100]}"
+            f"{' [CURRENT SCENE - HIGHLIGHT THIS ZONE]' if z.get('zone_id') == _api_ep_zone else ''}"
+            for z in _api_zones
+        ])
+        _api_conns = "\n".join([
+            f"  Zone {z.get('zone_id', '?')} → Zone {', '.join(z.get('connects_to', []))}: {z.get('connection_description', 'connected')}"
+            for z in _api_zones if z.get("connects_to")
+        ])
+        panorama_prompt += (
+            f"CRITICAL: Show the COMPLETE connected floor plan of the ENTIRE space (all {len(_api_zones)} zones).\n"
+            f"This is Screen {_api_ep_idx+1} of {_api_total} — the camera is currently in Zone {_api_ep_zone}.\n"
+            f"OVERALL SPACE: {_api_spatial_map.get('description', '')}\n"
+            f"ALL ZONES (show all, highlight current):\n{_api_zone_labels}\n"
+            f"CONNECTIONS between zones:\n{_api_conns}\n"
+            f"Draw the FULL floor plan with ALL zones connected. Highlight Zone {_api_ep_zone} with a colored border/glow.\n"
+            f"Show camera position in Zone {_api_ep_zone} with numbered icons and movement arrows.\n"
+            f"Show doorways/passages between zones with labeled arrows.\n\n"
+        )
+    else:
+        panorama_prompt += ("Top-down view with camera positions" + (" (no character icons, architecture only)." if _api_is_architecture else " and character placement.") + "\n\n")
+    
+    if _api_is_architecture:
+        panorama_prompt += (
+            f"Style: {pano_style}, 8K ultra-detailed, professional ARCHITECTURAL production design board. NO PEOPLE anywhere.\n"
+            f"{'Script context: ' + script_excerpt[:500] if script_excerpt else ''}"
+        )
+    else:
+        panorama_prompt += (
+            f"Style: {pano_style}, 8K ultra-detailed, professional production design board.\n"
+            f"{'Script context: ' + script_excerpt[:500] if script_excerpt else ''}"
+        )
+    
+    # Collect character ref images (resolve API paths to actual files)
+    char_ref_images = []
+    for c in all_chars:
+        img_url = c.get("image_url", "")
+        if not img_url:
+            continue
+        resolved_path = None
+        if not img_url.startswith("/api/") and not img_url.startswith("http"):
+            if os.path.isfile(img_url):
+                resolved_path = img_url
+        elif img_url.startswith("/api/v1/pod_studio/gallery/image/"):
+            gallery_filename = img_url.split("/")[-1]
+            for _search_dir in [_get_gallery_dir(), _get_ref_dir()]:
+                _gpath = os.path.join(_search_dir, gallery_filename)
+                if os.path.isfile(_gpath):
+                    resolved_path = _gpath
+                    break
+        elif img_url.startswith("/api/v1/pod_studio/references/"):
+            ref_filename = img_url.split("/")[-1]
+            _rpath = os.path.join(_get_ref_dir(), ref_filename)
+            if os.path.isfile(_rpath):
+                resolved_path = _rpath
+        if resolved_path:
+            char_ref_images.append(resolved_path)
+            logger.info(f"  Panorama API ref image: {c.get('name', '?')} -> {resolved_path}")
+    
+    logger.info(f"Generate Panorama API: ep_id={episode_id}, chars={len(all_chars)}, scenes={len(all_scenes)}, ref_images={len(char_ref_images)}")
+    
+    # Determine engine and profile
+    _pano_engine = meta.get("image_engine") or meta.get("video_engine", "grok")
+    _pano_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or "Default"
+    
+    ref_dir = _get_ref_dir()
+    from datetime import datetime as _dtPanoAPI
+    pano_ts = _dtPanoAPI.now().strftime("%Y%m%d_%H%M%S")
+    pano_out = os.path.join(ref_dir, f"panorama_ep{episode_id}_{pano_ts}.png")
+    
+    pano_saved = False
+    
+    if _pano_engine == "chatgpt":
+        import sys as _sys_pano_api
+        _engines_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines")
+        if _engines_dir not in _sys_pano_api.path:
+            _sys_pano_api.path.insert(0, _engines_dir)
+        from chatgpt_image_engine import batch_generate as pano_chatgpt_gen_api
+        logger.info(f"Panorama API: sending {len(char_ref_images)} ref images to ChatGPT, profile={_pano_profile}")
+        pano_results = await pano_chatgpt_gen_api(
+            shots=[{"id": episode_id, "image_prompt": panorama_prompt, "ref_images": char_ref_images}],
+            profile_name=_pano_profile,
+            episode_id=episode_id,
+            headless=False,
+            overwrite=True,
+        )
+        for r in pano_results:
+            if r.get("status") == "success" and r.get("path"):
+                pano_out = r["path"]
+                pano_saved = True
+    else:
+        # Grok / Veo3 — use subprocess
+        from pathlib import Path as _PathPanoAPI
+        top_dir = _PathPanoAPI(_ext_dir).parents[2]
+        browser_ext_dir = str(top_dir / "tubecli" / "extensions" / "browser")
+        try:
+            from tubecli.config import DATA_DIR
+            profiles_dir = os.path.join(str(DATA_DIR), "browser_profiles")
+        except:
+            profiles_dir = str(top_dir / "data" / "browser_profiles")
+        
+        if _pano_engine == "veo3":
+            batch_script = os.path.join(_ext_dir, "engines", "veo3_batch_images.js")
+        else:
+            batch_script = os.path.join(_ext_dir, "engines", "grok_char_image.js")
+        
+        pano_jobs = [{"id": f"panorama_{episode_id}", "prompt": panorama_prompt, "output": pano_out, "ref_images": char_ref_images}]
+        pano_jobs_file = os.path.join(ref_dir, f"_panorama_job_{episode_id}.json")
+        with open(pano_jobs_file, "w", encoding="utf-8") as f:
+            json.dump(pano_jobs, f, ensure_ascii=False)
+        
+        if _pano_engine == "veo3":
+            pano_cmd = ["node", batch_script, "--profile", _pano_profile, "--jobs", pano_jobs_file, "--profiles-dir", profiles_dir, "--timeout", "120"]
+        else:
+            pano_cmd = ["node", batch_script, "--profile", _pano_profile, "--prompt", panorama_prompt, "--output", pano_out, "--profiles-dir", profiles_dir, "--timeout", "120"]
+        
+        env = os.environ.copy()
+        env["NODE_PATH"] = os.path.join(browser_ext_dir, "node_modules")
+        
+        try:
+            import asyncio
+            proc = await asyncio.create_subprocess_exec(
+                *pano_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=browser_ext_dir,
+                env=env,
+            )
+            stdout_data, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+            for line in stdout_data.decode("utf-8", errors="replace").strip().splitlines():
+                if line.strip().startswith("{"):
+                    try:
+                        result = json.loads(line.strip())
+                        if result.get("status") == "success":
+                            rpath = result.get("path", pano_out)
+                            if os.path.isfile(rpath) and os.path.getsize(rpath) > 5000:
+                                pano_out = rpath
+                                pano_saved = True
+                    except: pass
+        except Exception as pe:
+            logger.error(f"Panorama API subprocess error: {pe}")
+        finally:
+            try: os.remove(pano_jobs_file)
+            except: pass
+    
+    if pano_saved and os.path.isfile(pano_out):
+        pano_filename = os.path.basename(pano_out)
+        ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+        ep_meta["panorama_image_url"] = f"/api/v1/pod_studio/references/{pano_filename}"
+        ep_meta["panorama_image_path"] = pano_out
+        ep_meta["scene_mode"] = True
+        if all_scenes:
+            ep_meta["scene_location"] = all_scenes[0].get("location", "")
+        _db().update_episode(episode_id, {"metadata": json.dumps(ep_meta)})
+        logger.info(f"Panorama API: generated successfully: {pano_filename}")
+        return {"status": "success", "panorama_url": f"/api/v1/pod_studio/references/{pano_filename}", "panorama_path": pano_out}
+    else:
+        logger.warning(f"Panorama API: generation failed for ep {episode_id}")
+        return {"status": "error", "error": "Panorama generation failed or produced empty result"}
 
 
 @router.post("/api/v1/pod_studio/episodes/{episode_id}/upload-panorama")
@@ -4380,8 +5011,9 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 continue
             existing = shot.get("ref_images", [])
             for rp in sb_refs:
-                if os.path.isfile(rp) and rp not in existing and len(existing) < 4:
-                    existing.append(rp)
+                resolved_rp = _resolve_image_path(rp)
+                if resolved_rp and os.path.isfile(resolved_rp) and resolved_rp not in existing and len(existing) < 4:
+                    existing.append(resolved_rp)
                     extra_ref_count += 1
             shot["ref_images"] = existing
         if extra_ref_count:
@@ -7117,7 +7749,7 @@ async def analyze_gallery_image(request: Request):
     # Build Gemini request
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    prompt = """Look at this image carefully. First determine WHAT the image shows: is it a character, a group of people, an animal/creature, or a non-living OBJECT/PRODUCT (such as a book, box set, toy, vehicle, food, furniture, etc)?
+    prompt = """Look at this image carefully. First determine WHAT the image shows: is it a character, a group of people, an animal/creature, an ENVIRONMENT/ARCHITECTURE scene, or a non-living OBJECT/PRODUCT?
 
 IMPORTANT RULES:
 - If the image shows a PRODUCT, BOOK, PACKAGE, or any non-living OBJECT: set char_type to "object". Describe the OBJECT ITSELF (what it is, its shape, colors, text/labels on it, brand, packaging). Do NOT describe characters/people printed on it.
@@ -7126,16 +7758,22 @@ IMPORTANT RULES:
 - If the image shows exactly 2 characters: set char_type to "duo".
 - If the image shows 3-5 characters together: set char_type to "friend_group".
 - If the image shows 6+ people: set char_type to "crowd".
+- If the image shows an INTERIOR ROOM, LIVING SPACE, or INDOOR ENVIRONMENT (living room, bedroom, kitchen, office, etc.): set char_type to "interior_design". Describe the space: furniture, materials, colors, lighting, style (modern, minimalist, zen, industrial, etc.).
+- If the image shows ARCHITECTURE or a BUILDING DETAIL (structure, facade, doorway, staircase, ceiling, columns): set char_type to "architecture". Describe architectural elements, style, materials.
+- If the image shows a BUILDING EXTERIOR, FACADE, STREET VIEW, or CITYSCAPE: set char_type to "exterior". Describe the building, surroundings, style.
+- If the image shows NATURE, LANDSCAPE, GARDEN, PARK, or OUTDOOR SCENERY without buildings as focus: set char_type to "nature". Describe the natural elements.
+- If the image shows a LOCATION or SETTING that combines indoor/outdoor: set char_type to "location". Describe the overall environment.
+- If the image is primarily about LIGHTING SETUP or a COLOR REFERENCE: set char_type to "lighting_ref" or "color_palette".
 
 RESPOND ONLY with valid JSON, no markdown or explanation.
 
 {
-  "char_type": one of "individual", "duo", "friend_group", "crowd", "creature", "object",
-  "name_suggestion": "A descriptive name for this entry (e.g. 'Sherlock Holmes Book Set', 'Black Cat', 'Beach Crowd', 'Blue Hair Girl')",
-  "gender": "male" / "female" / "mixed" / "other" / "" (leave empty for objects/creatures if not applicable),
-  "age_range": "child" / "teen" / "young_adult" / "adult" / "middle_aged" / "elderly" / "mixed" / "" (leave empty for objects),
-  "appearance": "For CHARACTERS: hair, eyes, skin, build, clothing, accessories. For OBJECTS/PRODUCTS: describe the item — shape, size, colors, text/title/brand visible, packaging, condition, material. For CREATURES: species, color, size, features. Write as a plain English paragraph.",
-  "role_type": "A concise label: e.g. 'detective', 'book set', 'pet dog', 'student group', 'toy figure'",
+  "char_type": one of "individual", "duo", "friend_group", "crowd", "creature", "object", "interior_design", "architecture", "exterior", "nature", "location", "lighting_ref", "color_palette", "mood_board", "costume_full", "fabric_swatch", "pattern_design", "hair_accessory", "earring", "necklace", "bracelet", "other_accessory", "chart", "diagram", "infographic", "table", "screenshot", "screen", "holographic", "thought_bubble", "overlay", "transition", "particle", "data_panel",
+  "name_suggestion": "A descriptive name for this entry (e.g. 'Modern Zen Living Room', 'Gothic Cathedral Interior', 'Tropical Garden Path', 'Sherlock Holmes Book Set')",
+  "gender": "male" / "female" / "mixed" / "other" / "" (leave empty for objects/environments/architecture),
+  "age_range": "child" / "teen" / "young_adult" / "adult" / "middle_aged" / "elderly" / "mixed" / "" (leave empty for non-person types),
+  "appearance": "For CHARACTERS: hair, eyes, skin, build, clothing, accessories. For OBJECTS/PRODUCTS: describe the item — shape, size, colors, text/title/brand visible, packaging, condition, material. For ARCHITECTURE/INTERIOR: describe the space — layout, furniture, materials, colors, lighting, architectural style, design elements. For CREATURES: species, color, size, features. Write as a plain English paragraph.",
+  "role_type": "A concise label: e.g. 'interior design', 'architecture', 'landscape', 'detective', 'book set', 'pet dog'",
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
   "art_style": "realistic / anime / chibi / cartoon / 3d_render / photograph / illustration / etc."
 }"""

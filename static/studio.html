@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>POD Studio — AI Campaign Writer</title>
-    <link rel="stylesheet" href="/pod-studio-static/studio.css?v=20260425_gallery_tab">
+    <link rel="stylesheet" href="/pod-studio-static/studio.css?v=20260509_arch_types">
     <link rel="stylesheet" href="/pod-studio-static/flowchart.css?v=20260502">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -235,6 +235,7 @@
                                         <span>Scene Panorama</span>
                                         <span class="tag tag-accent">spatial map</span>
                                         <div style="margin-left:auto; display:flex; gap:6px;">
+                                            <button class="btn btn-sm btn-accent" id="btnPanoramaAIGen" onclick="generatePanoramaAI()" title="Generate Scene Panorama using ChatGPT AI with character reference images">🎨 AI Gen</button>
                                             <button class="btn btn-sm btn-ghost" onclick="copyPanoramaPrompt()" title="Copy AI prompt to generate a full Production Design Board with character angles, environment, storyboard cuts, floor plan + camera map">📋 Copy Board Prompt</button>
                                             <button class="btn btn-sm btn-ghost" onclick="triggerPanoramaUpload()">📷 Upload</button>
                                         </div>
@@ -959,6 +960,8 @@
                                         <optgroup label="🏛️ Environment & Scene">
                                             <option value="location">🏛️ Location / Setting</option>
                                             <option value="architecture">🏠 Architecture Detail</option>
+                                            <option value="interior_design">🛋️ Interior Design</option>
+                                            <option value="exterior">🏢 Exterior / Facade</option>
                                             <option value="nature">🌿 Nature / Landscape</option>
                                         </optgroup>
                                         <optgroup label="💡 Lighting & Mood">
@@ -1258,6 +1261,7 @@
                                 <select id="wizContentFormat" class="input">
                                     <option value="Campaign / Narrative" selected>🎬 Phim / Campaign (Mặc định)</option>
                                     <option value="Commercial / Advertisement">🛒 Quảng cáo / Thương hiệu</option>
+                                    <option value="Architecture / Interior">🏛️ Kiến trúc / Nội thất</option>
                                     <option value="Podcast / Talkshow">🎙️ Podcast / Talkshow</option>
                                     <option value="Educational / Learning">📚 Giáo dục / Bài giảng</option>
                                     <option value="Presentation / Screen">🖥️ Thuyết trình / Màn hình Graphic</option>
@@ -1455,6 +1459,7 @@
                             <span class="field-label">🔧 Pipeline Template</span>
                             <select id="wizPipelineTemplate" class="input" onchange="wizUpdatePipelinePreview()">
                                 <option value="campaign_scene">🎞 Campaign Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video)</option>
+                                <option value="campaign_ad">🛒 Campaign Ads (Raw → Rewrite → Extract → Video → Publish)</option>
                                 <option value="campaign_full">📺 Campaign Slideshow (Raw → Rewrite → Extract → Storyboard → Images → Audio → Video)</option>
                                 <option value="audio_story">🎧 Audio Story (Raw → Rewrite → Audio → Video)</option>
                                 <option value="content_only">📝 Content Only (Raw → Rewrite)</option>
@@ -1549,6 +1554,28 @@
                             <span class="field-label" id="wizOutlineTitle">Proposed Episodes</span>
                             <div class="input" id="wizOutlineReview" style="flex:1; overflow-y:auto; background: var(--bg-1); text-align: left; padding:10px;"></div>
                         </label>
+                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
+                            <label class="field" style="flex:0.7;">
+                                <span class="field-label">🖼 Image Engine</span>
+                                <div class="select-wrapper">
+                                    <select id="wizImageEngine" class="input">
+                                        <option value="grok">🤖 Grok Image</option>
+                                        <option value="veo3">🎨 Veo3 ImageFX</option>
+                                        <option value="chatgpt">🧠 ChatGPT Image</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                            <label class="field" style="flex:1;">
+                                <span class="field-label">🌐 Image Browser Profile</span>
+                                <div class="select-wrapper">
+                                    <select id="wizImageBrowserProfile" class="input" onfocus="loadWizImageBrowserProfiles()">
+                                        <option value="">-- Chọn browser --</option>
+                                    </select>
+                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </div>
+                            </label>
+                        </div>
                         <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
                             <label class="field" id="wizVoiceProfileWrap" style="flex:1;">
                                 <span class="field-label">🎙 Voice Profile (TTS)</span>
@@ -1998,7 +2025,7 @@
         <!-- Toast -->
         <div class="toast-container" id="toastContainer"></div>
     </div>
-    <script src="/pod-studio-static/studio2.js?v=20260427_profilepicker"></script>
+    <script src="/pod-studio-static/studio2.js?v=20260509_arch_types"></script>
     <script src="/pod-studio-static/flowchart.js?v=20260502"></script>
 </body>
 </html>

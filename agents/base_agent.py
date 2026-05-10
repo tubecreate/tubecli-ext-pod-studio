@@ -361,6 +361,7 @@ class ContentAgent:
         FORMAT_TO_FILE = {
             "Educational / Learning": "educational.json",
             "Commercial / Advertisement": "commercial.json",
+            "Architecture / Interior": "architecture.json",
             "Podcast / Talkshow": "podcast.json",
             "Health & Wellness": "health.json",
             "Faith & Religion": "faith.json",

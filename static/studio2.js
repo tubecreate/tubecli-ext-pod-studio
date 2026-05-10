@@ -1,4 +1,4 @@
-﻿/**
+/**
  * POD Studio — Frontend Logic
  * Handles CRUD, SSE streaming, pipeline steps, and sidebar navigation.
  */
@@ -27,6 +27,7 @@ const STEP_REGISTRY = {
 
 const PIPELINE_TEMPLATES = {
     campaign_scene:  { label: '🎞 Campaign Cinematic (Raw → Rewrite → Extract → Storyboard → Grok Video → Audio → Video → Publish)', steps: ['raw', 'rewrite', 'extract', 'storyboard', 'videos', 'audio', 'video', 'publish'] },
+    campaign_ad:     { label: '🛒 Campaign Ads (Raw → Rewrite → Extract → Video → Publish)', steps: ['raw', 'rewrite', 'extract', 'videos', 'publish'] },
     campaign_full:   { label: '📺 Campaign Slideshow',  steps: ['raw', 'rewrite', 'extract', 'storyboard', 'images', 'audio', 'video', 'publish'] },
     audio_story:  { label: '🎧 Audio Story',      steps: ['raw', 'rewrite', 'audio', 'video'] },
     content_only: { label: '📝 Content Only',     steps: ['raw', 'rewrite'] },
@@ -409,6 +410,8 @@ async function _createCampaignFromWiz() {
     metadata.text_in_video = document.getElementById('wizNoTextPrompt')?.value || 'notext';
     metadata.video_length = document.getElementById('wizVideoLength')?.value || 'standard';
     metadata.scene_gen_mode = document.getElementById('wizSceneGenMode')?.value || 'per_shot';
+    metadata.image_engine = document.getElementById('wizImageEngine')?.value || 'grok';
+    metadata.image_browser_profile = document.getElementById('wizImageBrowserProfile')?.value || '';
     
     const galleryCatId = document.getElementById('wizGalleryCategory').value;
     if (galleryCatId) {
@@ -1435,12 +1438,15 @@ function renderExtractResults(data) {
         }).join('');
     }
 
-    // Scenes section
+    // Scenes section - only show individual scenes in per_shot mode
     const scenesSection = document.getElementById('scenesSection');
     const scenesGrid = document.getElementById('scenesGrid');
     const scenesCount = document.getElementById('scenesCount');
+    let _sceneMode = 'per_shot';
+    if (currentCampaign) { try { _sceneMode = JSON.parse(currentCampaign.metadata || '{}').scene_gen_mode || 'per_shot'; } catch(e) {} }
+    const _isPanoramaMode = (_sceneMode === 'panoramic_grid');
 
-    if (scenes.length > 0) {
+    if (scenes.length > 0 && !_isPanoramaMode) {
         scenesSection.style.display = '';
         scenesCount.textContent = scenes.length;
         scenesGrid.className = 'ref-gallery';
@@ -1471,7 +1477,10 @@ function renderExtractResults(data) {
         }).join('');
     }
 
-    // Update extract count
+    // Force hide scenes section in panorama mode
+    if (_isPanoramaMode && scenesSection) { scenesSection.style.display = 'none'; }
+
+        // Update extract count
     document.getElementById('extractCount').textContent = `${characters.length} characters · ${scenes.length} scenes`;
 
     // Render panorama section
@@ -1555,6 +1564,10 @@ async function _uploadRefFile(endpoint, file) {
 function renderPanoramaSection() {
     const section = document.getElementById('panoramaSection');
     if (!section || !currentEpisode) return;
+    // Only show panorama in panoramic_grid mode
+    let _pMode = 'per_shot';
+    if (currentCampaign) { try { _pMode = JSON.parse(currentCampaign.metadata || '{}').scene_gen_mode || 'per_shot'; } catch(e) {} }
+    if (_pMode !== 'panoramic_grid') { section.style.display = 'none'; return; }
     section.style.display = '';
 
     let epMeta = {};
@@ -1681,7 +1694,6 @@ function copyPanoramaPrompt() {
     const lighting = ms.lighting_style || 'Natural cinematic lighting';
     const desc = ms.description || '';
 
-    // Build character descriptions
     const mainChars = chars.filter(c => c.role !== 'product' && c.role !== 'prop');
     const products = chars.filter(c => c.role === 'product' || c.role === 'prop' || c.role === 'hero_product');
 
@@ -1697,81 +1709,80 @@ function copyPanoramaPrompt() {
 
     const script = currentEpisode?.script_content || currentEpisode?.content || '';
     const scriptExcerpt = script.substring(0, 3000).replace(/\n/g, ' ').trim();
-
     const showMatches = script.match(/\[SHOW:/g);
     const shotCount = showMatches ? Math.min(showMatches.length, 6) : 5;
 
-    const prompt = `Create a professional cinematic PRODUCTION DESIGN BOARD for "${campaign.name || 'Scene'}" — a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628) with subtle grid lines and cyan/teal accent borders.
+    // Detect architecture mode
+    const isArchitecture = (cMeta.content_format || '').includes('Architecture') || (cMeta.content_format || '').includes('Interior');
 
-LAYOUT — 4 MAIN ZONES arranged in a structured grid:
+    // Build floor plan section (shared)
+    let floorPlanSection = '';
+    try {
+        const outline = cMeta.series_outline || {};
+        const spatialMap = outline.shared_spatial_map;
+        const episodes = outline.episodes || [];
+        if (spatialMap && spatialMap.zones && spatialMap.zones.length > 0) {
+            const epNum = currentEpisode?.episode_number || 1;
+            const currentEpPlan = episodes.find(e => e.episode_number === epNum) || {};
+            const currentZoneId = currentEpPlan.spatial_zone || '';
+            const totalEps = episodes.length;
+            const zoneLabels = spatialMap.zones.map(z => {
+                const isCurrent = z.zone_id === currentZoneId;
+                return `  ${isCurrent ? '\u2192 ' : '  '}Zone ${z.zone_id}: ${z.name} \u2014 ${(z.description || '').substring(0, 100)}${isCurrent ? ' [CURRENT SCENE - HIGHLIGHT]' : ''}`;
+            }).join('\n');
+            const connections = spatialMap.zones.filter(z => z.connects_to && z.connects_to.length).map(z =>
+                `  Zone ${z.zone_id} \u2192 Zone ${z.connects_to.join(', ')}: ${z.connection_description || 'connected'}`
+            ).join('\n');
+            floorPlanSection = `CRITICAL: Show the COMPLETE connected floor plan of the ENTIRE space (all ${spatialMap.zones.length} zones).\nThis is Screen ${epNum} of ${totalEps} \u2014 camera is currently in Zone ${currentZoneId}.\nOVERALL SPACE: ${spatialMap.description || ''}\nALL ZONES (show all, highlight current):\n${zoneLabels}\nCONNECTIONS between zones:\n${connections}\nDraw the FULL floor plan with ALL zones connected. Highlight Zone ${currentZoneId} with a colored border/glow.\nShow camera position in Zone ${currentZoneId} with numbered icons and movement arrows.\nShow doorways/passages between zones with labeled arrows.`;
+        }
+    } catch(e) {}
 
-ZONE 1 — CHARACTER + HERO OBJECT REFERENCE (Top-left, ~40% width)
-Title label: "1. CHARACTER + HERO OBJECT REFERENCE"
-CHARACTER REFERENCE: Show the main character from 6 angles in a horizontal strip:
-  FRONT | SIDE | BACK | FACE CLOSE-UP | SIDE CLOSE-UP | COSTUME DETAIL
-${charBlock ? `Character details:\n${charBlock}` : '  - A cinematic character appropriate to the scene'}
-${productBlock ? `HERO OBJECT: Show the key product/object from 4 angles:\n  DETAIL | 3/4 VIEW | SIDE SILHOUETTE | TEXTURE DETAIL | IN-CONTEXT\n${productBlock}` : ''}
-Below: SHARED PALETTE (4-5 color swatches) + REFERENCE NOTES (texture keywords, handling notes, material feel)
+    if (!floorPlanSection) {
+        floorPlanSection = isArchitecture
+            ? `A TOP-DOWN architectural floor plan of the space showing:\n  - Room/space layout with walls, doors, windows\n  - Furniture/prop positions as simple shapes\n  - Camera positions marked as numbered icons (Cut 1, Cut 2, Cut 3...)\n  - Camera angle arrows showing direction each cut is facing\n  - Dotted lines showing camera movement paths\n  - NO character icons (architecture only)`
+            : `A TOP-DOWN architectural floor plan of the scene showing:\n  - Room/space layout with walls, doors, windows\n  - Furniture/prop positions as simple shapes\n  - Camera positions marked as numbered icons (Cut 1, Cut 2, Cut 3...)\n  - Camera angle arrows showing direction each cut is facing\n  - Dotted lines showing camera movement paths\n  - Character position(s) marked with figure icons`;
+    }
 
-ZONE 2 — ENVIRONMENT / SET DESIGN (Top-right, ~60% width)
-Title label: "2. ENVIRONMENT / SET DESIGN"
-MAIN ENVIRONMENT STILL: One large cinematic establishing shot of: ${location} — ${time}
-${desc ? `Scene: ${desc}` : ''}
-Below the main still, show 3 SUPPLEMENTARY VIEWS:
-  - Wide angle from different side
-  - Detail/texture shot of key architectural element
-  - Character-in-environment context shot
-MATERIALS + SET DETAIL STRIP: Small thumbnails of key materials/textures (wood grain, stone, fabric, metal, etc.)
+    // Detect aspect ratio and build layout instructions
+    const aspectRatio = cMeta.aspect_ratio || '16:9';
+    const isPortrait = aspectRatio === '9:16' || aspectRatio === '3:4';
+    const isSquare = aspectRatio === '1:1';
+    let layoutInstruction = '';
+    let charAngleLayout = '';
+    let storyboardLayout = '';
+    if (isPortrait) {
+        layoutInstruction = `\nIMAGE ASPECT RATIO: ${aspectRatio} (PORTRAIT / VERTICAL)\nCRITICAL LAYOUT RULE: The entire design board MUST be in PORTRAIT orientation (tall, vertical).\nArrange ALL zones in a VERTICAL STACK (top to bottom), NOT side-by-side.\nZone widths should be 100% (full width of the board).\nOrder from top to bottom: Zone 1 → Zone 2 → Zone 3 → Zone 5 → Zone 4.\n`;
+        charAngleLayout = isArchitecture
+            ? 'Arrange furniture/material reference images in a 2-column vertical grid.'
+            : 'Show the main character angles in a VERTICAL STRIP (stacked top-to-bottom):\n  TOP: FACE CLOSE-UP\n  FRONT VIEW\n  SIDE VIEW\n  BACK VIEW\n  COSTUME DETAIL\n  BOTTOM: FULL BODY';
+        storyboardLayout = `Arrange ${shotCount} CUTS in a VERTICAL column (stacked top-to-bottom), each as a wide horizontal frame.`;
+    } else if (isSquare) {
+        layoutInstruction = `\nIMAGE ASPECT RATIO: 1:1 (SQUARE)\nLayout: Use a 2x2 grid arrangement for zones. Zone 3 (Storyboard) spans full width in the middle.\n`;
+        charAngleLayout = isArchitecture
+            ? 'Arrange furniture/material reference images in a 2x3 grid.'
+            : 'Show the main character from 6 angles in a horizontal strip:\n  FRONT | SIDE | BACK | FACE CLOSE-UP | SIDE CLOSE-UP | COSTUME DETAIL';
+        storyboardLayout = `${shotCount} sequential cinematic CUTS arranged horizontally (Cut 1, Cut 2, Cut 3...).`;
+    } else {
+        // 16:9 landscape (default)
+        layoutInstruction = `\nIMAGE ASPECT RATIO: ${aspectRatio} (LANDSCAPE / HORIZONTAL)\nCRITICAL LAYOUT RULE: The entire design board MUST be in LANDSCAPE orientation (wide, horizontal).\nArrange zones in a structured HORIZONTAL GRID:\n  TOP ROW: Zone 1 (left ~40%) + Zone 2 (right ~60%)\n  MIDDLE ROW: Zone 3 (full width)\n  BOTTOM ROW: Zone 5 (left ~60%) + Zone 4 (right ~40%)\n`;
+        charAngleLayout = isArchitecture
+            ? 'Arrange furniture/material reference images in a 2x3 grid.'
+            : 'Show the main character from 6 angles in a HORIZONTAL STRIP:\n  FRONT | SIDE | BACK | FACE CLOSE-UP | SIDE CLOSE-UP | COSTUME DETAIL';
+        storyboardLayout = `${shotCount} sequential cinematic CUTS arranged horizontally (Cut 1, Cut 2, Cut 3...).`;
+    }
 
-ZONE 3 — STORYBOARD (Middle band, full width)
-Title label: "3. STORYBOARD"
-${shotCount} sequential cinematic CUTS arranged horizontally (Cut 1, Cut 2, Cut 3...):
-Each cut shows a different camera angle of the SAME scene with:
-  - Cut number label at top
-  - Small cinematic frame showing the shot
-  - Below each frame: 2 lines of shot description (camera type, movement, action)
-Camera angle progression:
-  Cut 1: STATIC / WIDE — Establishing shot
-  Cut 2: DOLLY IN / MEDIUM — Character approach
-  Cut 3: TRACK / EXTREME CU — Detail interaction
-  Cut 4: ARC / OTS — Over-shoulder perspective
-  Cut 5: PUSH IN / CLOSE-UP — Emotional payoff
-${shotCount > 5 ? '  Cut 6: PULL OUT / WIDE — Resolution' : ''}
+    let prompt;
 
-ZONE 4 — FLOOR PLAN + CAMERA PLAN (Bottom-right, ~40% width)
-Title label: "FLOOR PLAN + CAMERA PLAN (TOP-DOWN)"
-A TOP-DOWN architectural floor plan of the scene showing:
-  - Room/space layout with walls, doors, windows
-  - Furniture/prop positions as simple shapes
-  - Camera positions marked as numbered icons (Cut 1, Cut 2, Cut 3...)
-  - Camera angle arrows showing direction each cut is facing
-  - Dotted lines showing camera movement paths
-  - Character position(s) marked with figure icons
+    if (isArchitecture) {
+        const spaceBlock = chars.slice(0, 4).map(c => {
+            const app = (c.appearance || '').substring(0, 150);
+            return `  - ${c.name}: ${app}`;
+        }).join('\n');
 
-ZONE 5 — LIGHTING / MOOD / STYLE NOTES (Bottom-left, ~60% width)
-Title label: "4. LIGHTING / MOOD / STYLE NOTES"
-Left side: 3 small reference images showing lighting atmosphere:
-  - Window/Room Atmosphere
-  - Key light quality (${lighting})
-  - Neutral/fill light reference
-Right side: Text sections:
-  MOOD KEYWORDS: ${mood}
-  CINEMATOGRAPHY STYLE NOTES:
-  - Key light direction and quality
-  - Shadow depth and fill ratio
-  - Atmosphere (particles, haze, dust)
-  - Color palette approach
-
-VISUAL STYLE RULES:
-- Dark navy/charcoal background (#0a1628)
-- Clean white text labels, section titles in CAPS
-- Subtle grid lines separating zones
-- Professional film production aesthetic
-- All images are cinematic quality, consistent lighting and color
-- Style: ${style}
-- 8K ultra-detailed, professional production design board
-- No watermarks, clean readable layout
-${scriptExcerpt ? `\nSCRIPT CONTEXT: ${scriptExcerpt}${script.length > 3000 ? '...' : ''}` : ''}`;
+        prompt = `Create a professional cinematic PRODUCTION DESIGN BOARD for ARCHITECTURE / INTERIOR "${campaign.name || 'Scene'}" \u2014 a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628) with subtle grid lines and cyan/teal accent borders.\nCRITICAL: This is ARCHITECTURE ONLY. ZERO people, ZERO characters anywhere. Only spaces, furniture, materials, light.${layoutInstruction}\nZONE 1 \u2014 FURNITURE + MATERIAL REFERENCE\nTitle label: "1. FURNITURE + MATERIAL REFERENCE"\n${charAngleLayout}\n${spaceBlock || '  - Key furniture and fixtures from the interior space'}\nBelow: COLOR PALETTE (5-6 color swatches with hex codes) + MATERIAL NOTES (wood type, stone, fabric, metal finishes)\n\nZONE 2 \u2014 ENVIRONMENT / SET DESIGN\nTitle label: "2. ENVIRONMENT / SET DESIGN"\nMAIN ENVIRONMENT STILL: One large cinematic establishing shot of: ${location} \u2014 ${time}. NO PEOPLE.\n${desc ? `Scene: ${desc}` : ''}\n3 SUPPLEMENTARY VIEWS (all empty, no people): wide angle, detail/texture close-up, overhead layout.\nMATERIALS STRIP: Small thumbnails of key materials/textures.\n\nZONE 3 \u2014 STORYBOARD\nTitle label: "3. STORYBOARD"\n${storyboardLayout}\nEach cut shows a different camera angle of the SAME space with NO PEOPLE.\nCamera progression: WIDE \u2192 DOLLY IN \u2192 TRACKING \u2192 CRANE \u2192 CLOSE-UP${shotCount > 5 ? ' \u2192 PULL OUT' : ''}\n\nZONE 4 \u2014 FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n${floorPlanSection}\n\nZONE 5 \u2014 LIGHTING / MOOD / STYLE NOTES\nTitle label: "4. LIGHTING / MOOD / STYLE NOTES"\nLighting refs (NO PEOPLE) + MOOD: ${mood}\nCinematography: key light, shadows, atmosphere, material palette.\n\nVISUAL STYLE: Dark navy bg (#0a1628), white text, cyan accents. ${style}. 8K ultra-detailed, NO PEOPLE, no watermarks.${scriptExcerpt ? `\n\nSCRIPT CONTEXT: ${scriptExcerpt}${script.length > 3000 ? '...' : ''}` : ''}`;
+    } else {
+        prompt = `Create a professional cinematic PRODUCTION DESIGN BOARD for "${campaign.name || 'Scene'}" \u2014 a single comprehensive reference sheet image with ALL zones on a dark navy background (#0a1628) with subtle grid lines and cyan/teal accent borders.${layoutInstruction}\nZONE 1 \u2014 CHARACTER + HERO OBJECT REFERENCE\nTitle label: "1. CHARACTER + HERO OBJECT REFERENCE"\n${charAngleLayout}\n${charBlock ? `Character details:\n${charBlock}` : '  - A cinematic character appropriate to the scene'}\n${productBlock ? `HERO OBJECT:\n${productBlock}` : ''}\nBelow: SHARED PALETTE (4-5 color swatches) + REFERENCE NOTES\n\nZONE 2 \u2014 ENVIRONMENT / SET DESIGN\nTitle label: "2. ENVIRONMENT / SET DESIGN"\nMAIN ENVIRONMENT STILL: ${location} \u2014 ${time}\n${desc ? `Scene: ${desc}` : ''}\n3 SUPPLEMENTARY VIEWS: wide angle, detail/texture, character-in-environment.\nMATERIALS STRIP: key textures.\n\nZONE 3 \u2014 STORYBOARD\nTitle label: "3. STORYBOARD"\n${storyboardLayout}\nEach cut shows a different camera angle of the SAME scene.\nCamera progression: WIDE \u2192 DOLLY IN \u2192 TRACK CU \u2192 ARC/OTS \u2192 PUSH IN${shotCount > 5 ? ' \u2192 PULL OUT' : ''}\n\nZONE 4 \u2014 FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\n${floorPlanSection}\n\nZONE 5 \u2014 LIGHTING / MOOD / STYLE NOTES\nTitle label: "4. LIGHTING / MOOD / STYLE NOTES"\nLighting refs + MOOD: ${mood}\nCinematography: key light (${lighting}), shadows, atmosphere, color palette.\n\nVISUAL STYLE: Dark navy bg (#0a1628), white text, cyan accents. ${style}. 8K ultra-detailed, no watermarks.${scriptExcerpt ? `\n\nSCRIPT CONTEXT: ${scriptExcerpt}${script.length > 3000 ? '...' : ''}` : ''}`;
+    }
 
     navigator.clipboard.writeText(prompt).then(() => {
         toast('\uD83D\uDCCB Production Board prompt copied!', 'success');
@@ -1784,6 +1795,46 @@ ${scriptExcerpt ? `\nSCRIPT CONTEXT: ${scriptExcerpt}${script.length > 3000 ? '.
         document.body.removeChild(ta);
         toast('\uD83D\uDCCB Production Board prompt copied!', 'success');
     });
+}
+
+// ── Generate Panorama via AI (ChatGPT browser) ────────────────
+async function generatePanoramaAI() {
+    if (!currentCampaign || !currentEpisode) {
+        toast('Please select an episode first', 'error');
+        return;
+    }
+    const btn = document.getElementById('btnPanoramaAIGen');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Generating...';
+    }
+    toast('🎨 Starting panorama generation via ChatGPT...', 'info');
+    try {
+        const resp = await fetch(`${API}/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/generate-panorama`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'success') {
+            let meta = {};
+            try { meta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+            meta.panorama_image_url = data.panorama_url;
+            meta.panorama_image_path = data.panorama_path || '';
+            meta.scene_mode = true;
+            currentEpisode.metadata = JSON.stringify(meta);
+            toast('✅ Panorama generated successfully!', 'success');
+            renderPanoramaSection();
+        } else {
+            toast(`❌ Panorama generation failed: ${data.error || data.detail || 'Unknown error'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🎨 AI Gen';
+        }
+    }
 }
 
 function openCharacterDetail(charId) {
@@ -3484,6 +3535,12 @@ async function startRealtimeAutoPilot() {
         
         // Always save video engine
         meta.video_engine = _getVideoEngine();
+
+        // Save image engine + image browser profile (separate from video)
+        const wizImgEngine = document.getElementById('wizImageEngine');
+        if (wizImgEngine && wizImgEngine.value) meta.image_engine = wizImgEngine.value;
+        const wizImgBrowser = document.getElementById('wizImageBrowserProfile');
+        if (wizImgBrowser && wizImgBrowser.value) meta.image_browser_profile = wizImgBrowser.value;
         
         if (selectedProfile) {
             meta.browser_profile_name = selectedProfile;
@@ -4439,6 +4496,49 @@ async function _loadBrowserProfilesIntoSelect(selectId) {
 }
 
 // ── Chip-based Browser Profile Selector ──
+// Image Browser Profile Loader (separate from video browser)
+async function loadWizImageBrowserProfiles() {
+    const sel = document.getElementById('wizImageBrowserProfile');
+    if (!sel) return;
+    if (sel.options.length > 1) return;
+    try {
+        let profiles = _browserProfilesCache;
+        if (!profiles || profiles.length === 0) {
+            const resp = await fetch('/api/v1/browser/profiles');
+            const res = await resp.json();
+            profiles = res.profiles || [];
+            if (profiles.length > 0) _browserProfilesCache = profiles;
+        }
+        if (profiles.length > 0) {
+            sel.innerHTML = '<option value="">-- Browser --</option>';
+            profiles.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.name;
+                opt.textContent = p.name;
+                sel.appendChild(opt);
+            });
+            if (currentCampaign) {
+                try {
+                    const meta = JSON.parse(currentCampaign.metadata || '{}');
+                    if (meta.image_browser_profile) {
+                        for (let i = 0; i < sel.options.length; i++) {
+                            if (sel.options[i].value === meta.image_browser_profile) { sel.selectedIndex = i; break; }
+                        }
+                    }
+                } catch(e) {}
+            }
+            if (!sel.value) {
+                const saved = localStorage.getItem('cs_last_image_browser_profile');
+                if (saved) {
+                    for (let i = 0; i < sel.options.length; i++) {
+                        if (sel.options[i].value === saved) { sel.selectedIndex = i; break; }
+                    }
+                }
+            }
+        }
+    } catch(e) { console.warn('loadWizImageBrowserProfiles:', e); }
+}
+
 let _chipSelectedProfiles = [];
 
 function _renderBrowserChips() {
@@ -8505,7 +8605,13 @@ function _renderGalleryCards(items) {
     
     const _charTypeLabels = {
         individual: '👤', duo: '👥', friend_group: '🤝',
-        crowd: '👨‍👩‍👧‍👦', creature: '🐾', object: '📦'
+        crowd: '👨‍👩‍👧‍👦', creature: '🐾', object: '📦',
+        costume_full: '👗', fabric_swatch: '🧵', pattern_design: '🎨',
+        hair_accessory: '💇', earring: '💎', necklace: '📿', bracelet: '⌚', other_accessory: '🎀',
+        location: '🏛️', architecture: '🏠', interior_design: '🛋️', exterior: '🏢', nature: '🌿',
+        lighting_ref: '💡', color_palette: '🎨', mood_board: '🌫️',
+        chart: '📊', diagram: '🔀', infographic: '📈', table: '📋', screenshot: '🖥️', screen: '📺',
+        holographic: '🌈', thought_bubble: '💭', overlay: '🎭', transition: '🔄', particle: '✨', data_panel: '📟'
     };
     items.forEach(item => {
         const card = document.createElement('div');
@@ -8798,7 +8904,13 @@ async function analyzeGalleryImage(manualKey = null) {
             console.log('Gallery Auto-Fill analysis:', a);
             
             // Character Type
-            const validTypes = ['individual', 'duo', 'friend_group', 'crowd', 'creature', 'object'];
+            const validTypes = ['individual', 'duo', 'friend_group', 'crowd', 'creature', 'object',
+                'costume_full', 'fabric_swatch', 'pattern_design',
+                'hair_accessory', 'earring', 'necklace', 'bracelet', 'other_accessory',
+                'location', 'architecture', 'interior_design', 'exterior', 'nature',
+                'lighting_ref', 'color_palette', 'mood_board',
+                'chart', 'diagram', 'infographic', 'table', 'screenshot', 'screen',
+                'holographic', 'thought_bubble', 'overlay', 'transition', 'particle', 'data_panel'];
             let detectedType = 'individual';
             if (a.char_type) {
                 const ct = a.char_type.toLowerCase().replace(/\s+/g, '_');

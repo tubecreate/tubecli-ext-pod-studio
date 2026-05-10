@@ -118,6 +118,21 @@ The `narration_text` field is the MOST IMPORTANT field — it will be read aloud
     - Same lighting description.
     - Same model outfit description.
     - Only vary the camera angle, shot type, and model pose.
+19. CROSS-EPISODE SPATIAL CONTINUITY (when `spatial_zone` or `shared_spatial_map` is in context):
+    This episode is ONE SEGMENT of a multi-part video. Each episode = one ~10s clip that will be stitched together.
+    
+    CRITICAL RULES:
+    a) ALL shots in this episode take place in the assigned `spatial_zone`. Use the zone's description for environment details.
+    b) The FIRST shot's `video_prompt` MUST begin from `camera_start_position` (provided in context).
+       Example: "Camera starts at the entrance, slowly tracking forward through the warm golden-lit living room..."
+    c) The LAST shot's `video_prompt` MUST end at `camera_end_position` (provided in context).
+       Example: "...camera continues pushing forward towards the glass sliding door leading to the kitchen. [CONTINUOUS]"
+    d) The ending frame of this episode MUST visually match the starting frame of the next episode.
+       Use the `zone_connection` context to describe the transition point (door, hallway, path).
+    e) If `previous_episode` context includes ending shots, the FIRST shot here MUST continue that visual flow.
+    f) SHARED VISUAL ELEMENTS: All episodes share the same characters, lighting style, and color temperature.
+       Only the spatial zone (background/location) changes between episodes.
+    g) In `image_prompt`, always describe the SPECIFIC zone environment from `current_zone_description`.
 """
 
 
