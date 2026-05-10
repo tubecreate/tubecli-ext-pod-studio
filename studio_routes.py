@@ -1377,8 +1377,8 @@ async def _autopilot_runner(campaign_id: int):
                 else:
                     meta["autopilot_status"] = f"running {idx+1}/{total} - checking remaining scene images"
                     _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
-                    scene_engine = meta.get("video_engine", "grok")
-                    scene_profile = meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
+                    scene_engine = meta.get("image_engine") or meta.get("video_engine", "grok")
+                    scene_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or meta.get("browser_profile") or "Default"
                     scene_aspect_ratio = meta.get("aspect_ratio", "16:9")
                     scene_visual_style = _get_visual_style(campaign) if campaign else "Realistic"
                     all_scenes = _db().list_scenes(campaign_id)

@@ -3882,7 +3882,7 @@ async function startRealtimeAutoPilot() {
                                 let browserProfile = '';
                                 try {
                                     const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
-                                    browserProfile = campaignMeta.browser_profile_name || campaignMeta.browser_profile || '';
+                                    browserProfile = campaignMeta.image_browser_profile || campaignMeta.browser_profile_name || campaignMeta.browser_profile || '';
                                 } catch(e) {}
                                 if (!browserProfile) browserProfile = localStorage.getItem('cs_last_browser_profile') || '';
                                 
@@ -3965,7 +3965,7 @@ async function startRealtimeAutoPilot() {
                         let browserProfile = '';
                         try {
                             const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
-                            browserProfile = campaignMeta.browser_profile_name || campaignMeta.browser_profile_path || '';
+                            browserProfile = campaignMeta.image_browser_profile || campaignMeta.browser_profile_name || campaignMeta.browser_profile_path || '';
                         } catch(e) {}
                         if (!browserProfile) browserProfile = localStorage.getItem('cs_last_browser_profile') || '';
                         
