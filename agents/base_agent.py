@@ -54,7 +54,7 @@ class ContentAgent:
         # When gallery characters are available, FORCE the AI to select from them
         # instead of inventing new characters. This is appended to ANY extractor
         # prompt (default or skill-based).
-        if context and self.agent_type == "extractor":
+        if context:
             gallery_chars = context.get("available_gallery_characters")
             if gallery_chars:
                 # Build a concise roster for the prompt
@@ -69,43 +69,59 @@ class ContentAgent:
                     )
                 roster_text = "\n".join(roster_lines)
 
-                gallery_injection = (
-                    "\n\n## GALLERY-FIRST CHARACTER SELECTION (HIGHEST PRIORITY)\n"
-                    "You have a CHARACTER GALLERY with pre-defined characters. "
-                    "You MUST follow this strict selection algorithm:\n\n"
-                    "### Available Gallery Models & Products:\n"
-                    f"{roster_text}\n\n"
-                    "### Selection Rules:\n"
-                    "1. **GALLERY FIRST**: For EVERY character or visual actor in the script, "
-                    "FIRST check if a gallery character can represent them. "
-                    "Use the gallery character's EXACT `name` and set `gallery_item_id` to their ID.\n"
-                    "2. **CONSOLIDATE VARIATIONS**: If the script mentions the same character "
-                    "in different poses/emotions (e.g. 'Chibi crying', 'Chibi smiling', "
-                    "'Chibi thinking'), these are ALL the SAME character. "
-                    "Output ONE character entry using the gallery name, NOT separate entries.\n"
-                    "3. **FUZZY MATCHING**: A gallery character named 'Nhân vật Chibi' can "
-                    "represent 'Nhân vật Chibi đang khóc', 'Chibi character', 'Cute character', etc. "
-                    "Match by the BASE character identity, ignoring emotional/action suffixes.\n"
-                    "4. **TYPE MATCHING (CRITICAL)**:\n"
-                    "   - `Type=individual` → single person/character.\n"
-                    "   - `Type=duo` → a PAIR of characters (couple, two friends, two rivals).\n"
-                    "   - `Type=group` → a GROUP of 3+ characters.\n"
-                    "   - `Type=friend` → a pair/group of FRIENDS.\n"
-                    "   When the script describes interactions between TWO characters (a couple, rivals, partners), "
-                    "prefer a `duo` or `friend` gallery item over two separate `individual` items.\n"
-                    "   When the script describes a group/team/class, prefer a `group` gallery item.\n"
-                    "5. **CREATE NEW ONLY IF**: No gallery character remotely fits the role. "
-                    "In that case, set `gallery_item_id` to null.\n"
-                    "6. **NEVER DUPLICATE**: If a gallery character is already in `existing_characters`, "
-                    "do NOT re-extract them.\n\n"
-                    "### Required Output Fields for EVERY character:\n"
-                    "```\n"
-                    '"gallery_item_id": <int from gallery ID, or null if no match>,\n'
-                    '"suitability_score": <int 0-100, or null>\n'
-                    "```\n"
-                )
-                base_prompt += gallery_injection
-                logger.info(f"[extractor] Injected GALLERY-FIRST rules ({len(gallery_chars)} gallery chars available)")
+                if self.agent_type == "extractor":
+                    gallery_injection = (
+                        "\n\n## GALLERY-FIRST CHARACTER SELECTION (HIGHEST PRIORITY)\n"
+                        "You have a CHARACTER GALLERY with pre-defined characters. "
+                        "You MUST follow this strict selection algorithm:\n\n"
+                        "### Available Gallery Models & Products:\n"
+                        f"{roster_text}\n\n"
+                        "### Selection Rules:\n"
+                        "1. **GALLERY FIRST**: For EVERY character or visual actor in the script, "
+                        "FIRST check if a gallery character can represent them. "
+                        "Use the gallery character's EXACT `name` and set `gallery_item_id` to their ID.\n"
+                        "2. **CONSOLIDATE VARIATIONS**: If the script mentions the same character "
+                        "in different poses/emotions (e.g. 'Chibi crying', 'Chibi smiling', "
+                        "'Chibi thinking'), these are ALL the SAME character. "
+                        "Output ONE character entry using the gallery name, NOT separate entries.\n"
+                        "3. **FUZZY MATCHING**: A gallery character named 'Nhân vật Chibi' can "
+                        "represent 'Nhân vật Chibi đang khóc', 'Chibi character', 'Cute character', etc. "
+                        "Match by the BASE character identity, ignoring emotional/action suffixes.\n"
+                        "4. **TYPE MATCHING (CRITICAL)**:\n"
+                        "   - `Type=individual` → single person/character.\n"
+                        "   - `Type=duo` → a PAIR of characters (couple, two friends, two rivals).\n"
+                        "   - `Type=group` → a GROUP of 3+ characters.\n"
+                        "   - `Type=friend` → a pair/group of FRIENDS.\n"
+                        "   When the script describes interactions between TWO characters (a couple, rivals, partners), "
+                        "prefer a `duo` or `friend` gallery item over two separate `individual` items.\n"
+                        "   When the script describes a group/team/class, prefer a `group` gallery item.\n"
+                        "5. **CREATE NEW ONLY IF**: No gallery character remotely fits the role. "
+                        "In that case, set `gallery_item_id` to null.\n"
+                        "6. **NEVER DUPLICATE**: If a gallery character is already in `existing_characters`, "
+                        "do NOT re-extract them.\n\n"
+                        "### Required Output Fields for EVERY character:\n"
+                        "```\n"
+                        '"gallery_item_id": <int from gallery ID, or null if no match>,\n'
+                        '"suitability_score": <int 0-100, or null>\n'
+                        "```\n"
+                    )
+                    base_prompt += gallery_injection
+                    logger.info(f"[extractor] Injected GALLERY-FIRST rules ({len(gallery_chars)} gallery chars available)")
+                elif self.agent_type in ["series_planner", "novel_writer", "script_rewriter"]:
+                    writer_injection = (
+                        "\n\n## CHARACTER CAST CONSTRAINT (STRICT)\n"
+                        "You are writing a script for a project with a FIXED cast of characters.\n"
+                        "You MUST strictly adhere to the following provided character gallery:\n\n"
+                        "### Available Characters:\n"
+                        f"{roster_text}\n\n"
+                        "### Writing Rules:\n"
+                        "1. **USE ONLY THESE CHARACTERS**: The primary actors and speakers in your story MUST be selected from this list.\n"
+                        "2. **NO EXTRA CHARACTERS**: Do NOT introduce named speaking characters or important roles outside of this list.\n"
+                        "3. **SINGLE-CHARACTER CONSTRAINT**: If there is only 1 individual character in the list, the entire script MUST be a monologue, POV, or narration driven entirely by this single character. Do NOT invent a second person for them to interact or talk with.\n"
+                        "4. Integrate the characters naturally into the script, matching their assigned Role and Appearance.\n"
+                    )
+                    base_prompt += writer_injection
+                    logger.info(f"[{self.agent_type}] Injected CAST CONSTRAINT ({len(gallery_chars)} chars available)")
 
             # ── Graphic Template Injection (Presentation format) ──
             graphic_templates = context.get("available_graphic_templates")

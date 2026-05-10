@@ -136,7 +136,8 @@ async def batch_generate(
     """
     Generate videos for a batch of storyboard shots using multiple browser profiles concurrently.
     """
-    pending = [s for s in shots if s.get("image_prompt", "").strip()]
+    # Panoramic shots: pass through even with empty prompt (image ref only)
+    pending = [s for s in shots if s.get("image_prompt", "").strip() or s.get("_panoramic") or s.get("ref_images")]
     if not overwrite:
         pending = [s for s in pending if not s.get("video_url", "").strip()]
 
@@ -209,6 +210,9 @@ async def batch_generate(
                 prompt = raw_prompt
 
             filename = f"ep{episode_id}_shot{shot_num:03d}.mp4"
+            # For panoramic shots, use a descriptive filename
+            if shot.get("_panoramic"):
+                filename = f"ep{episode_id}_panorama.mp4"
             out_path = os.path.join(out_dir, filename)
             task_entry = {"id": shot["id"], "prompt": prompt, "output": out_path}
             # Pass through ref_images if provided by the caller

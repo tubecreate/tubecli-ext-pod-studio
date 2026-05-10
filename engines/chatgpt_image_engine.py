@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 def _get_ref_dir():
-    """Get the reference images directory."""
+    """Get the reference images directory (must match studio_routes.py _get_ref_dir)."""
     try:
         from tubecli.config import DATA_DIR
-        ref_dir = os.path.join(str(DATA_DIR), "references")
+        ref_dir = os.path.join(str(DATA_DIR), "pod_studio", "references")
     except Exception:
-        ref_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "data", "references")
+        ref_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "data", "pod_studio", "references")
     os.makedirs(ref_dir, exist_ok=True)
     return ref_dir
+
 
 
 async def batch_generate(

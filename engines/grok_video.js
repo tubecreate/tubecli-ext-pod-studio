@@ -338,51 +338,97 @@ async function sleep(ms) {
                 await inputEl.fill('');
                 await sleep(200);
 
-                // Use robust filling — append aspect ratio to ensure correct output
-                let promptClean = shot.prompt.replace(/\n+/g, ' ').trim();
                 const aspectRatio = shot.aspect_ratio || '16:9';
-                if (!promptClean.includes('aspect ratio') && !promptClean.includes('16:9') && !promptClean.includes('9:16')) {
-                    const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
-                    promptClean += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
-                }
-                try {
-                    await inputEl.fill(promptClean);
-                } catch(e) {
-                    await page.keyboard.type(promptClean, { delay: 5 });
-                }
-                await sleep(1000); // Wait for the submit button to become active
-                
-                // Try multiple ways to submit!
-                log('Submitting prompt...');
-                let submitted = false;
-                
-                // 1. Try to find the button inside the input's bounding box/container
-                try {
-                    const submitBtn = page.locator('button[aria-label*="Submit"], button[aria-label*="Send"], button[aria-label*="Gửi"], button[title*="Submit"]').first();
-                    if (await submitBtn.isVisible({ timeout: 500 })) {
-                        await submitBtn.click();
-                        submitted = true;
-                    }
-                } catch(e) {}
+                let promptClean = (shot.prompt || '').replace(/\n+/g, ' ').trim();
 
-                // 2. Click the last button with an SVG (that isn't one of our pills)
-                if (!submitted) {
+                // Panoramic mode: prompt is empty, image ref is enough — submit directly
+                if (!promptClean) {
+                    log('Panoramic mode: no prompt text, submitting with image ref only...');
+                    await sleep(500);
+                    // Try submit button first
+                    let submitted = false;
                     try {
-                        const allBtns = page.locator('button:has(svg)');
-                        const count = await allBtns.count();
-                        if (count > 0) {
-                            await allBtns.nth(count - 1).click();
+                        const submitBtn = page.locator('button[aria-label*="Submit"], button[aria-label*="Send"], button[aria-label*="Gửi"]').first();
+                        if (await submitBtn.isVisible({ timeout: 800 })) {
+                            await submitBtn.click();
+                            submitted = true;
                         }
                     } catch(e) {}
+                    if (!submitted) {
+                        try {
+                            const allBtns = page.locator('button:has(svg)');
+                            const count = await allBtns.count();
+                            if (count > 0) await allBtns.nth(count - 1).click();
+                        } catch(e) {}
+                    }
+                    await sleep(300);
+                    try { await inputEl.press('Enter', { delay: 50 }); } catch(e) {
+                        await page.keyboard.press('Enter');
+                    }
+                } else {
+                    // Normal mode: fill prompt then submit
+                    // After image upload, input may lose focus — re-click and use type() not fill()
+                    if (!promptClean.includes('aspect ratio') && !promptClean.includes('16:9') && !promptClean.includes('9:16')) {
+                        const arLabel = aspectRatio === '9:16' ? 'portrait' : aspectRatio === '1:1' ? 'square' : 'widescreen';
+                        promptClean += ` Output in ${aspectRatio} ${arLabel} aspect ratio.`;
+                    }
+                    
+                    // Re-focus the input (uploads may have shifted focus)
+                    try {
+                        await inputEl.click({ force: true });
+                        await sleep(400);
+                    } catch(e) {}
+                    
+                    // Clear existing content (Ctrl+A then Delete works for both textarea and contenteditable)
+                    try {
+                        await page.keyboard.press('Control+a');
+                        await sleep(100);
+                        await page.keyboard.press('Delete');
+                        await sleep(100);
+                    } catch(e) {}
+
+                    // Try fill() first (works for textarea), then keyboard.type() as fallback (works for contenteditable)
+                    let filled = false;
+                    try {
+                        await inputEl.fill(promptClean);
+                        const val = await inputEl.inputValue().catch(() => inputEl.textContent());
+                        if ((val || '').length > 3) filled = true;
+                    } catch(e) {}
+                    
+                    if (!filled) {
+                        try {
+                            await inputEl.click({ force: true });
+                            await sleep(300);
+                            await page.keyboard.type(promptClean, { delay: 8 });
+                            filled = true;
+                            log('Prompt typed via keyboard.type()');
+                        } catch(e) {
+                            log('Failed to type prompt: ' + e.message);
+                        }
+                    }
+                    
+                    await sleep(800); // Wait for submit button to activate
+
+                    log('Submitting prompt...');
+                    let submitted = false;
+                    try {
+                        const submitBtn = page.locator('button[aria-label*="Submit"], button[aria-label*="Send"], button[aria-label*="Gửi"], button[title*="Submit"]').first();
+                        if (await submitBtn.isVisible({ timeout: 500 })) {
+                            await submitBtn.click();
+                            submitted = true;
+                        }
+                    } catch(e) {}
+                    if (!submitted) {
+                        try {
+                            const allBtns = page.locator('button:has(svg)');
+                            const count = await allBtns.count();
+                            if (count > 0) await allBtns.nth(count - 1).click();
+                        } catch(e) {}
+                    }
+                    await sleep(500);
+                    try { await page.keyboard.press('Enter'); } catch(e) {}
                 }
 
-                // 3. Fallback to Enter key
-                await sleep(500);
-                try {
-                    await inputEl.press('Enter', { delay: 50 });
-                } catch(e) {
-                    await page.keyboard.press('Enter');
-                }
                 
                 log('Direct video prompt submitted. Waiting for generation...');
                 // CRITICAL: Reset captured URL AFTER submit so we only capture the NEW video

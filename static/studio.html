@@ -1019,7 +1019,7 @@
 
                             <div class="form-group">
                                 <label class="form-label">Appearance Details</label>
-                                <textarea id="galItemAppearance" class="input" rows="4" placeholder="Detailed visual description..."></textarea>
+                                <textarea id="galItemAppearance" class="input" rows="12" style="resize: vertical; font-family: monospace; font-size: 13px; line-height: 1.5; min-height: 120px;" placeholder="Detailed visual description..."></textarea>
                             </div>
 
                             <div style="display:flex; gap:12px;">
@@ -1549,112 +1549,149 @@
                 </div>
 
                 <div id="wizStep3" style="display:none">
-                    <div class="modal-form" style="display:flex; flex-direction:column; height:70vh; max-height:600px;">
-                        <label class="field" style="flex:1; min-height:0; display:flex; flex-direction:column;">
-                            <span class="field-label" id="wizOutlineTitle">Proposed Episodes</span>
-                            <div class="input" id="wizOutlineReview" style="flex:1; overflow-y:auto; background: var(--bg-1); text-align: left; padding:10px;"></div>
-                        </label>
-                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
-                            <label class="field" style="flex:0.7;">
-                                <span class="field-label">🖼 Image Engine</span>
-                                <div class="select-wrapper">
-                                    <select id="wizImageEngine" class="input">
-                                        <option value="grok">🤖 Grok Image</option>
-                                        <option value="veo3">🎨 Veo3 ImageFX</option>
-                                        <option value="chatgpt">🧠 ChatGPT Image</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </div>
-                            </label>
-                            <label class="field" style="flex:1;">
-                                <span class="field-label">🌐 Image Browser Profile</span>
-                                <div class="select-wrapper">
-                                    <select id="wizImageBrowserProfile" class="input" onfocus="loadWizImageBrowserProfiles()">
-                                        <option value="">-- Chọn browser --</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </div>
-                            </label>
+                    <div class="modal-form" style="display:flex; flex-direction:row !important; gap:16px; height:60vh; max-height:520px;">
+                        <!-- LEFT COLUMN: Script/Episode Preview -->
+                        <div style="flex:1.1; min-width:0; display:flex; flex-direction:column; gap:0;">
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                                <span class="field-label" id="wizOutlineTitle" style="margin:0; font-size:13px; font-weight:600; color:var(--text-0);">📋 Proposed Episodes</span>
+                                <span style="font-size:10px; color:var(--text-3); background:var(--bg-2); padding:2px 8px; border-radius:10px;" id="wizOutlineCount"></span>
+                            </div>
+                            <div class="input" id="wizOutlineReview" style="flex:1; overflow-y:auto; background:var(--bg-1); text-align:left; padding:12px; border-radius:8px; font-size:13px; line-height:1.6; border:1px solid var(--border);"></div>
                         </div>
-                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
-                            <label class="field" id="wizVoiceProfileWrap" style="flex:1;">
-                                <span class="field-label">🎙 Voice Profile (TTS)</span>
-                                <div class="select-wrapper">
-                                    <select id="wizVoiceProfileExec" class="input">
-                                        <option value="">-- Chọn giọng đọc --</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+
+                        <!-- RIGHT COLUMN: Execution Options -->
+                        <div style="flex:0.9; min-width:260px; display:flex; flex-direction:column; gap:0; overflow-y:auto; padding-right:4px;">
+
+                            <!-- Section: Image Generation -->
+                            <div style="margin-bottom:14px;">
+                                <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(139,92,246,0.15);">
+                                    <span style="font-size:13px;">🖼</span>
+                                    <span style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#a78bfa;">Image Generation</span>
                                 </div>
-                            </label>
-                            
-                            <label class="field" style="flex:0.7;">
-                                <span class="field-label">🎬 Video Engine</span>
-                                <div class="select-wrapper">
-                                    <select id="wizVideoEngine" class="input" onchange="onVideoEngineChange()">
-                                        <option value="grok">🤖 Grok Video</option>
-                                        <option value="veo3">🎬 Veo3 (Google)</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                <div style="display:flex; gap:8px;">
+                                    <label class="field" style="flex:1; margin:0;">
+                                        <span class="field-label" style="font-size:10px; margin-bottom:3px;">Engine</span>
+                                        <div class="select-wrapper">
+                                            <select id="wizImageEngine" class="input" style="font-size:12px; height:32px; padding:4px 8px;">
+                                                <option value="grok">🤖 Grok</option>
+                                                <option value="veo3">🎨 Veo3</option>
+                                                <option value="chatgpt">🧠 ChatGPT</option>
+                                            </select>
+                                            <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </div>
+                                    </label>
+                                    <label class="field" style="flex:1.2; margin:0;">
+                                        <span class="field-label" style="font-size:10px; margin-bottom:3px;">Browser Profile</span>
+                                        <div class="select-wrapper">
+                                            <select id="wizImageBrowserProfile" class="input" style="font-size:12px; height:32px; padding:4px 8px;" onfocus="loadWizImageBrowserProfiles()">
+                                                <option value="">-- Chọn --</option>
+                                            </select>
+                                            <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </div>
+                                    </label>
                                 </div>
-                            </label>
-                            <label class="field" style="flex:1;">
-                                <span class="field-label" id="wizBrowserLabel">🌐 Browser Profiles (Grok Gen)</span>
-                                <div class="chip-select" id="wizBrowserChipSelect">
-                                    <span class="chip-select-empty" id="wizBrowserChipEmpty">Click + to add browsers</span>
-                                    <!-- chips render here -->
-                                    <div style="position:relative; display:inline-flex;">
-                                        <span class="chip-dropdown-trigger" id="wizBrowserAddBtn" onclick="toggleBrowserChipMenu()">+ Add</span>
-                                        <div class="chip-dropdown-menu" id="wizBrowserChipMenu">
-                                            <!-- options render dynamically -->
+                            </div>
+
+                            <!-- Section: Video Generation -->
+                            <div style="margin-bottom:14px;">
+                                <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(99,102,241,0.15);">
+                                    <span style="font-size:13px;">🎬</span>
+                                    <span style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#818cf8;">Video Generation</span>
+                                </div>
+                                <div style="display:flex; gap:8px; margin-bottom:8px;">
+                                    <label class="field" style="flex:1; margin:0;">
+                                        <span class="field-label" style="font-size:10px; margin-bottom:3px;">Engine</span>
+                                        <div class="select-wrapper">
+                                            <select id="wizVideoEngine" class="input" style="font-size:12px; height:32px; padding:4px 8px;" onchange="onVideoEngineChange()">
+                                                <option value="grok">🤖 Grok</option>
+                                                <option value="veo3">🎬 Veo3</option>
+                                            </select>
+                                            <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </div>
+                                    </label>
+                                </div>
+                                <label class="field" style="margin:0;">
+                                    <span class="field-label" id="wizBrowserLabel" style="font-size:10px; margin-bottom:3px;">Browser Profiles (Video Gen)</span>
+                                    <div class="chip-select" id="wizBrowserChipSelect" style="min-height:34px; padding:5px 8px; font-size:12px;">
+                                        <span class="chip-select-empty" id="wizBrowserChipEmpty" style="font-size:11px;">Click + Add</span>
+                                        <div style="position:relative; display:inline-flex;">
+                                            <span class="chip-dropdown-trigger" id="wizBrowserAddBtn" onclick="toggleBrowserChipMenu()" style="font-size:11px;">+ Add</span>
+                                            <div class="chip-dropdown-menu" id="wizBrowserChipMenu"></div>
                                         </div>
                                     </div>
-                                </div>
-                                <!-- hidden native select for form compat -->
-                                <select id="wizBrowserProfileExec" multiple style="display:none"></select>
-                            </label>
-                        </div>
-                        <div style="display:flex; gap:12px; margin-top:12px; flex-shrink:0;">
-                            <label class="field" style="flex:1;">
-                                <span class="field-label">📺 YouTube Channel</span>
-                                <div class="select-wrapper">
-                                    <select id="wizYtChannel" class="input" onfocus="loadWizYtChannels()">
-                                        <option value="">None (không upload)</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </div>
-                            </label>
-                            <label class="field" style="flex:1;">
-                                <span class="field-label">📘 Facebook Page</span>
-                                <div class="select-wrapper">
-                                    <select id="wizFbPage" class="input" onfocus="loadWizFbPages()">
-                                        <option value="">None (không upload)</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </div>
-                            </label>
-                            <label class="field" style="flex:0.6;">
-                                <span class="field-label">🔒 Privacy</span>
-                                <div class="select-wrapper">
-                                    <select id="wizUploadPrivacy" class="input">
-                                        <option value="private" selected>Private</option>
-                                        <option value="unlisted">Unlisted</option>
-                                        <option value="public">Public</option>
-                                    </select>
-                                    <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </div>
-                            </label>
-                        </div>
-                        <div class="modal-actions" style="margin-top:16px; flex-direction:column; gap:8px; flex-shrink:0;">
-                            <button type="button" class="btn btn-primary" style="width:100%; justify-content:center" onclick="startRealtimeAutoPilot()">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
-                                Watch Live Realtime Stream (Stay on page)
-                            </button>
-                            <div style="display:flex; width:100%; gap:8px;">
-                                <button type="button" class="btn" style="flex:1" onclick="startBackgroundAutoPilot()">
-                                    Run in Background
-                                </button>
-                                <button type="button" class="btn btn-danger" style="flex:1" onclick="hideWizard()">Abort</button>
+                                    <select id="wizBrowserProfileExec" multiple style="display:none"></select>
+                                </label>
                             </div>
+
+                            <!-- Section: Audio & Voice -->
+                            <div style="margin-bottom:14px;" id="wizVoiceProfileWrap">
+                                <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(52,211,153,0.15);">
+                                    <span style="font-size:13px;">🎙</span>
+                                    <span style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#34d399;">Audio & Voice</span>
+                                </div>
+                                <label class="field" style="margin:0;">
+                                    <span class="field-label" style="font-size:10px; margin-bottom:3px;">Voice Profile (TTS)</span>
+                                    <div class="select-wrapper">
+                                        <select id="wizVoiceProfileExec" class="input" style="font-size:12px; height:32px; padding:4px 8px;">
+                                            <option value="">-- Chọn giọng đọc --</option>
+                                        </select>
+                                        <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <!-- Section: Publishing -->
+                            <div style="margin-bottom:10px;">
+                                <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(251,146,60,0.15);">
+                                    <span style="font-size:13px;">📤</span>
+                                    <span style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#fb923c;">Publishing</span>
+                                </div>
+                                <div style="display:flex; gap:8px; margin-bottom:6px;">
+                                    <label class="field" style="flex:1; margin:0;">
+                                        <span class="field-label" style="font-size:10px; margin-bottom:3px;">YouTube</span>
+                                        <div class="select-wrapper">
+                                            <select id="wizYtChannel" class="input" style="font-size:12px; height:32px; padding:4px 8px;" onfocus="loadWizYtChannels()">
+                                                <option value="">None</option>
+                                            </select>
+                                            <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </div>
+                                    </label>
+                                    <label class="field" style="flex:1; margin:0;">
+                                        <span class="field-label" style="font-size:10px; margin-bottom:3px;">Facebook</span>
+                                        <div class="select-wrapper">
+                                            <select id="wizFbPage" class="input" style="font-size:12px; height:32px; padding:4px 8px;" onfocus="loadWizFbPages()">
+                                                <option value="">None</option>
+                                            </select>
+                                            <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </div>
+                                    </label>
+                                </div>
+                                <label class="field" style="margin:0;">
+                                    <span class="field-label" style="font-size:10px; margin-bottom:3px;">🔒 Privacy</span>
+                                    <div class="select-wrapper">
+                                        <select id="wizUploadPrivacy" class="input" style="font-size:12px; height:32px; padding:4px 8px;">
+                                            <option value="private" selected>Private</option>
+                                            <option value="unlisted">Unlisted</option>
+                                            <option value="public">Public</option>
+                                        </select>
+                                        <svg class="select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons (full width below) -->
+                    <div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">
+                        <button type="button" class="btn btn-primary" style="width:100%; justify-content:center; height:42px; font-size:14px; font-weight:600; background:linear-gradient(135deg,#7c3aed,#6366f1); border:none; border-radius:10px; box-shadow:0 4px 15px rgba(124,58,237,0.3);" onclick="startRealtimeAutoPilot()">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                            Watch Live Realtime Stream (Stay on page)
+                        </button>
+                        <div style="display:flex; width:100%; gap:8px;">
+                            <button type="button" class="btn" style="flex:1; height:36px; font-size:12px; justify-content:center;" onclick="startBackgroundAutoPilot()">
+                                ⚡ Run in Background
+                            </button>
+                            <button type="button" class="btn btn-danger" style="flex:1; height:36px; font-size:12px; justify-content:center;" onclick="hideWizard()">✕ Abort</button>
                         </div>
                     </div>
                 </div>

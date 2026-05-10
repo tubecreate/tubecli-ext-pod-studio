@@ -1110,7 +1110,7 @@ async def _autopilot_runner(campaign_id: int):
                 if _fresh_campaign:
                     _fresh_meta = json.loads(_fresh_campaign.get("metadata", "{}") or "{}")
                     # Merge fresh settings into current meta (keep autopilot_status etc.)
-                    for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video", "image_engine", "image_browser_profile"):
+                    for _fk in ("video_engine", "browser_profile_name", "browser_profile", "aspect_ratio", "browser_profile_names_video", "image_engine", "image_browser_profile", "scene_gen_mode"):
                         if _fk in _fresh_meta:
                             meta[_fk] = _fresh_meta[_fk]
                 
@@ -1428,13 +1428,25 @@ async def _autopilot_runner(campaign_id: int):
             logger.info(f"Autopilot: 4d check -- _scene_gen_mode={_scene_gen_mode}, _skip_ref_images={_skip_ref_images}")
             if _scene_gen_mode == "panoramic_grid" and not _skip_ref_images:
               try:
-                # Check if panorama already exists for this episode
-                ep_meta_pano = json.loads(ep_plan.get("metadata", "{}") or "{}")
-                existing_pano = ep_meta_pano.get("panorama_image_url", "")
+                # Check if panorama already exists for this episode — read from LIVE DB, not stale outline
+                _db_ep_for_pano = _db().get_episode(ep_id)
+                ep_meta_pano = json.loads((_db_ep_for_pano or {}).get("metadata", "{}") or "{}")
+                existing_pano_url = ep_meta_pano.get("panorama_image_url", "")
+                existing_pano_path = ep_meta_pano.get("panorama_image_path", "")
                 
-                if existing_pano:
-                    logger.info(f"Autopilot: Panorama already exists for ep {ep_num} — skipping gen")
+                # Only skip if panorama URL exists AND either the file is on disk OR it's a web URL
+                _pano_file_ok = (
+                    existing_pano_path and os.path.isfile(existing_pano_path)
+                ) or (
+                    existing_pano_url and existing_pano_url.startswith("http")
+                )
+                
+                if existing_pano_url and _pano_file_ok:
+                    logger.info(f"Autopilot: Panorama already exists for ep {ep_num} — skipping gen ({existing_pano_url})")
                 else:
+                    if existing_pano_url and not _pano_file_ok:
+                        logger.warning(f"Autopilot: Panorama URL exists but file missing for ep {ep_num} — regenerating")
+
                     logger.info(f"Autopilot: Generating Scene Panorama for ep {ep_num}")
                     meta["autopilot_status"] = f"running {idx+1}/{total} - generating Scene Panorama"
                     _db().update_campaign(campaign_id, {"metadata": json.dumps(meta)})
@@ -1596,7 +1608,7 @@ async def _autopilot_runner(campaign_id: int):
                         else:
                             logger.info(f"  Panorama ref image NOT resolved: {c.get('name', '?')} -> {img_url}")
                     
-                    # Generate using selected image engine
+                    # Generate using image engine selected in Wizard Step 3
                     _pano_engine = meta.get("image_engine") or meta.get("video_engine", "grok")
                     _pano_profile = meta.get("image_browser_profile") or meta.get("browser_profile_name") or "Default"
                     
@@ -1689,6 +1701,7 @@ async def _autopilot_runner(campaign_id: int):
                         ep_meta_pano["panorama_image_url"] = f"/api/v1/pod_studio/references/{pano_filename}"
                         ep_meta_pano["panorama_image_path"] = pano_out
                         ep_meta_pano["scene_mode"] = True
+                        ep_meta_pano["panorama_prompt"] = panorama_prompt  # Save for video gen reuse
                         if all_scenes_pano:
                             ep_meta_pano["scene_location"] = all_scenes_pano[0].get("location", "")
                         _db().update_episode(ep_id, {"metadata": json.dumps(ep_meta_pano)})
@@ -2723,6 +2736,18 @@ async def generate_scene_ref(scene_id: int, request: Request, background_tasks: 
     time_of_day = (scene.get("time", "") or "").strip()
     description = (scene.get("description", "") or "").strip()
     scene_own_prompt = (scene.get("prompt", "") or "").strip()
+
+    # ── Panoramic Grid Guard ──
+    # In panoramic_grid mode, individual scene images are NOT generated;
+    # the panorama pipeline handles scene rendering instead.
+    if campaign:
+        try:
+            _camp_meta = json.loads(campaign.get("metadata", "{}") or "{}")
+            if _camp_meta.get("scene_gen_mode") == "panoramic_grid":
+                logger.info(f"[generate_scene_ref] Panoramic mode — skipping individual scene image for scene {scene_id}")
+                return {"status": "skipped", "reason": "panoramic_grid mode — panorama handles scene rendering", "scene_id": scene_id}
+        except:
+            pass
     
     prompt = _build_scene_ref_prompt(location, time_of_day, description, scene_visual_style, scene_aspect_ratio)
     
@@ -4769,311 +4794,399 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
     if not profile_names:
         raise HTTPException(400, "At least one browser profile is required")
 
+    panoramic_mode = data.get("panoramic_mode", False)
+    panorama_ref = data.get("panorama_ref", "")  # path or URL to panorama image
+
     ep = _db().get_episode(episode_id)
     if not ep:
         raise HTTPException(404, "Episode not found")
 
-    shots = _db().list_storyboards(episode_id)
-    if not shots:
-        raise HTTPException(400, "No storyboard shots found. Generate storyboard first.")
+    # ── PANORAMIC MODE: create a single synthetic shot from panorama image ──
+    if panoramic_mode:
+        ep_meta = json.loads(ep.get("metadata", "{}") or "{}")
+        # Resolve panorama file path
+        pano_path = panorama_ref or ep_meta.get("panorama_image_path", "")
+        if pano_path and pano_path.startswith("/api/v1/pod_studio/references/"):
+            fname = pano_path.replace("/api/v1/pod_studio/references/", "", 1)
+            pano_path = os.path.join(_get_ref_dir(), fname)
+        if not pano_path or not os.path.isfile(pano_path):
+            raise HTTPException(400, "Panorama image not found. Generate panorama first.")
 
-    target_shot_ids = data.get("shot_ids")
-    if target_shot_ids:
-        shots = [s for s in shots if s["id"] in target_shot_ids]
+        # ── Use panorama_prompt (saved during image gen) as the video prompt ──
+        # This is the same SCRIPT CONTEXT used to generate the panoramic image.
+        video_prompt = ep_meta.get("panorama_prompt", "").strip()
+        if not video_prompt:
+            # Fallback: use full script_content as-is for maximum context
+            video_prompt = (
+                ep.get("script_content") or ep.get("content") or
+                ep_meta.get("script_content") or
+                ep_meta.get("panorama_video_prompt") or ""
+            ).strip()
+
+        # ── Collect all ref images: panorama + characters + gallery products ──
+        _all_refs = [pano_path]  # panorama always first
+
+        # Characters
+        try:
+            _db_inst = _db()
+            _camp_id = ep.get("campaign_id")
+            if _camp_id:
+                _chars = _db_inst.list_characters(_camp_id)
+                _gdir = _get_gallery_dir()
+                _rdir = _get_ref_dir()
+                def _resolve_ref(url):
+                    if not url: return None
+                    if url.startswith("/api/v1/pod_studio/gallery/image/"):
+                        p = os.path.join(_gdir, url.split("/")[-1])
+                        return p if os.path.isfile(p) else None
+                    if os.path.isfile(url): return url
+                    p2 = os.path.join(_rdir, url.replace("\\","/").split("/")[-1])
+                    return p2 if os.path.isfile(p2) else None
+
+                for _ch in _chars:
+                    _rp = _resolve_ref(_ch.get("image_url", ""))
+                    if _rp and _rp not in _all_refs:
+                        _all_refs.append(_rp)
+                        if len(_all_refs) >= 4: break
+
+                # Gallery products (primary only)
+                _camp_meta = json.loads(_db_inst.get_campaign(_camp_id).get("metadata") or "{}")
+                _gcat = _camp_meta.get("gallery_category_id")
+                if _gcat and len(_all_refs) < 4:
+                    for _gi in _db_inst.list_gallery_items(_gcat):
+                        if not _gi.get("is_primary"): continue
+                        _rp = _resolve_ref(_gi.get("image_url", ""))
+                        if _rp and _rp not in _all_refs:
+                            _all_refs.append(_rp)
+                            if len(_all_refs) >= 4: break
+        except Exception as _re2:
+            logger.warning(f"Panoramic: failed to inject char/product refs: {_re2}")
+
+        # Grok supports max 4 ref images
+        _all_refs = _all_refs[:4]
+
+        # Synthetic shot
+        shots = [{
+            "id": f"pano_{episode_id}",
+            "storyboard_number": 1,
+            "image_prompt": video_prompt,
+            "video_url": ep_meta.get("panorama_video_url", ""),
+            "ref_images": _all_refs,
+            "character_ids": [],
+            "scene_id": None,
+            "aspect_ratio": "16:9",
+            "_panoramic": True,
+        }]
+        logger.info(f"Panoramic video: ep{episode_id}, refs={len(_all_refs)}, prompt={video_prompt[:80]}")
+
+    else:
+        shots = _db().list_storyboards(episode_id)
         if not shots:
-            raise HTTPException(400, "No matching storyboard shots found for the provided IDs.")
+            raise HTTPException(400, "No storyboard shots found. Generate storyboard first.")
 
-    # --- Inject character reference images into each shot ---
-    db = _db()
-    campaign_id = ep.get("campaign_id")
-    all_chars = {c["id"]: c for c in db.list_characters(campaign_id)} if campaign_id else {}
+        target_shot_ids = data.get("shot_ids")
+        if target_shot_ids:
+            shots = [s for s in shots if s["id"] in target_shot_ids]
+            if not shots:
+                raise HTTPException(400, "No matching storyboard shots found for the provided IDs.")
 
-    # Helper: resolve image_url (web URL or file path) to absolute file path
-    _gallery_dir_cache = _get_gallery_dir()
-    _ref_dir_cache = _get_ref_dir()
-    def _resolve_image_path(url):
-        """Convert web URL or file path to absolute path. Returns path if file exists, else None."""
-        if not url:
-            return None
-        # Gallery web URL: /api/v1/pod_studio/gallery/image/filename
-        if url.startswith("/api/v1/pod_studio/gallery/image/"):
-            fname = url.replace("/api/v1/pod_studio/gallery/image/", "", 1)
-            fpath = os.path.join(_gallery_dir_cache, fname)
+
+    # --- Inject character/gallery/scene ref images (per-shot mode only) ---
+    if not panoramic_mode:
+        db = _db()
+        campaign_id = ep.get("campaign_id")
+        all_chars = {c["id"]: c for c in db.list_characters(campaign_id)} if campaign_id else {}
+
+        # Helper: resolve image_url (web URL or file path) to absolute file path
+        _gallery_dir_cache = _get_gallery_dir()
+        _ref_dir_cache = _get_ref_dir()
+        def _resolve_image_path(url):
+            """Convert web URL or file path to absolute path. Returns path if file exists, else None."""
+            if not url:
+                return None
+            # Gallery web URL: /api/v1/pod_studio/gallery/image/filename
+            if url.startswith("/api/v1/pod_studio/gallery/image/"):
+                fname = url.replace("/api/v1/pod_studio/gallery/image/", "", 1)
+                fpath = os.path.join(_gallery_dir_cache, fname)
+                if os.path.isfile(fpath):
+                    return fpath
+                return None
+            # Already an absolute file path
+            if os.path.isfile(url):
+                return url
+            # Try reference dir as fallback
+            fname = url.replace("\\", "/").split("/")[-1]
+            fpath = os.path.join(_ref_dir_cache, fname)
             if os.path.isfile(fpath):
                 return fpath
             return None
-        # Already an absolute file path
-        if os.path.isfile(url):
-            return url
-        # Try reference dir as fallback
-        fname = url.replace("\\", "/").split("/")[-1]
-        fpath = os.path.join(_ref_dir_cache, fname)
-        if os.path.isfile(fpath):
-            return fpath
-        return None
 
-    # Check if this is a Presentation format — Presenter must NOT be skipped
-    _is_presentation = False
-    try:
-        _dm = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
-        _is_presentation = (_dm.get("content_format") == "Presentation / Screen")
-    except:
-        pass
+        # Check if this is a Presentation format — Presenter must NOT be skipped
+        _is_presentation = False
+        try:
+            _dm = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
+            _is_presentation = (_dm.get("content_format") == "Presentation / Screen")
+        except:
+            pass
 
-    for shot in shots:
-        char_ids = shot.get("character_ids", [])
-        # Handle character_ids stored as JSON string
-        if isinstance(char_ids, str):
-            try:
-                char_ids = json.loads(char_ids)
-            except:
-                char_ids = []
-        ref_images = []
-        # Narrator/Host role names that should NOT have reference images injected
-        # These are voice-only characters — injecting their face causes Grok blocks
-        # NOTE: For Presentation format, the Presenter IS an on-screen visual character
-        _NARRATOR_PATTERNS = [
-            'narrator', 'host', 'voiceover',
-            'người dẫn', 'dẫn chuyện', 'mc ', 'người kể',
-            'health narrator', 'spiritual narrator',
-        ]
-        for cid in char_ids:
-            char = all_chars.get(cid)
-            if not char:
-                continue
-            # Skip narrator/host characters — they don't need visual consistency
-            # BUT: In Presentation format, the Presenter IS visual, so never skip
-            char_name = (char.get("name") or "").lower().strip()
-            char_role_desc = (char.get("description") or "").lower()
-            is_narrator = any(p in char_name for p in _NARRATOR_PATTERNS) or \
-                          any(p in char_role_desc for p in ['narrator', 'host', 'người dẫn', 'dẫn chuyện'])
-            if is_narrator and not _is_presentation:
-                logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: skipping narrator/host '{char.get('name')}' — no ref image needed")
-                continue
-            resolved = _resolve_image_path(char.get("image_url", ""))
-            if resolved:
-                ref_images.append(resolved)
-            else:
+        for shot in shots:
+            char_ids = shot.get("character_ids", [])
+            # Handle character_ids stored as JSON string
+            if isinstance(char_ids, str):
                 try:
-                    refs = json.loads(char.get("reference_images") or "[]")
-                    for r in refs:
-                        rp = _resolve_image_path(r)
-                        if rp:
-                            ref_images.append(rp)
-                            break
+                    char_ids = json.loads(char_ids)
                 except:
-                    pass
-        if ref_images:
-            shot["ref_images"] = ref_images[:3]
-            logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
-        elif char_ids:
-            logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
-    # --- Inject gallery reference images: PRIMARY products → ALL shots, others → fallback only ---
-    try:
-        campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
-        gallery_cat_id = campaign_meta.get("gallery_category_id")
-        if gallery_cat_id:
-            gallery_items = db.list_gallery_items(gallery_cat_id)
-            
-            # Separate PRIMARY product images from regular gallery images
-            primary_ref_images = []
-            fallback_ref_images = []
-            for gi in gallery_items:
-                resolved = _resolve_image_path(gi.get("image_url", ""))
-                if not resolved:
+                    char_ids = []
+            ref_images = []
+            # Narrator/Host role names that should NOT have reference images injected
+            # These are voice-only characters — injecting their face causes Grok blocks
+            # NOTE: For Presentation format, the Presenter IS an on-screen visual character
+            _NARRATOR_PATTERNS = [
+                'narrator', 'host', 'voiceover',
+                'người dẫn', 'dẫn chuyện', 'mc ', 'người kể',
+                'health narrator', 'spiritual narrator',
+            ]
+            for cid in char_ids:
+                char = all_chars.get(cid)
+                if not char:
+                    continue
+                # Skip narrator/host characters — they don't need visual consistency
+                # BUT: In Presentation format, the Presenter IS visual, so never skip
+                char_name = (char.get("name") or "").lower().strip()
+                char_role_desc = (char.get("description") or "").lower()
+                is_narrator = any(p in char_name for p in _NARRATOR_PATTERNS) or \
+                              any(p in char_role_desc for p in ['narrator', 'host', 'người dẫn', 'dẫn chuyện'])
+                if is_narrator and not _is_presentation:
+                    logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: skipping narrator/host '{char.get('name')}' — no ref image needed")
+                    continue
+                resolved = _resolve_image_path(char.get("image_url", ""))
+                if resolved:
+                    ref_images.append(resolved)
+                else:
                     try:
-                        gi_refs = json.loads(gi.get("reference_images") or "[]")
-                        for r in gi_refs:
+                        refs = json.loads(char.get("reference_images") or "[]")
+                        for r in refs:
                             rp = _resolve_image_path(r)
                             if rp:
-                                resolved = rp
+                                ref_images.append(rp)
                                 break
                     except:
                         pass
-                if resolved:
-                    if gi.get("is_primary"):
-                        primary_ref_images.append(resolved)
-                    else:
-                        fallback_ref_images.append(resolved)
+            if ref_images:
+                shot["ref_images"] = ref_images[:3]
+                logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(ref_images)} ref images injected from {len(char_ids)} characters")
+            elif char_ids:
+                logger.warning(f"Shot {shot.get('storyboard_number', shot['id'])}: {len(char_ids)} characters but 0 ref images found")
+        # --- Inject gallery reference images: PRIMARY products → ALL shots, others → fallback only ---
+        try:
+            campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
+            gallery_cat_id = campaign_meta.get("gallery_category_id")
+            if gallery_cat_id:
+                gallery_items = db.list_gallery_items(gallery_cat_id)
             
-            if primary_ref_images:
-                logger.info(f"Gallery: {len(primary_ref_images)} PRIMARY product images will be injected into ALL shots")
+                # Separate PRIMARY product images from regular gallery images
+                primary_ref_images = []
+                fallback_ref_images = []
+                for gi in gallery_items:
+                    resolved = _resolve_image_path(gi.get("image_url", ""))
+                    if not resolved:
+                        try:
+                            gi_refs = json.loads(gi.get("reference_images") or "[]")
+                            for r in gi_refs:
+                                rp = _resolve_image_path(r)
+                                if rp:
+                                    resolved = rp
+                                    break
+                        except:
+                            pass
+                    if resolved:
+                        if gi.get("is_primary"):
+                            primary_ref_images.append(resolved)
+                        else:
+                            fallback_ref_images.append(resolved)
             
-            for shot in shots:
-                existing_refs = shot.get("ref_images", [])
-                char_names = shot.get("character_names", [])
-                if isinstance(char_names, str):
-                    try:
-                        char_names = json.loads(char_names)
-                    except:
-                        char_names = []
-                
-                # PRIMARY product images → ALWAYS inject into every shot
                 if primary_ref_images:
-                    existing_refs = list(existing_refs) + [p for p in primary_ref_images if p not in existing_refs]
-                    if not existing_refs:
-                        logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(primary_ref_images)} PRIMARY product ref images")
+                    logger.info(f"Gallery: {len(primary_ref_images)} PRIMARY product images will be injected into ALL shots")
+            
+                for shot in shots:
+                    existing_refs = shot.get("ref_images", [])
+                    char_names = shot.get("character_names", [])
+                    if isinstance(char_names, str):
+                        try:
+                            char_names = json.loads(char_names)
+                        except:
+                            char_names = []
                 
-                # Non-primary gallery images (scenes, props) → inject if we still have room (max 3)
-                if len(existing_refs) < 3 and fallback_ref_images:
-                    existing_refs = list(existing_refs) + [p for p in fallback_ref_images if p not in existing_refs]
+                    # PRIMARY product images → ALWAYS inject into every shot
+                    if primary_ref_images:
+                        existing_refs = list(existing_refs) + [p for p in primary_ref_images if p not in existing_refs]
+                        if not existing_refs:
+                            logger.info(f"Shot {shot.get('storyboard_number', shot['id'])}: injected {len(primary_ref_images)} PRIMARY product ref images")
+                
+                    # Non-primary gallery images (scenes, props) → inject if we still have room (max 3)
+                    if len(existing_refs) < 3 and fallback_ref_images:
+                        existing_refs = list(existing_refs) + [p for p in fallback_ref_images if p not in existing_refs]
                     
-                if existing_refs:
-                    shot["ref_images"] = existing_refs[:3]
+                    if existing_refs:
+                        shot["ref_images"] = existing_refs[:3]
             
-            logger.info(f"Gallery ref injection: {len(primary_ref_images)} primary + {len(fallback_ref_images)} fallback images from category {gallery_cat_id}")
-    except Exception as e:
-        logger.warning(f"Failed to inject gallery ref images: {e}")
+                logger.info(f"Gallery ref injection: {len(primary_ref_images)} primary + {len(fallback_ref_images)} fallback images from category {gallery_cat_id}")
+        except Exception as e:
+            logger.warning(f"Failed to inject gallery ref images: {e}")
 
-    # --- Inject scene images as ref_images for shots with scene_id ---
-    try:
-        all_scenes = {s["id"]: s for s in db.list_scenes(campaign_id)} if campaign_id else {}
-        scene_injected_count = 0
-        scene_skipped_count = 0
+        # --- Inject scene images as ref_images for shots with scene_id ---
+        try:
+            all_scenes = {s["id"]: s for s in db.list_scenes(campaign_id)} if campaign_id else {}
+            scene_injected_count = 0
+            scene_skipped_count = 0
         
-        # Build location→scene lookup for fallback matching
-        scene_by_loc = {}
-        for sid, sc in all_scenes.items():
-            loc_key = (sc.get("location") or "").lower().strip()
-            if loc_key and sc.get("image_url"):
-                scene_by_loc[loc_key] = sc
+            # Build location→scene lookup for fallback matching
+            scene_by_loc = {}
+            for sid, sc in all_scenes.items():
+                loc_key = (sc.get("location") or "").lower().strip()
+                if loc_key and sc.get("image_url"):
+                    scene_by_loc[loc_key] = sc
         
-        logger.info(f"Scene injection: {len(all_scenes)} scenes in DB, {len(scene_by_loc)} with images, {len(shots)} shots to process")
+            logger.info(f"Scene injection: {len(all_scenes)} scenes in DB, {len(scene_by_loc)} with images, {len(shots)} shots to process")
         
-        for shot in shots:
-            scene_id = shot.get("scene_id")
-            shot_num = shot.get("storyboard_number", shot.get("id", "?"))
-            shot_loc = (shot.get("location") or "").lower().strip()
+            for shot in shots:
+                scene_id = shot.get("scene_id")
+                shot_num = shot.get("storyboard_number", shot.get("id", "?"))
+                shot_loc = (shot.get("location") or "").lower().strip()
             
-            scene = None
-            match_method = ""
+                scene = None
+                match_method = ""
             
-            # Method 1: Direct scene_id lookup
-            if scene_id:
-                scene = all_scenes.get(scene_id)
-                if scene:
-                    match_method = f"scene_id={scene_id}"
-                else:
-                    logger.warning(f"Shot {shot_num}: scene_id={scene_id} not found in scenes table")
+                # Method 1: Direct scene_id lookup
+                if scene_id:
+                    scene = all_scenes.get(scene_id)
+                    if scene:
+                        match_method = f"scene_id={scene_id}"
+                    else:
+                        logger.warning(f"Shot {shot_num}: scene_id={scene_id} not found in scenes table")
             
-            # Method 2: Fallback - fuzzy match by location name
-            if not scene and shot_loc:
-                # Exact match first
-                if shot_loc in scene_by_loc:
-                    scene = scene_by_loc[shot_loc]
-                    match_method = f"exact_loc='{shot_loc}'"
-                else:
-                    # Partial match
-                    for loc_key, sc in scene_by_loc.items():
-                        if shot_loc in loc_key or loc_key in shot_loc:
-                            scene = sc
-                            match_method = f"partial_loc='{loc_key}'"
-                            break
+                # Method 2: Fallback - fuzzy match by location name
+                if not scene and shot_loc:
+                    # Exact match first
+                    if shot_loc in scene_by_loc:
+                        scene = scene_by_loc[shot_loc]
+                        match_method = f"exact_loc='{shot_loc}'"
+                    else:
+                        # Partial match
+                        for loc_key, sc in scene_by_loc.items():
+                            if shot_loc in loc_key or loc_key in shot_loc:
+                                scene = sc
+                                match_method = f"partial_loc='{loc_key}'"
+                                break
             
-            if not scene:
-                scene_skipped_count += 1
-                logger.debug(f"Shot {shot_num}: no scene match (scene_id={scene_id}, loc='{shot_loc}')")
-                continue
+                if not scene:
+                    scene_skipped_count += 1
+                    logger.debug(f"Shot {shot_num}: no scene match (scene_id={scene_id}, loc='{shot_loc}')")
+                    continue
             
-            scene_img = scene.get("image_url", "")
-            if not scene_img:
-                scene_skipped_count += 1
-                logger.debug(f"Shot {shot_num}: scene matched ({match_method}) but no image_url")
-                continue
+                scene_img = scene.get("image_url", "")
+                if not scene_img:
+                    scene_skipped_count += 1
+                    logger.debug(f"Shot {shot_num}: scene matched ({match_method}) but no image_url")
+                    continue
                 
-            if not os.path.isfile(scene_img):
-                scene_skipped_count += 1
-                logger.warning(f"Shot {shot_num}: scene image file not found: {scene_img}")
-                continue
+                if not os.path.isfile(scene_img):
+                    scene_skipped_count += 1
+                    logger.warning(f"Shot {shot_num}: scene image file not found: {scene_img}")
+                    continue
             
-            existing_refs = shot.get("ref_images", [])
-            if scene_img not in existing_refs:
-                # Scene image goes FIRST (highest priority for establishing the shot)
-                shot["ref_images"] = [scene_img] + existing_refs[:2]  # max 3 total
-                scene_injected_count += 1
-                logger.info(f"Shot {shot_num}: injected scene image ({match_method}) → total refs={len(shot['ref_images'])}")
-            else:
-                logger.debug(f"Shot {shot_num}: scene image already in refs")
+                existing_refs = shot.get("ref_images", [])
+                if scene_img not in existing_refs:
+                    # Scene image goes FIRST (highest priority for establishing the shot)
+                    shot["ref_images"] = [scene_img] + existing_refs[:2]  # max 3 total
+                    scene_injected_count += 1
+                    logger.info(f"Shot {shot_num}: injected scene image ({match_method}) → total refs={len(shot['ref_images'])}")
+                else:
+                    logger.debug(f"Shot {shot_num}: scene image already in refs")
         
-        logger.info(f"Scene injection complete: {scene_injected_count} injected, {scene_skipped_count} skipped")
-    except Exception as e:
-        logger.warning(f"Failed to inject scene ref images: {e}", exc_info=True)
+            logger.info(f"Scene injection complete: {scene_injected_count} injected, {scene_skipped_count} skipped")
+        except Exception as e:
+            logger.warning(f"Failed to inject scene ref images: {e}", exc_info=True)
 
-    # --- Inject storyboard's own reference_images (extra refs from flowchart/manual) ---
-    try:
-        extra_ref_count = 0
-        for shot in shots:
-            try:
-                sb_refs = json.loads(shot.get("reference_images") or "[]")
-            except:
-                sb_refs = []
-            if not sb_refs:
-                continue
-            existing = shot.get("ref_images", [])
-            for rp in sb_refs:
-                resolved_rp = _resolve_image_path(rp)
-                if resolved_rp and os.path.isfile(resolved_rp) and resolved_rp not in existing and len(existing) < 4:
-                    existing.append(resolved_rp)
-                    extra_ref_count += 1
-            shot["ref_images"] = existing
-        if extra_ref_count:
-            logger.info(f"Extra ref injection: {extra_ref_count} storyboard reference_images added")
-    except Exception as e:
-        logger.warning(f"Failed to inject extra ref images: {e}")
-
-    # --- Inject generated composed_image (Screen) as PRIMARY ref if it exists ---
-    try:
-        for shot in shots:
-            composed = shot.get("composed_image")
-            if composed and os.path.isfile(composed):
+        # --- Inject storyboard's own reference_images (extra refs from flowchart/manual) ---
+        try:
+            extra_ref_count = 0
+            for shot in shots:
+                try:
+                    sb_refs = json.loads(shot.get("reference_images") or "[]")
+                except:
+                    sb_refs = []
+                if not sb_refs:
+                    continue
                 existing = shot.get("ref_images", [])
-                if composed not in existing:
-                    # Place it at the front so it takes highest priority for Image-to-Video
-                    shot["ref_images"] = [composed] + existing[:2]
-                    logger.info(f"Shot {shot['id']}: injected composed_image (generated screen) as primary ref")
-    except Exception as e:
-        logger.warning(f"Failed to inject composed_image ref: {e}")
+                for rp in sb_refs:
+                    resolved_rp = _resolve_image_path(rp)
+                    if resolved_rp and os.path.isfile(resolved_rp) and resolved_rp not in existing and len(existing) < 4:
+                        existing.append(resolved_rp)
+                        extra_ref_count += 1
+                shot["ref_images"] = existing
+            if extra_ref_count:
+                logger.info(f"Extra ref injection: {extra_ref_count} storyboard reference_images added")
+        except Exception as e:
+            logger.warning(f"Failed to inject extra ref images: {e}")
 
-    # Inject aspect ratio from campaign metadata
-    try:
-        campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
-        video_aspect_ratio = campaign_meta.get("aspect_ratio", "16:9")
-    except:
-        video_aspect_ratio = "16:9"
-    for shot in shots:
-        shot["aspect_ratio"] = video_aspect_ratio
+        # --- Inject generated composed_image (Screen) as PRIMARY ref if it exists ---
+        try:
+            for shot in shots:
+                composed = shot.get("composed_image")
+                if composed and os.path.isfile(composed):
+                    existing = shot.get("ref_images", [])
+                    if composed not in existing:
+                        # Place it at the front so it takes highest priority for Image-to-Video
+                        shot["ref_images"] = [composed] + existing[:2]
+                        logger.info(f"Shot {shot['id']}: injected composed_image (generated screen) as primary ref")
+        except Exception as e:
+            logger.warning(f"Failed to inject composed_image ref: {e}")
 
-    # Inject text_in_video constraint suffix into prompts for Grok
-    text_in_video = campaign_meta.get("text_in_video", "")
-    # Backward compat: old boolean field
-    if not text_in_video and campaign_meta.get("no_text_in_prompt"):
-        text_in_video = "notext"
-    if text_in_video == "notext":
-        notext_suffix = ". IMPORTANT: no text, no letters, no words, no typography in the video."
+        # Inject aspect ratio from campaign metadata
+        try:
+            campaign_meta = json.loads(db.get_campaign(campaign_id).get("metadata") or "{}")
+            video_aspect_ratio = campaign_meta.get("aspect_ratio", "16:9")
+        except:
+            video_aspect_ratio = "16:9"
         for shot in shots:
-            p = shot.get("image_prompt", "")
-            if p and notext_suffix not in p:
-                shot["image_prompt"] = p.rstrip(". ") + notext_suffix
-    elif text_in_video == "english_only":
-        eng_suffix = ". English text only, no CJK characters, no non-Latin script."
-        for shot in shots:
-            p = shot.get("image_prompt", "")
-            if p and eng_suffix not in p:
-                shot["image_prompt"] = p.rstrip(". ") + eng_suffix
+            shot["aspect_ratio"] = video_aspect_ratio
 
-    # Special handling for Presentation format: 
-    # Do not send image content description (which contains text) to video AI.
-    # Only send the motion/animation instructions.
-    if campaign_meta.get("content_format") == "Presentation / Screen":
-        for shot in shots:
-            vp = shot.get("video_prompt", "").strip()
-            if vp:
-                shot["image_prompt"] = f"[VIDEO PROMPT]\n{vp}"
+        # Inject text_in_video constraint suffix into prompts for Grok
+        text_in_video = campaign_meta.get("text_in_video", "")
+        # Backward compat: old boolean field
+        if not text_in_video and campaign_meta.get("no_text_in_prompt"):
+            text_in_video = "notext"
+        if text_in_video == "notext":
+            notext_suffix = ". IMPORTANT: no text, no letters, no words, no typography in the video."
+            for shot in shots:
+                p = shot.get("image_prompt", "")
+                if p and notext_suffix not in p:
+                    shot["image_prompt"] = p.rstrip(". ") + notext_suffix
+        elif text_in_video == "english_only":
+            eng_suffix = ". English text only, no CJK characters, no non-Latin script."
+            for shot in shots:
+                p = shot.get("image_prompt", "")
+                if p and eng_suffix not in p:
+                    shot["image_prompt"] = p.rstrip(". ") + eng_suffix
+
+        # Special handling for Presentation format: 
+        # Do not send image content description (which contains text) to video AI.
+        # Only send the motion/animation instructions.
+        if campaign_meta.get("content_format") == "Presentation / Screen":
+            for shot in shots:
+                vp = shot.get("video_prompt", "").strip()
+                if vp:
+                    shot["image_prompt"] = f"[VIDEO PROMPT]\n{vp}"
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
 
-    pending = [s for s in shots if s.get("image_prompt", "").strip()]
+    # Panoramic shots have empty prompt but must still be processed
+    if panoramic_mode:
+        pending = [s for s in shots if not s.get("video_url", "").strip()]
+    else:
+        pending = [s for s in shots if s.get("image_prompt", "").strip()]
     if overwrite:
         # Delete old video files from disk and clear video_url in DB
         for s in pending:
@@ -5097,9 +5210,10 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
         "total": len(pending),
         "current_shot": None,
         "errors": [],
-        "shot_ids": [s["id"] for s in pending],
-        "shot_progress": {s["id"]: {"percent": 0, "status": "pending"} for s in pending},
+        "shot_ids": [str(s["id"]) for s in pending],
+        "shot_progress": {str(s["id"]): {"percent": 0, "status": "pending"} for s in pending},
     }
+
 
     # Setup cancel infrastructure
     import asyncio as _asyncio
@@ -5128,18 +5242,42 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
                 _video_tasks[task_id]["total"] = total
                 _video_tasks[task_id]["current_shot"] = shot_id
                 # Update per-shot progress
-                if shot_id in _video_tasks[task_id]["shot_progress"]:
+                shot_id_str = str(shot_id)
+                if shot_id_str in _video_tasks[task_id]["shot_progress"]:
                     if status == "generating":
-                        _video_tasks[task_id]["shot_progress"][shot_id] = {"percent": percent, "status": "generating"}
+                        _video_tasks[task_id]["shot_progress"][shot_id_str] = {"percent": percent, "status": "generating"}
                     elif status == "success":
-                        _video_tasks[task_id]["shot_progress"][shot_id] = {"percent": 100, "status": "done", "path": path}
+                        _video_tasks[task_id]["shot_progress"][shot_id_str] = {"percent": 100, "status": "done", "path": path}
                     elif status == "error":
-                        _video_tasks[task_id]["shot_progress"][shot_id] = {"percent": 0, "status": "error"}
+                        _video_tasks[task_id]["shot_progress"][shot_id_str] = {"percent": 0, "status": "error"}
                 if path:
                     _video_tasks[task_id]["current_path"] = path
-                    _db().update_storyboard(shot_id, {"video_url": path, "status": "video_done"})
+                    # Panoramic mode: save to episode metadata instead of storyboard
+                    if str(shot_id).startswith("pano_"):
+                        logger.info(f"[Panoramic] on_progress: shot_id={shot_id}, episode_id={episode_id}, path={path}")
+                        try:
+                            _ep = _db().get_episode(episode_id)
+                            if not _ep:
+                                logger.error(f"[Panoramic] Episode {episode_id} NOT FOUND in DB — cannot save video_url")
+                            else:
+                                _ep_meta = json.loads(_ep.get("metadata", "{}") or "{}")
+                                _ep_meta["panorama_video_url"] = path
+                                _ep_meta["panorama_video_path"] = path
+                                result = _db().update_episode(episode_id, {
+                                    "metadata": json.dumps(_ep_meta),
+                                    "video_url": path,
+                                })
+                                if result:
+                                    logger.info(f"[Panoramic] Saved video_url to episode {episode_id}: {path}")
+                                else:
+                                    logger.error(f"[Panoramic] update_episode returned None for episode {episode_id}")
+                        except Exception as _e:
+                            logger.error(f"[Panoramic] Failed to save video to episode {episode_id}: {_e}", exc_info=True)
+                    else:
+                        _db().update_storyboard(shot_id, {"video_url": path, "status": "video_done"})
                 if status == "error":
                     _video_tasks[task_id]["errors"].append(shot_id)
+
 
             # ── Sensitive word list for prompt cleaning ──
             _sensitive_words = [
@@ -5326,6 +5464,27 @@ async def start_gen_videos(episode_id: int, request: Request, background_tasks: 
 
             successful = [r for r in results if r.get("status") == "success"]
             skipped_count = len(still_failed_ids)
+
+            # ── Guaranteed fallback save for panoramic shots ──
+            # on_progress may silently fail; rescan results and force-save video_url
+            if panoramic_mode:
+                for _r in results:
+                    _rid = str(_r.get("shot_id", ""))
+                    _rpath = _r.get("path", "")
+                    if _rid.startswith("pano_") and _rpath and os.path.isfile(_rpath):
+                        try:
+                            _ep_fb = _db().get_episode(episode_id)
+                            if _ep_fb:
+                                _ep_fb_meta = json.loads(_ep_fb.get("metadata", "{}") or "{}")
+                                _ep_fb_meta["panorama_video_url"] = _rpath
+                                _ep_fb_meta["panorama_video_path"] = _rpath
+                                _db().update_episode(episode_id, {
+                                    "metadata": json.dumps(_ep_fb_meta),
+                                    "video_url": _rpath,
+                                })
+                                logger.info(f"[Fallback] Saved panoramic video_url for ep{episode_id}: {_rpath}")
+                        except Exception as _fb_e:
+                            logger.error(f"[Fallback] Could not save panoramic video_url: {_fb_e}")
 
             if successful:
                 _video_tasks[task_id]["status"] = "completed"
@@ -7787,7 +7946,7 @@ RESPOND ONLY with valid JSON, no markdown or explanation.
         }],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 4096,
         }
     }
 

@@ -145,6 +145,8 @@ window.showCreateCampaign = function() {
     document.getElementById('wizStep2').style.display = 'none';
     document.getElementById('wizStep3').style.display = 'none';
     document.getElementById('wizStepProgress').style.display = 'none';
+    const _wizM1 = document.querySelector('#wizardModal .modal');
+    if (_wizM1) _wizM1.style.maxWidth = '800px';
     
     // Update Stepper
     document.getElementById('wizInd1').className = 'wiz-step active';
@@ -161,9 +163,12 @@ window.showCreateCampaign = function() {
     // Load presets dropdown
     loadWizPresets();
     
-    // Load Product & Model Gallery categories into the dropdown FIRST,
-    // THEN restore last-used config (order matters — gallery options must exist before restore)
-    loadWizGalleryCategories().then(() => {
+    // Load Product & Model Gallery categories AND image browser profiles,
+    // THEN restore last-used config (options must exist before restore)
+    Promise.all([
+        loadWizGalleryCategories(),
+        loadWizImageBrowserProfiles()
+    ]).then(() => {
         restoreLastWizConfig();
     });
 
@@ -226,7 +231,10 @@ const WIZ_FIELD_IDS = [
     'wizCharacterStyle', 'wizCharStyleCustom', 'wizCameraAngle',
     'wizEthnicity', 'wizPromptFocus', 'wizAspectRatio',
     'wizNarrationSource', 'wizLanguage', 'wizPipelineTemplate',
-    'wizGalleryCategory', 'wizNoTextPrompt', 'wizVideoLength'
+    'wizGalleryCategory', 'wizNoTextPrompt', 'wizVideoLength',
+    'wizSceneGenMode', 'wizImageEngine', 'wizImageBrowserProfile',
+    'wizVideoEngine', 'wizVoiceProfileExec',
+    'wizYtChannel', 'wizFbPage', 'wizUploadPrivacy'
 ];
 const WIZ_CHECKBOX_IDS = [];
 
@@ -628,6 +636,9 @@ async function wizGenerateOutline() {
         
         document.getElementById('wizStep2').style.display = 'none';
         document.getElementById('wizStep3').style.display = '';
+        // Widen modal for 2-column layout
+        const _wizModal = document.querySelector('#wizardModal .modal');
+        if (_wizModal) _wizModal.style.maxWidth = '960px';
         
         // Load browser profiles into chip selector for new project
         _loadBrowserProfilesIntoSelect('wizBrowserProfileExec').then(() => {
@@ -1581,7 +1592,8 @@ function renderPanoramaSection() {
         zone.classList.add('has-image');
         content.innerHTML = `
             <div class="panorama-img-wrap">
-                <img src="${panoramaUrl}" alt="Scene Panorama" onerror="this.alt='Failed to load'" />
+                <img src="${panoramaUrl}?t=${Date.now()}" alt="Scene Panorama" onerror="this.parentElement.innerHTML='<div style=\'color:#f87;padding:12px\'>⚠️ Failed to load: ' + this.src + '</div>'" />
+
                 <div class="panorama-img-overlay">
                     <span class="panorama-label">📍 ${esc(epMeta.scene_location || 'Scene Location')}</span>
                     <div class="panorama-actions">
@@ -3331,6 +3343,8 @@ window.resumeAutoPilot = function() {
         document.getElementById('wizStep2').style.display = 'none';
         document.getElementById('wizStep3').style.display = '';
         document.getElementById('wizStepProgress').style.display = 'none';
+        const _wizM3 = document.querySelector('#wizardModal .modal');
+        if (_wizM3) _wizM3.style.maxWidth = '960px';
         
         document.getElementById('wizInd1').className = 'wiz-step done';
         document.getElementById('wizInd2').className = 'wiz-step done';
@@ -3739,15 +3753,28 @@ async function startRealtimeAutoPilot() {
                         if (totalMissing === 0) {
                             toast(`✅ All ${allChars.length} chars + ${allScenes.length} scenes have images`, "info");
                         } else {
-                            toast(`🎨 Generating ${totalMissing} missing images (${missingChars.length} chars, ${missingScenes.length} scenes)...`, "info");
+                            // Check scene_gen_mode — in panoramic_grid mode, skip individual scene image gen
+                            const _campaignMeta = (() => { try { return JSON.parse(currentCampaign.metadata || '{}'); } catch(e) { return {}; } })();
+                            const _sceneGenMode = _campaignMeta.scene_gen_mode || 'per_shot';
+                            const _skipSceneImages = _sceneGenMode === 'panoramic_grid';
+                            if (_skipSceneImages) {
+                                missingScenes = []; // panorama mode: backend handles panorama, not per-scene
+                                toast(`🖼️ Panoramic mode — skipping individual scene images (backend will generate panorama)`, "info");
+                            }
+                            
+                            const totalMissingActual = missingChars.length + missingScenes.length;
+                            if (totalMissingActual === 0) {
+                                toast(`✅ All ${allChars.length} chars + ${allScenes.length} scenes have images (or skipped in panoramic mode)`, "info");
+                            } else {
+                            toast(`🎨 Generating ${totalMissingActual} missing images (${missingChars.length} chars, ${missingScenes.length} scenes)...`, "info");
                             
                             // Resolve browser profile + engine
                             let imgProfile = '';
                             let imgEngine = 'grok';
                             try {
                                 const campaignMeta = JSON.parse(currentCampaign.metadata || '{}');
-                                imgProfile = campaignMeta.browser_profile_name || '';
-                                imgEngine = campaignMeta.video_engine || 'grok';
+                                imgProfile = campaignMeta.image_browser_profile || campaignMeta.browser_profile_name || '';
+                                imgEngine = campaignMeta.image_engine || campaignMeta.video_engine || 'grok';
                             } catch(e) {}
                             if (!imgProfile) imgProfile = localStorage.getItem('cs_last_browser_profile') || '';
                             
@@ -3820,11 +3847,54 @@ async function startRealtimeAutoPilot() {
                                 
                                 toast(`✅ Image generation complete for ${currentEpisode.title}`, "success");
                             }
+                            } // end totalMissingActual > 0
+                        } // end panoramic_grid check
+                    }
+                    if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
+                    
+                    // 4d. Panorama generation (panoramic_grid mode only)
+                    const _autopilotCampMeta = (() => { try { return JSON.parse(currentCampaign.metadata || '{}'); } catch(e) { return {}; } })();
+                    if ((_autopilotCampMeta.scene_gen_mode || 'per_shot') === 'panoramic_grid') {
+                        // Re-read episode metadata from DB for latest panorama state
+                        try {
+                            const freshEpPano = await apiFetch(`/episodes/${currentEpisode.id}`);
+                            if (freshEpPano) currentEpisode = freshEpPano;
+                            epMeta = {}; try { epMeta = JSON.parse(currentEpisode.metadata || '{}'); } catch(e) {}
+                        } catch(e) {}
+                        
+                        const existingPanoUrl = epMeta.panorama_image_url || '';
+                        const existingPanoPath = epMeta.panorama_image_path || '';
+                        // Skip only if URL exists AND (it's http OR path is set with a non-empty value)
+                        const panoAlreadyOk = existingPanoUrl && (existingPanoUrl.startsWith('http') || existingPanoPath);
+                        
+                        if (panoAlreadyOk) {
+                            toast(`⏭️ Panorama already exists for ${currentEpisode.title} — skipping`, 'info');
+                        } else {
+                            toast(`🎨 Generating Scene Panorama for ${currentEpisode.title}...`, 'info');
+                            try {
+                                const panoResp = await fetch(`${API}/campaigns/${currentCampaign.id}/episodes/${currentEpisode.id}/generate-panorama`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                                const panoData = await panoResp.json();
+                                if (panoResp.ok && panoData.status === 'success') {
+                                    epMeta.panorama_image_url = panoData.panorama_url;
+                                    epMeta.panorama_image_path = panoData.panorama_path || '';
+                                    epMeta.scene_mode = true;
+                                    currentEpisode.metadata = JSON.stringify(epMeta);
+                                    toast(`✅ Panorama generated for ${currentEpisode.title}!`, 'success');
+                                    try { renderPanoramaSection(); } catch(e) {}
+                                } else {
+                                    toast(`⚠️ Panorama failed for ${currentEpisode.title}: ${panoData.error || panoData.detail || 'Unknown error'}`, 'warning');
+                                }
+                            } catch(e) {
+                                toast(`⚠️ Panorama error: ${e.message}`, 'warning');
+                            }
                         }
                     }
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     
-                    // 5. Storyboard (skip if not in pipeline)
+
                     if (pipeline.includes('storyboard')) {
                     await new Promise(r => setTimeout(r, 2000));
                     setStep('storyboard');
@@ -3997,11 +4067,84 @@ async function startRealtimeAutoPilot() {
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
                     }
 
-                    // 6.5. Video Generation via Grok (skip if not in pipeline)
+                    // 6.5. Video Generation (skip if not in pipeline)
                     if (pipeline.includes('videos')) {
                     await new Promise(r => setTimeout(r, 2000));
                     setStep('videos');
                     
+                    // Re-read scene_gen_mode
+                    let _vidSceneMode = 'per_shot';
+                    let _vidCampMeta = {};
+                    try { _vidCampMeta = JSON.parse(currentCampaign.metadata || '{}'); _vidSceneMode = _vidCampMeta.scene_gen_mode || 'per_shot'; } catch(e) {}
+                    
+                    if (_vidSceneMode === 'panoramic_grid') {
+                        // === PANORAMIC MODE: use panorama as ref image, gen 1 video per episode ===
+                        let freshEpForVid = currentEpisode;
+                        try { freshEpForVid = await apiFetch(`/episodes/${currentEpisode.id}`); } catch(e) {}
+                        const _vidEpMeta = (() => { try { return JSON.parse(freshEpForVid.metadata || '{}'); } catch(e) { return {}; } })();
+                        const _panoUrl = _vidEpMeta.panorama_image_url || '';
+                        const _panoPath = _vidEpMeta.panorama_image_path || '';
+                        
+                        // Check if video already exists for this episode
+                        const _existingVidUrl = _vidEpMeta.panorama_video_url || _vidEpMeta.video_url || '';
+                        if (_existingVidUrl) {
+                            toast(`⏭️ Video already exists for ${currentEpisode.title} — skipping`, 'info');
+                        } else if (!_panoUrl && !_panoPath) {
+                            toast(`⚠️ No panorama image found for ${currentEpisode.title} — skipping video gen`, 'warning');
+                        } else {
+                            // Get video browser profiles
+                            let _vidProfiles = _vidCampMeta.browser_profile_names_video || [];
+                            if (_vidProfiles.length === 0) {
+                                const fb = _vidCampMeta.browser_profile_name || '';
+                                if (fb) _vidProfiles = [fb];
+                            }
+                            if (_vidProfiles.length === 0) {
+                                const ls = localStorage.getItem('cs_last_browser_profile_video') || localStorage.getItem('cs_last_browser_profile') || '';
+                                if (ls) _vidProfiles = ls.split(',').filter(Boolean);
+                            }
+                            
+                            if (_vidProfiles.length === 0) {
+                                toast(`⚠️ No video browser profile — skipping video gen for ${currentEpisode.title}`, 'warning');
+                            } else {
+                                const _vidEngine = _vidCampMeta.video_engine || localStorage.getItem('cs_video_engine') || 'grok';
+                                const _vidScript = _vidEpMeta.script_content || freshEpForVid.script_content || freshEpForVid.content || '';
+                                toast(`🎞️ Panoramic video gen for ${currentEpisode.title} via ${_vidEngine}...`, 'info');
+                                try {
+                                    const panoVidRes = await apiFetch(`/episodes/${currentEpisode.id}/gen-videos`, {
+                                        method: 'POST',
+                                        body: JSON.stringify({
+                                            profile_names: _vidProfiles,
+                                            headless: false,
+                                            overwrite: false,
+                                            engine: _vidEngine,
+                                            panorama_ref: _panoPath || _panoUrl,   // pass panorama as ref
+                                            panoramic_mode: true                    // signal backend to use single-video mode
+                                        })
+                                    });
+                                    if (panoVidRes.success) {
+                                        _activeGenVideoTaskId = panoVidRes.task_id;
+                                        try { document.getElementById('videosEmpty').style.display = 'none'; } catch(e) {}
+                                        try { document.getElementById('vidProgressSection').style.display = 'block'; } catch(e) {}
+                                        await _waitForVideoGenCompletion(panoVidRes.task_id, panoVidRes.total || 1);
+                                        _activeGenVideoTaskId = null;
+                                        // Refresh episode so video_url is available for display
+                                        try {
+                                            const freshEpData = await apiFetch(`/episodes/${currentEpisode.id}`);
+                                            if (freshEpData && freshEpData.id) currentEpisode = freshEpData;
+                                        } catch(e) {}
+                                        await loadEpisodeVideos().catch(e => {});
+                                        toast(`✅ Panoramic video generated for ${currentEpisode.title}!`, 'success');
+
+                                    } else {
+                                        toast(`⚠️ Panoramic video gen failed: ${panoVidRes.error || 'Unknown'}`, 'warning');
+                                    }
+                                } catch(e) {
+                                    toast(`⚠️ Panoramic video error: ${e.message}`, 'warning');
+                                }
+                            }
+                        }
+                    } else {
+                    // === PER-SHOT MODE: standard storyboard-based video gen ===
                     const vidSbRes = await apiFetch(`/episodes/${currentEpisode.id}/storyboards`);
                     const vidShots = vidSbRes.items || [];
                     const pendingVidShots = vidShots.filter(s => s.image_prompt && !s.video_url);
@@ -4058,9 +4201,9 @@ async function startRealtimeAutoPilot() {
                             }
                         }
                     }
+                    } // end per_shot video branch
                     if (realtimeAbortController && realtimeAbortController.signal.aborted) throw new Error("Aborted by user");
-                    }
-
+                    } // end videos pipeline
                     // 6+. Audio Generation (TTS) explicitly in step 6
                     if (pipeline.includes('audio')) {
                         await new Promise(r => setTimeout(r, 2000));
@@ -5533,13 +5676,41 @@ async function loadEpisodeVideos(progressMap = null) {
         const count = document.getElementById('vidCount');
 
         let completedVideosCount = 0;
-        
+
+        // ── PANORAMIC MODE: episode has a single video (no storyboard shots) ──
+        // Always fetch fresh episode so video_url reflects the latest DB state
+        const freshEp = await apiFetch(`/episodes/${currentEpisode.id}`).catch(() => null);
+        const freshMeta = (() => { try { return JSON.parse((freshEp && freshEp.metadata) || '{}'); } catch(e) { return {}; } })();
+        const epVideoUrl = (freshEp && freshEp.video_url) || freshMeta.panorama_video_url || freshMeta.panorama_video_path || '';
+
+        if (videoShots.length === 0 && epVideoUrl) {
+            // Panoramic episode: show the single generated video
+            const filename = epVideoUrl.split(/[\\/]/).pop();
+            const vidSrc = `/api/v1/pod_studio/grok-video/${filename}`;
+            empty.style.display = 'none';
+            grid.style.display = 'grid';
+            grid.innerHTML = `
+                <div style="border-radius:8px; overflow:hidden; background:var(--bg-1); border:1px solid var(--border);">
+                    <video src="${vidSrc}" controls loop muted preload="metadata"
+                        style="width:100%; aspect-ratio:${arCss}; object-fit:cover; display:block;"
+                        onerror="this.style.display='none';"
+                    ></video>
+                    <div style="padding:6px 8px; font-size:11px; color:var(--text-2);">
+                        <strong>🎬 Panoramic Video</strong> — ${esc(filename)}
+                    </div>
+                </div>
+            `;
+            if (count) count.textContent = `1 / 1 videos`;
+            return;
+        }
+
         if (videoShots.length === 0) {
             grid.style.display = 'none';
             empty.style.display = '';
         } else {
             empty.style.display = 'none';
             grid.style.display = 'grid';
+
 
             videoShots.forEach(s => {
                 let card = document.getElementById(`video-card-${s.id}`);
