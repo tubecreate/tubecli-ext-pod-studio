@@ -107,35 +107,69 @@ class PodStudioExtension(Extension):
         """Register POD Studio skill for chatbot routing."""
         try:
             from tubecli.core.skill import skill_manager
-            existing = skill_manager.find_by_name("POD Studio")
-            if existing:
-                logger.info("POD Studio skill already registered, skipping.")
-                return
+            from tubecli.config import get_language
 
-            skill_manager.create(
-                name="POD Studio",
-                description=(
+            existing = skill_manager.find_by_name("POD Studio")
+            lang = get_language()
+
+            if lang == "vi":
+                desc = (
                     "AI POD Studio — Viết kịch bản video quảng cáo POD bằng AI. "
                     "Hỗ trợ viết script, trích xuất vật phẩm/bối cảnh, "
                     "tạo phân cảnh chi tiết, gợi ý storyboard video."
-                ),
-                skill_type="Extension Skill",
-                commands=[
+                )
+                cmds = [
                     "viết quảng cáo", "làm video pod", "write ad script", "pod video",
                     "pod studio", "tạo storyboard pod"
-                ],
-                workflow_data={
-                    "extension": "pod_studio",
-                    "action": "write_content",
-                    "sop": (
-                        "1. Mở POD Studio tại /pod-studio\n"
-                        "2. Tạo dự án mới\n"
-                        "3. Chọn gallery sản phẩm/model\n"
-                        "4. Sử dụng AI Agent để viết kịch bản quảng cáo → extract → storyboard\n"
-                    ),
-                },
-            )
-            logger.info("✅ POD Studio skill registered successfully.")
+                ]
+                sop = (
+                    "1. Mở POD Studio tại /pod-studio\n"
+                    "2. Tạo dự án mới\n"
+                    "3. Chọn gallery sản phẩm/model\n"
+                    "4. Sử dụng AI Agent để viết kịch bản quảng cáo → extract → storyboard\n"
+                )
+            else:
+                desc = (
+                    "AI POD Studio — Write POD video ad scripts with AI. "
+                    "Supports script writing, item/scene extraction, "
+                    "detailed shot breakdown, and video storyboard suggestions."
+                )
+                cmds = [
+                    "write ad", "make pod video", "write ad script", "pod video",
+                    "pod studio", "create pod storyboard"
+                ]
+                sop = (
+                    "1. Open POD Studio at /pod-studio\n"
+                    "2. Create a new campaign\n"
+                    "3. Select product/model gallery\n"
+                    "4. Use AI Agent to write ad scripts → extract → storyboard\n"
+                )
+
+            if not existing:
+                skill_manager.create(
+                    name="POD Studio",
+                    description=desc,
+                    skill_type="Extension Skill",
+                    commands=cmds,
+                    workflow_data={
+                        "extension": "pod_studio",
+                        "action": "write_content",
+                        "sop": sop,
+                    },
+                )
+                logger.info("✅ POD Studio skill registered successfully.")
+            else:
+                skill_manager.update(
+                    existing.id,
+                    description=desc,
+                    commands=cmds,
+                    workflow_data={
+                        "extension": "pod_studio",
+                        "action": "write_content",
+                        "sop": sop,
+                    },
+                )
+                logger.info("⚡ POD Studio skill updated/synced.")
         except Exception as e:
             logger.warning(f"Could not register POD Studio skill: {e}")
 
