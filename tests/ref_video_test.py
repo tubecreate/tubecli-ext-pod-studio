@@ -133,9 +133,12 @@ ok(st["models"][0]["appearance"].startswith("1. FACE") and st["models"][0]["gend
 ok(st["board"]["ok"] and len(st["cuts"]) == 2 and all(os.path.isfile(c) for c in st["cuts"]), "bảng + 2 cut", st.get("cuts"))
 ok(len(clip_calls) == 2 and clip_calls[1]["thread"] == "T-1" and "tubecli.app" in clip_calls[1]["prompt"] and "IDENTITY LOCK" in clip_calls[1]["prompt"]
    and "Nobody speaks" in clip_calls[0]["prompt"], "clip 1 im, clip 2 nói; cùng chat; khối IDENTITY", [c["prompt"][:80] for c in clip_calls])
-ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip1_last.jpg") and clip_calls[1]["refs"][1] == model_img,
-   "clip 2 refs = khung cuối + chân dung + (cut/sản phẩm)", clip_calls[1]["refs"])
-ok(img_calls and img_calls[0][2][0] == model_img and len(img_calls[0][2]) == 3, "khung đầu vẽ từ chân dung + sản phẩm + cut", img_calls[0][2])
+ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip2_start.jpg") and clip_calls[1]["refs"][1] == model_img,
+   "clip 2 refs = khung đầu VẼ LẠI + chân dung + (cut/sản phẩm)", clip_calls[1]["refs"])
+ok(img_calls and img_calls[0][2][0] == model_img and len(img_calls[0][2]) == 3, "khung đầu clip 1 vẽ từ chân dung + sản phẩm + cut", img_calls[0][2])
+ok(len(img_calls) == 2 and img_calls[1][2][0].endswith("clip1_last.jpg") and img_calls[1][2][1] == model_img
+   and "CONTINUES the FIRST attached image" in img_calls[1][0] and "RENDERING STYLE" in img_calls[1][0],
+   "khung đầu clip 2 vẽ lại từ khung cuối clip 1 + chân dung (khoá kiểu vẽ)", [c[2] for c in img_calls])
 ok(img_calls[0][0].startswith("A single photorealistic 9:16 frame") and "RENDERING STYLE: photorealistic" in img_calls[0][0]
    and "RENDERING STYLE: photorealistic" in clip_calls[0]["prompt"] and st["models"][0]["style"] == "photorealistic",
    "kiểu vẽ ảnh thật ghim vào khung đầu + clip", img_calls[0][0][:60])

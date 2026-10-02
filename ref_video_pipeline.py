@@ -595,23 +595,40 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             # nhân vật có mặt trong cảnh: người nói trước, rồi nhân vật chính — tối đa 2 chân dung (Muse nhận 3 ảnh)
             cast = [c for c in models if shot.get("speaker") and c["name"].lower() == shot["speaker"].lower()] or [main]
             cast = (cast + [c for c in models if c not in cast])[:2]
-            if i == 1:
-                startf = os.path.join(proj, "clip1_start.jpg")
-                if not os.path.isfile(startf):
-                    say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
+            # Khung ĐẦU của MỌI clip đều vẽ lại bằng ảnh từ chân dung (clip 1: chân dung + sản phẩm/cut; clip sau: khung cuối
+            # clip trước + chân dung): nối thẳng từ khung cuối thì kiểu vẽ/mặt trôi cộng dồn — #158 ngày 2/10 clip 1 còn
+            # đúng chất tranh 3D, clip 2–3 thành người thật (user: "phải đồng bộ đúng style của nhân vật từ đầu luôn").
+            prev_last = last_frame(clips[str(i - 1)]["path"], os.path.join(proj, f"clip{i-1}_last.jpg")) if i > 1 else ""
+            startf = os.path.join(proj, f"clip{i}_start.jpg")
+            if not os.path.isfile(startf):
+                say("clips", f"Clip {i}/{n}: Muse is drawing the start frame from "
+                    + ("the previous clip's last frame + the reference portrait…" if prev_last else "the reference images…"),
+                    progress=int((i - 1) / n * 100))
+                if prev_last:
+                    refs = [prev_last, cast[0]["image"]] + ([cast[1]["image"]] if len(cast) > 1 else ([cut] if cut else ([products[0]["image"]] if products else [])))
+                    img_prompt = (
+                        f"A single {style} {aspect} frame that CONTINUES the FIRST attached image (the final frame of the previous "
+                        "shot): keep the same location, lighting, camera position and body position so the next shot starts exactly "
+                        "here — but re-draw the character to match the SECOND attached image (the reference portrait) EXACTLY: same "
+                        f"face, same hair, same outfit, same rendering style. Then: {shot['scene']}\n\n" + ident)
+                else:
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([cut] if cut else [])
-                    data = muse.generate_image_bytes(
-                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual "
-                        "as in the attached reference portrait (same face, hair and outfit)"
-                        + (", with the attached product." if products else ".") + " The portrait wins for identity; the "
-                        "storyboard frame (if attached) is for composition only.\n\n" + ident, aspect, refs[:3])
+                    img_prompt = (
+                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the attached "
+                        "reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
+                        + " The portrait wins for identity; the storyboard frame (if attached) is for composition only.\n\n" + ident)
+                try:
+                    data = muse.generate_image_bytes(img_prompt, aspect, refs[:3])
                     with open(startf, "wb") as f:
                         f.write(data)
-                refs = [startf, cast[0]["image"]] + ([cast[1]["image"]] if len(cast) > 1 else ([products[0]["image"]] if products else []))
-            else:
-                prev = clips[str(i - 1)]["path"]
-                refs = [last_frame(prev, os.path.join(proj, f"clip{i-1}_last.jpg")), cast[0]["image"]] + \
-                       ([cast[1]["image"]] if len(cast) > 1 else ([cut] if cut else ([products[0]["image"]] if products else [])))
+                except Exception as e:      # noqa: BLE001
+                    if not prev_last:
+                        raise
+                    # Muse không vẽ được khung đầu → nối thẳng từ khung cuối như cũ, nói rõ để người dùng biết vì sao trôi.
+                    say("clips", f"Clip {i}: could not re-draw the start frame ({str(e)[:100]}) — continuing from the last frame")
+                    startf = prev_last
+            refs = [startf, cast[0]["image"]] + ([cast[1]["image"]] if len(cast) > 1 else
+                                                 ([products[0]["image"]] if products and i == 1 else ([cut] if cut else ([products[0]["image"]] if products else []))))
             say("clips", f"Clip {i}/{n}: {shot['title']}" + (f" — says «{shot['dialogue'][:60]}»" if shot["dialogue"] else ""),
                 progress=int((i - 1) / n * 100))
             prompt = (f"{shot['scene']} Camera: {shot['camera']}. "
