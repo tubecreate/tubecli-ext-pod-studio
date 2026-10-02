@@ -75,6 +75,12 @@ ok(P.art_style("1. FACE: oval … 11. ART STYLE: anime illustration.") == "anime
 ok("do NOT turn" in P.style_block("anime illustration") and "real photograph" in P.style_block("photorealistic"), "style_block")
 ok(P.guess_gender("cyberpunk techwear anime heroine") == "female" and P.guess_gender("a young man") == "male"
    and P.guess_gender("the person") == "", "guess_gender: heroine → nữ")
+_old_describe = P.describe
+P.describe = lambda imgs, prompt, say, max_len=900: json.dumps({"environment": "studio " * 200, "lighting": "neon", "spatial_map": "m",
+                                                                "cuts": [{"cut": 1, "camera": "wide", "position": "center", "background": "wall"}]})[:max_len]
+rb = P.read_board("board.png", 3, lambda m: None)
+ok(rb.get("environment", "").startswith("studio studio") and rb["cuts"][0]["camera"] == "wide", "read_board: JSON dài > 900 ký tự vẫn parse (#160 từng rơi về raw)", list(rb.keys()))
+P.describe = _old_describe
 spec = P.task_kind_spec()
 ok(spec["id"] == "pod_studio.video" and spec["submit_url"].startswith("/api/v1/pod_studio/ref-video/")
    and [f["key"] for f in spec["fields"]][:3] == ["model_images", "product_images", "request"], "task_kind_spec")

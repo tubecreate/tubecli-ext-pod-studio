@@ -227,8 +227,9 @@ def _gemini_describe(images: List[str], prompt: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def describe(images: List[str], prompt: str, say: Callable[[str], None]) -> str:
-    """Mô tả từ ảnh — Muse (nhìn ảnh, không cần khoá) → Gemini → "" (chỉ dùng chữ người dùng gõ)."""
+def describe(images: List[str], prompt: str, say: Callable[[str], None], max_len: int = 900) -> str:
+    """Mô tả từ ảnh — Muse (nhìn ảnh, không cần khoá) → Gemini → "" (chỉ dùng chữ người dùng gõ).
+    max_len: bảng nhân vật 900 là đủ; đọc bảng panorama trả JSON dài hơn (#160: cắt ở 900 → không parse được)."""
     for name, fn in (("Muse", _muse_describe), ("Gemini", _gemini_describe)):
         try:
             text = fn(images, prompt)
@@ -236,7 +237,7 @@ def describe(images: List[str], prompt: str, say: Callable[[str], None]) -> str:
             say(f"{name} could not describe the image: {str(e)[:120]}")
             continue
         if len(text) >= 80:
-            return text[:900]
+            return text[:max_len]
     return ""
 
 
@@ -263,7 +264,7 @@ BOARD_READ_PROMPT = (
 def read_board(board_png: str, n: int, say: Callable[[str], None]) -> Dict[str, Any]:
     """Đọc ngược bảng đã vẽ → bối cảnh, ánh sáng, sơ đồ không gian, góc máy/vị trí từng cut. Vision: Muse (nhìn ảnh) →
     Gemini; trả chữ không phải JSON thì giữ nguyên văn ({"raw"}); không đọc được → {}."""
-    text = describe([board_png], BOARD_READ_PROMPT, say)
+    text = describe([board_png], BOARD_READ_PROMPT, say, max_len=4000)
     data = _parse_json(text) if text else None
     if not isinstance(data, dict):
         return {"raw": text[:900]} if text else {}
