@@ -157,6 +157,18 @@ except P.Cancelled:
     ok(True, "huỷ giữa chừng → Cancelled")
 P._data_dir = lambda: str(TMP / "pod_studio")
 
+print("C2. gom ảnh người mẫu theo thể loại")
+P._data_dir = lambda: str(TMP / "pod3")
+second = jpg(TMP / "model2.jpg", (90, 200, 120))
+P.run({**payload, "task_id": "t-ad2", "model_images": [model_img, second], "clips": 1}, lambda *a, **k: None, lambda: False)
+s3 = P.load_state("t-ad2")
+ok(len(s3["models"]) == 1 and s3["models"][0]["images"] == [model_img, second] and s3["models"][0]["image"] == model_img,
+   "ad: 2 ảnh = MỘT người (ảnh đầu làm chân dung, cả hai để mô tả)", s3["models"])
+P.run({**payload, "task_id": "t-drama", "model_images": [model_img, second], "format": "drama", "clips": 1}, lambda *a, **k: None, lambda: False)
+s4 = P.load_state("t-drama")
+ok(len(s4["models"]) == 2 and [m["name"] for m in s4["models"]] == ["Character 1", "Character 2"], "drama: mỗi ảnh một nhân vật", s4["models"])
+P._data_dir = lambda: str(TMP / "pod_studio")
+
 print("D. split_cuts + route")
 board = jpg(TMP / "board.png", (5, 5, 5), (1000, 600))
 cuts = panorama.split_cuts(board, 3, "gptimage", str(TMP / "cuts"))

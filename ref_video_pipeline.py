@@ -283,7 +283,9 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         shots.append({**last, "title": f"Shot {len(shots)+1}", "dialogue": "", "speaker": ""})
     plan["shots"] = shots
     plan["title"] = str(plan.get("title") or request.strip().split("\n")[0][:60] or "Video")[:80]
-    plan["environment"] = str(plan.get("environment") or "a bright, clean location with soft natural light")[:300]
+    # LLM quên bối cảnh → lấy từ chính yêu cầu (câu đầu thường tả địa điểm), đừng rơi về câu chung chung.
+    plan["environment"] = str(plan.get("environment") or request.strip().split("\n")[0][:200]
+                              or "a bright, clean location with soft natural light")[:300]
     return plan
 
 
@@ -435,10 +437,13 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                                        "metadata": {"source": "ref_video", "task_id": task_id, "format": fmt, "aspect": aspect, "clips": n}})
             ep = db.create_episode(camp["id"], {"title": title, "episode_number": 1, "content": request, "script_content": request})
             chars = []
-            for i, p in enumerate(models, 1):
-                c = db.create_character(camp["id"], {"name": f"Model {i}" if len(models) > 1 else "Model", "role": "presenter",
-                                                     "image_url": p, "reference_images": json.dumps([p])})
-                chars.append({"id": c["id"], "name": c["name"], "image": p, "role": "presenter"})
+            # Quảng cáo / video ngắn: MỌI ảnh người mẫu là MỘT người (nhiều góc: chân dung, toàn thân…) — ảnh đầu làm
+            # chân dung đính vào clip, các ảnh còn lại bổ sung khi mô tả. Drama: mỗi ảnh một nhân vật.
+            groups = [[p] for p in models] if fmt == "drama" else [models]
+            for i, imgs in enumerate(groups, 1):
+                c = db.create_character(camp["id"], {"name": f"Character {i}" if len(groups) > 1 else "Model", "role": "presenter",
+                                                     "image_url": imgs[0], "reference_images": json.dumps(imgs)})
+                chars.append({"id": c["id"], "name": c["name"], "image": imgs[0], "images": imgs, "role": "presenter"})
             prods = []
             for i, p in enumerate(products, 1):
                 c = db.create_character(camp["id"], {"name": f"Product {i}" if len(products) > 1 else "Product", "role": "product",
@@ -456,7 +461,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             db = _db()
             for c in models:
                 say("character", f"Describing {c['name']} from the image (10-point character sheet)…")
-                c["appearance"] = describe([c["image"]], APPEARANCE_PROMPT, lambda m: say("character", m))
+                c["appearance"] = describe(c.get("images") or [c["image"]], APPEARANCE_PROMPT, lambda m: say("character", m))
                 c["gender"] = "female" if re.search(r"\b(woman|girl|female|she|her)\b", c["appearance"], re.I) else \
                               "male" if re.search(r"\b(man|boy|male|he|his)\b", c["appearance"], re.I) else ""
                 db.update_character(c["id"], {"appearance": c["appearance"]})
