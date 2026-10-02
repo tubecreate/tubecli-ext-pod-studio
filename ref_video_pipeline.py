@@ -38,6 +38,7 @@ MAX_CLIPS = 12
 MAX_MODELS = 3
 MAX_PRODUCTS = 2
 ASPECTS = ("9:16", "16:9", "1:1")
+RETRY_WAIT = 20          # giây nghỉ trước khi gọi lại Muse một lần (test đặt 0)
 STEPS = [
     ("intake", "Nhận ảnh & yêu cầu"), ("character", "Bảng nhân vật"), ("shots", "Chia cảnh & thoại"),
     ("board", "Scene Panorama"), ("clips", "Clip Muse"), ("render", "Ghép video"),
@@ -721,7 +722,16 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                       + (speak_block(shot["dialogue"], cast[0].get("gender", "")) if shot["dialogue"] else SILENT_BLOCK)
                       + "\n\n" + scene + "\n\n" + ident)
             t0 = time.time()
-            v = muse.generate_video_clip(prompt, os.path.join(proj, f"clip{i}"), refs[:3], aspect, continue_from=True, thread_id=thread)
+            for attempt in (1, 2):
+                try:
+                    v = muse.generate_video_clip(prompt, os.path.join(proj, f"clip{i}"), refs[:3], aspect, continue_from=True, thread_id=thread)
+                    break
+                except Exception as e:      # noqa: BLE001
+                    if attempt == 2 or getattr(e, "kind", "") in ("refused", "config", "auth"):
+                        raise
+                    # #160 (2/10): ngay sau khi clip 1 xong, ô soạn tin của thread chưa hiện trong 30 s → nghỉ rồi thử lại MỘT lần
+                    say("clips", f"Clip {i}: Muse did not answer ({str(e)[:90]}) — retrying once in 20 s")
+                    time.sleep(RETRY_WAIT)
             thread = v.get("thread_id") or thread
             name = f"rv_{re.sub(r'[^0-9A-Za-z]', '', task_id)[:12]}_clip{i}.mp4"
             dst = os.path.join(_videos_dir(), name)

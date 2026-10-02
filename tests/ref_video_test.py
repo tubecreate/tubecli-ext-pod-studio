@@ -199,6 +199,30 @@ except P.Cancelled:
     ok(True, "huỷ giữa chừng → Cancelled")
 P._data_dir = lambda: str(TMP / "pod_studio")
 
+print("C1b. Muse lỡ một lượt → thử lại một lần")
+P._data_dir = lambda: str(TMP / "pod_retry")
+_gen_ok = muse.generate_video_clip
+_fails = {"n": 0}
+def flaky_clip(*a, **k):
+    _fails["n"] += 1
+    if _fails["n"] == 1:
+        raise RuntimeError("locator.click: Timeout 30000ms exceeded")
+    return _gen_ok(*a, **k)
+muse.generate_video_clip = flaky_clip
+P.RETRY_WAIT = 0
+said_retry = []
+P.run({**payload, "task_id": "t-retry", "clips": 1}, lambda name, status, msg="", label="", progress=None: said_retry.append(msg), lambda: False)
+ok(_fails["n"] == 2 and any("retrying once" in m for m in said_retry) and "1" in P.load_state("t-retry")["clips"], "lỗi driver lần 1 → báo + gọi lại → clip có", said_retry[-3:])
+class _Refused(Exception):
+    kind = "refused"
+muse.generate_video_clip = lambda *a, **k: (_ for _ in ()).throw(_Refused("no"))
+try:
+    P.run({**payload, "task_id": "t-refused", "clips": 1}, lambda *a, **k: None, lambda: False); ok(False, "refused → không thử lại")
+except _Refused:
+    ok(True, "Muse từ chối → không thử lại, nổi lỗi ngay")
+muse.generate_video_clip = _gen_ok
+P._data_dir = lambda: str(TMP / "pod_studio")
+
 print("C2. gom ảnh người mẫu theo thể loại")
 P._data_dir = lambda: str(TMP / "pod3")
 second = jpg(TMP / "model2.jpg", (90, 200, 120))
