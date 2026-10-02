@@ -73,6 +73,8 @@ ok(P.art_style("1. FACE: oval … 11. ART STYLE: anime illustration.") == "anime
    and P.art_style("a stylized 3D render of a girl with cat-ear headphones") == "3D render"
    and P.art_style("a young woman in a cream vest") == "photorealistic" and P.art_style("") == "photorealistic", "art_style: mục 11 ưu tiên, rồi từ khoá, mặc định ảnh thật")
 ok("do NOT turn" in P.style_block("anime illustration") and "real photograph" in P.style_block("photorealistic"), "style_block")
+ok(P.guess_gender("cyberpunk techwear anime heroine") == "female" and P.guess_gender("a young man") == "male"
+   and P.guess_gender("the person") == "", "guess_gender: heroine → nữ")
 spec = P.task_kind_spec()
 ok(spec["id"] == "pod_studio.video" and spec["submit_url"].startswith("/api/v1/pod_studio/ref-video/")
    and [f["key"] for f in spec["fields"]][:3] == ["model_images", "product_images", "request"], "task_kind_spec")

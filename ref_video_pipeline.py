@@ -168,6 +168,17 @@ def art_style(appearance: str) -> str:
     return "photorealistic"
 
 
+def guess_gender(appearance: str) -> str:
+    """Giới tính từ bảng nhân vật → chọn giọng trong speak_block. «heroine» (#159: "cyberpunk techwear anime heroine")
+    không khớp woman/girl nên từng ra giọng trung tính — bắt thêm các từ hay gặp."""
+    text = str(appearance or "")
+    if re.search(r"\b(woman|girl|female|she|her|heroine|lady|feminine|actress|schoolgirl)\b", text, re.I):
+        return "female"
+    if re.search(r"\b(man|boy|male|he|his|gentleman|masculine|actor|schoolboy|guy)\b", text, re.I):
+        return "male"
+    return ""
+
+
 def style_block(style: str) -> str:
     """Câu ghim kiểu vẽ vào prompt ảnh/video: cùng kiểu với chân dung tham chiếu."""
     s = style or "photorealistic"
@@ -495,8 +506,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             for c in models:
                 say("character", f"Describing {c['name']} from the image (10-point character sheet)…")
                 c["appearance"] = describe(c.get("images") or [c["image"]], APPEARANCE_PROMPT, lambda m: say("character", m))
-                c["gender"] = "female" if re.search(r"\b(woman|girl|female|she|her)\b", c["appearance"], re.I) else \
-                              "male" if re.search(r"\b(man|boy|male|he|his)\b", c["appearance"], re.I) else ""
+                c["gender"] = guess_gender(c["appearance"])
                 c["style"] = art_style(c["appearance"])
                 db.update_character(c["id"], {"appearance": c["appearance"]})
             for p in products:
