@@ -266,6 +266,9 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         data = _parse_json(text)
         if isinstance(data, dict) and isinstance(data.get("shots"), list) and data["shots"]:
             plan = data
+        else:
+            # Brain trả lỗi bằng CHUỖI ("[Gemini Error] …") hay chữ không phải JSON — nói ra, đừng lặng lẽ dùng khuôn mẫu.
+            say(f"The AI's shot plan was not usable ({' '.join(str(text or '').split())[:140]}) — using the template.")
     except Exception as e:      # noqa: BLE001
         say(f"The AI could not plan the shots ({str(e)[:100]}) — using the template.")
     if not plan:
@@ -545,6 +548,9 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         clips = st.setdefault("clips", {})
         main = models[0]
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2])
+        # Cut của bảng vẽ KHÔNG có ảnh tham chiếu (9router) có thể mặc đồ khác → nói rõ cut chỉ để lấy bố cục.
+        ident += ("\n\nIf a storyboard frame is attached, it is for composition and camera only — the character's face, hair "
+                  "and outfit ALWAYS follow the reference portrait.")
         thread = st.get("thread") or "new"
         for i, shot in enumerate(plan["shots"], 1):
             check()
