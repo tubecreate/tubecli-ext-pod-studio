@@ -1,28 +1,28 @@
 {
-  "name": "pod_studio",
-  "display_name": "POD Ad Studio",
-  "version": "1.0.0",
-  "description": "AI POD Video Ad Studio — Script writing, product/model extraction, shot-to-shot storyboard generation for POD videos",
-  "author": "TubeCreate",
-  "entry": "extension.py",
-  "extension_class": "PodStudioExtension",
-  "icon": "🛍️",
-  "dependencies": [],
-  "nodes": [
-    "pod_ad_generate"
-  ],
-  "skill_md": "SKILL.md",
-  "ui_static": "static",
-  "api_prefix": "/api/v1/pod_studio",
-  "page_url": "/pod-studio",
-  "min_tubecli_version": "0.3.0",
-  "category": "extension",
-  "tags": [
-    "pod",
-    "video ad",
-    "print on demand",
-    "quảng cáo",
-    "storyboard"
-  ],
-  "license": "MIT"
+    "name": "pod_studio",
+    "display_name": "POD Ad Studio",
+    "version": "1.1.0",
+    "description": "AI POD Video Ad Studio — Script writing, product/model extraction, shot-to-shot storyboard generation for POD videos; Codex pipe «Video from reference images» (Scene Panorama → Muse clips)",
+    "author": "TubeCreate",
+    "entry": "extension.py",
+    "extension_class": "PodStudioExtension",
+    "icon": "shopping_bag",
+    "dependencies": [],
+    "nodes": [
+        "pod_ad_generate"
+    ],
+    "skill_md": "SKILL.md",
+    "ui_static": "static",
+    "api_prefix": "/api/v1/pod_studio",
+    "page_url": "/pod-studio",
+    "min_tubecli_version": "0.3.0",
+    "category": "extension",
+    "tags": [
+        "pod",
+        "video ad",
+        "print on demand",
+        "quảng cáo",
+        "storyboard"
+    ],
+    "license": "MIT"
 }

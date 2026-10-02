@@ -17,7 +17,7 @@ logger = logging.getLogger("PodStudio")
 
 class PodStudioExtension(Extension):
     name = "pod_studio"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "AI POD Studio — Video Ad script writing with AI"
     author = "TubeCreate"
     extension_type = "external"
@@ -28,6 +28,36 @@ class PodStudioExtension(Extension):
         self._init_database()
         self._init_settings()
         self._register_skill()
+        self._register_codex_pipe()
+
+    def _load_local(self, module_name: str, filename: str):
+        """Nạp một file .py của extension theo đường dẫn (extension ngoài không nằm trong package tubecli)."""
+        ext_dir = self.extension_dir or os.path.dirname(os.path.abspath(__file__))
+        if ext_dir not in sys.path:
+            sys.path.insert(0, ext_dir)
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        spec = importlib.util.spec_from_file_location(module_name, os.path.join(ext_dir, filename))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _register_codex_pipe(self):
+        """Pipe «Video từ ảnh tham chiếu» lên Bảng việc (Codex): kind `pod_studio.video` + form tạo task.
+        Lõi cũ (< 2026.08.09.191) không có codex/pipelines → bỏ qua êm, Pod Studio vẫn chạy như trước."""
+        try:
+            from tubecli.extensions.codex.pipelines import register_pipeline, register_task_kind
+        except ImportError:
+            logger.info("Codex pipelines registry not available on this core — reference-video pipe not registered")
+            return
+        try:
+            pipe = self._load_local("ref_video_pipeline", "ref_video_pipeline.py")
+            register_pipeline("pod_studio.", pipe.run_kind, steps=pipe.STEP_EXT, extension="pod_studio")
+            register_task_kind(pipe.task_kind_spec())
+            logger.info("✅ POD Studio: reference-video pipe registered with Codex")
+        except Exception as e:
+            logger.warning(f"Could not register the reference-video pipe: {e}")
 
     def _ensure_httpx(self):
         """Ensure httpx is installed."""
@@ -185,6 +215,12 @@ class PodStudioExtension(Extension):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             router = getattr(mod, "router", None)
+            # Route của pipe «Video từ ảnh tham chiếu» (file riêng, gộp vào router chính).
+            try:
+                sub = self._load_local("ref_video_routes", "ref_video_routes.py")
+                router.include_router(sub.router)
+            except Exception as e:
+                logger.warning(f"POD Studio: reference-video routes not loaded: {e}")
             logger.info(f"POD Studio: loaded router, {len(router.routes) if router else 0} routes")
             return router
         except Exception as e:
