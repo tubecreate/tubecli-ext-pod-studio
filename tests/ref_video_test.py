@@ -68,6 +68,11 @@ t2 = P.template_shots("short", "x «câu a» «câu b» «câu c» «câu d»", 
 ok([s["dialogue"] for s in t2["shots"]] == ["câu a", "câu b", "câu c"], "nhiều thoại hơn shot → cắt bớt (thoại ≥ 3 ký tự)")
 ok("exactly: \"Hi\"" in P.speak_block("Hi", "female") and "female voice" in P.speak_block("Hi", "female"), "speak_block")
 ok("IDENTITY LOCK — Lin" in P.identity_block("Lin", "x") and "attached reference" in P.identity_block("Lin", ""), "identity_block có/không appearance")
+ok(P.art_style("1. FACE: oval … 11. ART STYLE: anime illustration.") == "anime illustration"
+   and P.art_style("… 11. ART STYLE: real photograph.") == "photorealistic"
+   and P.art_style("a stylized 3D render of a girl with cat-ear headphones") == "3D render"
+   and P.art_style("a young woman in a cream vest") == "photorealistic" and P.art_style("") == "photorealistic", "art_style: mục 11 ưu tiên, rồi từ khoá, mặc định ảnh thật")
+ok("do NOT turn" in P.style_block("anime illustration") and "real photograph" in P.style_block("photorealistic"), "style_block")
 spec = P.task_kind_spec()
 ok(spec["id"] == "pod_studio.video" and spec["submit_url"].startswith("/api/v1/pod_studio/ref-video/")
    and [f["key"] for f in spec["fields"]][:3] == ["model_images", "product_images", "request"], "task_kind_spec")
@@ -131,6 +136,9 @@ ok(len(clip_calls) == 2 and clip_calls[1]["thread"] == "T-1" and "tubecli.app" i
 ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip1_last.jpg") and clip_calls[1]["refs"][1] == model_img,
    "clip 2 refs = khung cuối + chân dung + (cut/sản phẩm)", clip_calls[1]["refs"])
 ok(img_calls and img_calls[0][2][0] == model_img and len(img_calls[0][2]) == 3, "khung đầu vẽ từ chân dung + sản phẩm + cut", img_calls[0][2])
+ok(img_calls[0][0].startswith("A single photorealistic 9:16 frame") and "RENDERING STYLE: photorealistic" in img_calls[0][0]
+   and "RENDERING STYLE: photorealistic" in clip_calls[0]["prompt"] and st["models"][0]["style"] == "photorealistic",
+   "kiểu vẽ ảnh thật ghim vào khung đầu + clip", img_calls[0][0][:60])
 final = st["final"]["path"]
 dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", final], capture_output=True, text=True).stdout.strip())
 ok(os.path.isfile(final) and 19.5 < dur < 20.6 and st["final"]["url"].startswith("/api/v1/pod_studio/export-video/"), "video cuối 20 s + url", dur)
@@ -172,8 +180,31 @@ P._data_dir = lambda: str(TMP / "pod_studio")
 print("D. split_cuts + route")
 board = jpg(TMP / "board.png", (5, 5, 5), (1000, 600))
 cuts = panorama.split_cuts(board, 3, "gptimage", str(TMP / "cuts"))
-ok(len(cuts) == 3 and all(os.path.isfile(c) for c in cuts), "split 3 cut (gptimage)")
+ok(len(cuts) == 3 and all(os.path.isfile(c) for c in cuts), "split 3 cut (gptimage) — bảng trơn → lùi về khuôn")
 ok(len(panorama.split_cuts(board, 5, "chatgpt", str(TMP / "cuts5"))) == 5, "split 5 cut (chatgpt, chia đều)")
+# bảng giả theo bố cục gpt-image: nền navy, dải storyboard = 3 ô ảnh nhiễu + ô chữ trắng thưa chen giữa, sơ đồ hẹp bên phải
+import random
+from PIL import Image as _Im, ImageDraw as _Dr
+random.seed(7)
+bd = _Im.new("RGB", (1600, 900), (10, 22, 40)); d = _Dr.Draw(bd)
+photo_boxes = [(20, 470, 380, 700), (560, 470, 930, 700), (1100, 470, 1470, 700)]
+for (x0, y0, x1, y1) in photo_boxes + [(1500, 470, 1580, 700)]:          # ô thứ 4 = sơ đồ hẹp (phải bị bỏ)
+    px = bd.load()
+    for x in range(x0, x1):
+        for y in range(y0, y1):
+            px[x, y] = (random.randint(60, 230), random.randint(60, 230), random.randint(60, 230))
+for x0 in (395, 945):                                                   # ô chữ: vài dòng trắng mảnh
+    for i in range(9):
+        d.rectangle((x0, 500 + i * 22, x0 + 140 - (i % 3) * 30, 504 + i * 22), fill=(240, 240, 240))
+d.rectangle((20, 60, 1580, 420), fill=(120, 110, 100))                   # vùng 1+2 (ảnh lớn phía trên, ngoài cửa sổ dò)
+bd.save(TMP / "board_gpt.png")
+boxes = panorama.detect_cut_boxes(bd, 3)
+ok(boxes and len(boxes) == 3 and all(abs(b[0] - e[0]) <= 4 and abs(b[2] - e[2]) <= 4 and abs(b[1] - e[1]) <= 4 and abs(b[3] - e[3]) <= 4
+   for b, e in zip(boxes, photo_boxes)), "detect_cut_boxes: 3 ô ảnh đúng vị trí, bỏ ô chữ + sơ đồ hẹp", boxes)
+cuts_g = panorama.split_cuts(str(TMP / "board_gpt.png"), 3, "chatgpt", str(TMP / "cuts_g"))
+_sz = _Im.open(cuts_g[1]).size if len(cuts_g) == 3 else (0, 0)
+ok(len(cuts_g) == 3 and abs(_sz[0] - 366) <= 4 and abs(_sz[1] - 226) <= 4, "split_cuts dùng ô dò được (không theo khuôn chatgpt)", _sz)
+ok(panorama.detect_cut_boxes(_Im.new("RGB", (800, 500), (10, 22, 40)), 3) is None, "bảng trơn → None")
 ok(panorama.split_cuts(str(TMP / "nope.png"), 3, "chatgpt", str(TMP / "x")) == [], "ảnh hỏng → []")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

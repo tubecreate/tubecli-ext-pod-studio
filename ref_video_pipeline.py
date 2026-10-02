@@ -140,9 +140,39 @@ APPEARANCE_PROMPT = (
     "texture); 2. EYES (shape, exact color, lashes, makeup); 3. EYEBROWS & NOSE & LIPS; 4. EXPRESSION & MOOD; "
     "5. HAIR (exact color — say if light/dark —, length, texture, style, bangs); 6. HAIR ACCESSORIES; 7. EARRINGS & "
     "JEWELRY; 8. CLOTHING - TOP (neckline, sleeves, fabric, color, pattern, decorations); 9. CLOTHING - BOTTOM "
-    "(style, fabric, color) + shoes/socks; 10. OVERALL AESTHETIC. Describe ONLY what is visible; estimate age and "
-    "height. Reply with the paragraph only — no title, no markdown."
+    "(style, fabric, color) + shoes/socks; 10. OVERALL AESTHETIC; 11. ART STYLE (exactly one of: real photograph / "
+    "3D render / anime illustration / painting). Describe ONLY what is visible; estimate age and height. Reply with "
+    "the paragraph only — no title, no markdown."
 )
+STYLES = {
+    "anime illustration": r"anime|manga|illustrat|cartoon|drawn|2d art|cel[- ]shad",
+    "3D render": r"3d render|3d[- ]model|cgi|rendered|render\b|video game character|game[- ]style",
+    "painting": r"painting|painted|watercolou?r|oil on|ink wash|brush ?stroke",
+}
+
+
+def art_style(appearance: str) -> str:
+    """Kiểu vẽ của ảnh tham chiếu từ bảng nhân vật (mục 11 hoặc từ khoá) — nhân vật anime/3D phải giữ đúng kiểu, không
+    ép «photorealistic» (nhân vật tóc xanh tai mèo 2/10/2026 là tranh 3D)."""
+    text = str(appearance or "")
+    m = re.search(r"ART STYLE\s*[:\-–]\s*([^.;\n]{3,60})", text, re.I)
+    head = m.group(1) if m else ""
+    for name, pat in STYLES.items():
+        if re.search(pat, head, re.I):
+            return name
+    if head and re.search(r"photo|real", head, re.I):
+        return "photorealistic"
+    for name, pat in STYLES.items():
+        if re.search(pat, text, re.I):
+            return name
+    return "photorealistic"
+
+
+def style_block(style: str) -> str:
+    """Câu ghim kiểu vẽ vào prompt ảnh/video: cùng kiểu với chân dung tham chiếu."""
+    s = style or "photorealistic"
+    return (f"RENDERING STYLE: {s} — exactly the same rendering style as the attached reference portrait "
+            + ("(a real photograph, real human)." if s == "photorealistic" else f"(keep it {s}, do NOT turn the character into a real-photo human)."))
 PRODUCT_PROMPT = (
     "Describe the product in the attached image(s) in English, 150-300 characters, one paragraph: type, color, shape, "
     "material & texture, label/logo text and position, design/print details, packaging. Reply with the paragraph only."
@@ -467,6 +497,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                 c["appearance"] = describe(c.get("images") or [c["image"]], APPEARANCE_PROMPT, lambda m: say("character", m))
                 c["gender"] = "female" if re.search(r"\b(woman|girl|female|she|her)\b", c["appearance"], re.I) else \
                               "male" if re.search(r"\b(man|boy|male|he|his)\b", c["appearance"], re.I) else ""
+                c["style"] = art_style(c["appearance"])
                 db.update_character(c["id"], {"appearance": c["appearance"]})
             for p in products:
                 say("character", f"Describing {p['name']}…")
@@ -502,8 +533,11 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             if _EXT_DIR not in sys.path:
                 sys.path.insert(0, _EXT_DIR)
             import panorama
+            style = (models[0].get("style") if models else "") or "photorealistic"
             prompt = panorama.build_board_prompt(title=plan["title"], fmt=fmt, characters=models, products=products,
-                                                 environment=plan["environment"], shots=plan["shots"])
+                                                 environment=plan["environment"], shots=plan["shots"],
+                                                 style="Photorealistic" if style == "photorealistic"
+                                                 else f"{style.capitalize()} (same rendering style as the character reference)")
             refs = [c["image"] for c in models] + [p["image"] for p in products]
             engines = [e for e in str(payload.get("board_engines") or "chatgpt,muse,9router").split(",") if e.strip()]
             res = panorama.draw_board(prompt, refs, os.path.join(proj, "board.png"), engines=engines,
@@ -547,10 +581,11 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             raise RuntimeError("Muse is not set up: pick the browser profile signed in to muse.ai in Cloud API Keys → Muse.")
         clips = st.setdefault("clips", {})
         main = models[0]
+        style = main.get("style") or "photorealistic"
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2])
         # Cut của bảng vẽ KHÔNG có ảnh tham chiếu (9router) có thể mặc đồ khác → nói rõ cut chỉ để lấy bố cục.
         ident += ("\n\nIf a storyboard frame is attached, it is for composition and camera only — the character's face, hair "
-                  "and outfit ALWAYS follow the reference portrait.")
+                  "and outfit ALWAYS follow the reference portrait.\n" + style_block(style))
         thread = st.get("thread") or "new"
         for i, shot in enumerate(plan["shots"], 1):
             check()
@@ -566,7 +601,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                     say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([cut] if cut else [])
                     data = muse.generate_image_bytes(
-                        f"A single photorealistic {aspect} frame: {shot['scene']} The person must be the SAME individual "
+                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual "
                         "as in the attached reference portrait (same face, hair and outfit)"
                         + (", with the attached product." if products else ".") + " The portrait wins for identity; the "
                         "storyboard frame (if attached) is for composition only.\n\n" + ident, aspect, refs[:3])
