@@ -278,6 +278,20 @@ def read_board(board_png: str, n: int, say: Callable[[str], None]) -> Dict[str, 
             "spatial_map": str(data.get("spatial_map") or "")[:500], "cuts": cuts}
 
 
+def shrink_image(src: str, dst: str, max_w: int = 1600, quality: int = 85) -> str:
+    """Bản nhẹ để đính kèm: bảng PNG 2,5 MB tải lên Muse lâu, khoá ô soạn tin quá 30 s (#160, 2/10/2026). Lỗi → trả nguyên bản."""
+    try:
+        from PIL import Image
+        im = Image.open(src).convert("RGB")
+        if im.width > max_w:
+            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
+        im.save(dst, "JPEG", quality=quality)
+        return dst
+    except Exception as e:      # noqa: BLE001
+        logger.warning("shrink_image: %s", e)
+        return src
+
+
 def board_block(i: int, aspect: str) -> str:
     """Câu chỉ cho Muse dùng bảng panorama đính kèm: bối cảnh từ zone 2, làm clip này từ CUT i của zone 3, không vẽ lại bảng."""
     return (f"PRODUCTION DESIGN BOARD: the attached board image is the visual reference for the SET (zone 2 — environment) "
@@ -689,7 +703,9 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style)
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
         # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
-        board = st["board"]["path"] if (st.get("board") or {}).get("ok") and os.path.isfile(str(st["board"].get("path") or "")) else ""
+        board = ""
+        if (st.get("board") or {}).get("ok") and os.path.isfile(str(st["board"].get("path") or "")):
+            board = shrink_image(st["board"]["path"], os.path.join(proj, "board_ref.jpg"))
         thread = st.get("thread") or "new"
         for i, shot in enumerate(plan["shots"], 1):
             check()

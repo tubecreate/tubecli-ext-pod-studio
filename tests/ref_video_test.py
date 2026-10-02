@@ -154,9 +154,14 @@ ok(st["board"]["ok"] and os.path.isfile(st["board"]["path"]) and "cuts" not in s
 ok(len(clip_calls) == 2 and clip_calls[1]["thread"] == "T-1" and "tubecli.app" in clip_calls[1]["prompt"] and "IDENTITY LOCK" in clip_calls[1]["prompt"]
    and "Nobody speaks" in clip_calls[0]["prompt"], "clip 1 im, clip 2 nói; cùng chat; khối IDENTITY", [c["prompt"][:80] for c in clip_calls])
 ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip1_last.jpg") and clip_calls[1]["refs"][1] == model_img
-   and clip_calls[1]["refs"][2].endswith("board.png"), "clip 2 refs = KHUNG CUỐI clip 1 (nguyên, không vẽ lại) + chân dung + BẢNG nguyên", clip_calls[1]["refs"])
-ok(len(img_calls) == 1 and img_calls[0][2][0] == model_img and img_calls[0][2][1] == prod_img and img_calls[0][2][2].endswith("board.png"),
+   and clip_calls[1]["refs"][2].endswith("board_ref.jpg"), "clip 2 refs = KHUNG CUỐI clip 1 (nguyên, không vẽ lại) + chân dung + BẢNG nguyên (bản JPEG nhẹ)", clip_calls[1]["refs"])
+ok(len(img_calls) == 1 and img_calls[0][2][0] == model_img and img_calls[0][2][1] == prod_img and img_calls[0][2][2].endswith("board_ref.jpg"),
    "chỉ khung đầu clip 1 vẽ: chân dung + sản phẩm + bảng", [c[2] for c in img_calls])
+from PIL import Image as _ImS
+_big = TMP / "big.png"; _ImS.new("RGB", (3200, 1800), (9, 20, 40)).save(_big)
+_small = P.shrink_image(str(_big), str(TMP / "big_ref.jpg"))
+ok(_small.endswith("big_ref.jpg") and _ImS.open(_small).size == (1600, 900) and _ImS.open(_small).format == "JPEG", "shrink_image: 3200 px → 1600 px JPEG", _ImS.open(_small).size)
+ok(P.shrink_image(str(TMP / "nope.png"), str(TMP / "x.jpg")) == str(TMP / "nope.png"), "shrink_image lỗi → trả nguyên bản")
 ok("Make this shot from CUT 1 of the storyboard" in clip_calls[0]["prompt"] and "Make this shot from CUT 2" in clip_calls[1]["prompt"]
    and "Do NOT render the board" in img_calls[0][0], "câu «làm clip từ CUT i» trong clip + khung đầu", clip_calls[1]["prompt"][:120])
 ok("START (0 s): at the window, facing the hall" in clip_calls[0]["prompt"] and "END (10 s): she turns to the camera by the bench — hold exactly" in clip_calls[0]["prompt"]
