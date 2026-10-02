@@ -204,10 +204,12 @@ def detect_cut_boxes(im, n: int, rows_hint=(0.40, 0.88)) -> Optional[List[tuple]
         return None
     y0, y1 = max(rruns, key=lambda r: r[1] - r[0])
     y0, y1 = y0 + y_lo, y1 + y_lo
-    cruns = _runs(fg[y0:y1].mean(axis=0) > 0.58, min_len=int(W * 0.05), gap=int(W * 0.004))
+    # Ngưỡng cột THẤP (0,35): cảnh tối xanh đen (#159) chỉ ~0,45–0,6 "khác nền", ngang ô chữ có thumbnail; thứ phân biệt
+    # là KHE giữa các ô (≤0,16) và bề rộng — ô chữ lọt vào sẽ bị luật «n ô rộng nhất» loại. Đo trên 4 bảng thật 2/10/2026.
+    cruns = _runs(fg[y0:y1].mean(axis=0) > 0.35, min_len=int(W * 0.05), gap=int(W * 0.004))
     if len(cruns) < n:
         return None
-    if len(cruns) > n:                      # dư ô (sơ đồ, ảnh phụ) → giữ n ô rộng nhất, xếp lại trái→phải
+    if len(cruns) > n:                      # dư ô (ô chữ, sơ đồ, ảnh phụ) → giữ n ô rộng nhất, xếp lại trái→phải
         cruns = sorted(sorted(cruns, key=lambda r: r[0] - r[1])[:n])
     return [(x0 + 2, y0 + 2, x1 - 2, y1 - 2) for x0, x1 in cruns]
 
