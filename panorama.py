@@ -2,12 +2,11 @@
 storyboard N cut, sơ đồ mặt bằng/máy quay, ánh sáng. Một lượt vẽ để mọi ô nhất quán — ba ảnh vẽ riêng rồi dán cạnh
 nhau KHÔNG phải panorama (user 2/10/2026).
 
-Ba việc ở đây, cho pipe «Video từ ảnh tham chiếu» (ref_video_pipeline.py) và dùng lại được từ route:
+Hai việc ở đây, cho pipe «Video từ ảnh tham chiếu» (ref_video_pipeline.py) và dùng lại được từ route:
   build_board_prompt(...)   → chữ, theo đúng template panorama của autopilot/generate-panorama
   draw_board(prompt, refs, out_png, engines, …) → thử lần lượt: chatgpt (trình duyệt, có ảnh tham chiếu) → muse
                               (trình duyệt, có ảnh tham chiếu) → 9router (gpt-image-2 API, CHỈ chữ; 1024², quality low
                               vì tunnel Cloudflare cắt ở 100 s)
-  split_cuts(board_png, n, layout) → ảnh từng cut (bỏ dải nhãn/chú thích để chữ không lọt vào video)
 """
 from __future__ import annotations
 
@@ -24,16 +23,6 @@ logger = logging.getLogger("PodStudio.Panorama")
 ENGINES = ("chatgpt", "muse", "9router")
 NR_IMAGE_MODEL = "cx/gpt-image-2"
 
-# Vùng dải storyboard trên bảng — chỉ là DỰ PHÒNG khi bộ dò ô (detect_cut_boxes) không tìm đủ ô: mỗi bảng gpt-image
-# bố cục khác nhau (ô chữ chen giữa các ô ảnh, bảng #157 ngày 2/10 cắt ra toàn chữ), tỉ lệ cố định không tin được.
-#   chatgpt  : board_splitter của Pod Studio (dải 0.51–0.69, chia đều cột)
-#   gptimage : bảng gpt-image-2 theo prompt 3 cut (2/10/2026): dải 0.52–0.76, cột đo trên một bảng
-LAYOUTS = {
-    "chatgpt": {"rows": (0.51, 0.69), "cols": None},
-    "gptimage": {"rows": (0.522, 0.762), "cols": [(0.014, 0.209), (0.216, 0.410), (0.438, 0.605)]},
-}
-
-
 def build_board_prompt(*, title: str, fmt: str, characters: List[Dict], products: List[Dict], environment: str,
                        shots: List[Dict], aspect: str = "16:9", style: str = "Photorealistic") -> str:
     """Prompt bảng theo khuôn Pod Studio (zone 1–5), N cut = số clip; mọi câu tiếng Anh (prompt AI luôn tiếng Anh)."""
@@ -42,7 +31,9 @@ def build_board_prompt(*, title: str, fmt: str, characters: List[Dict], products
                            for c in characters[:3]) or "  (none)"
     prod_lines = "\n".join(f"  - {p.get('name') or 'Product'}: {(p.get('appearance') or p.get('description') or '')[:300]}"
                            for p in products[:2])
+    # mỗi cut ghi rõ bắt đầu → kết thúc (10 s): bảng là dòng thời gian cho Muse, cuối cut k = đầu cut k+1
     cut_lines = "\n".join(f"  Cut {i+1} ({(s.get('camera') or 'shot').upper()}): {s.get('scene') or s.get('action') or ''}"
+                          + (f" — STARTS: {s['start']}" if s.get("start") else "") + (f"; ENDS: {s['end']}" if s.get("end") else "")
                           for i, s in enumerate(shots))
     kind = {"ad": "fashion / product ad", "short": "short-form social video", "drama": "short drama"}.get(fmt, "video")
     return (
@@ -161,84 +152,3 @@ def draw_board(prompt: str, refs: List[str], out_png: str, *, engines: List[str]
 
 
 # ── cắt ───────────────────────────────────────────────────────────────────────
-
-def _runs(mask, min_len: int, gap: int = 0) -> List[tuple]:
-    """Các đoạn True liên tiếp trong mask 1 chiều (gộp khe ≤ gap), dài ≥ min_len → [(start, end)]."""
-    out: List[tuple] = []
-    start = None
-    for i, v in enumerate(list(mask) + [False]):
-        if v and start is None:
-            start = i
-        elif not v and start is not None:
-            if out and start - out[-1][1] <= gap:
-                out[-1] = (out[-1][0], i)
-            else:
-                out.append((start, i))
-            start = None
-    return [(s, e) for s, e in out if e - s >= min_len]
-
-
-def detect_cut_boxes(im, n: int, rows_hint=(0.40, 0.88)) -> Optional[List[tuple]]:
-    """Tìm n ô ảnh của dải storyboard trên bảng: nền = màu phổ biến nhất (navy); điểm "khác nền" = lệch màu hoặc có
-    kết cấu (gradient). Dải = cụm hàng dày điểm khác nền nhất trong cửa sổ rows_hint; ô ảnh = cụm cột dày (ô chữ trắng
-    trên navy thì thưa → bị loại; sơ đồ mặt bằng hẹp hơn → bỏ khi dư). Đo đúng trên 3 bảng thật 2/10/2026.
-    Trả [(x0, y0, x1, y1)] theo thứ tự trái→phải, hoặc None khi không tìm đủ n ô (gọi nơi dùng lùi về LAYOUTS)."""
-    try:
-        import numpy as np
-    except ImportError:
-        return None
-    a = np.asarray(im.convert("RGB"), dtype=np.int16)
-    H, W = a.shape[:2]
-    q = (a // 16).reshape(-1, 3)
-    keys = q[:, 0] * 256 + q[:, 1] * 16 + q[:, 2]
-    vals, counts = np.unique(keys, return_counts=True)
-    k = int(vals[counts.argmax()])
-    bg = np.array([k // 256, (k // 16) % 16, k % 16]) * 16 + 8
-    gray = a.mean(axis=2)
-    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
-    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1]))
-    fg = (np.abs(a - bg).sum(axis=2) > 45) | ((gx + gy) > 24)
-    y_lo, y_hi = int(H * rows_hint[0]), int(H * rows_hint[1])
-    rruns = _runs(fg[y_lo:y_hi].mean(axis=1) > 0.42, min_len=int(H * 0.07), gap=int(H * 0.004))
-    if not rruns:
-        return None
-    y0, y1 = max(rruns, key=lambda r: r[1] - r[0])
-    y0, y1 = y0 + y_lo, y1 + y_lo
-    # Ngưỡng cột THẤP (0,35): cảnh tối xanh đen (#159) chỉ ~0,45–0,6 "khác nền", ngang ô chữ có thumbnail; thứ phân biệt
-    # là KHE giữa các ô (≤0,16) và bề rộng — ô chữ lọt vào sẽ bị luật «n ô rộng nhất» loại. Đo trên 4 bảng thật 2/10/2026.
-    cruns = _runs(fg[y0:y1].mean(axis=0) > 0.35, min_len=int(W * 0.05), gap=int(W * 0.004))
-    if len(cruns) < n:
-        return None
-    if len(cruns) > n:                      # dư ô (ô chữ, sơ đồ, ảnh phụ) → giữ n ô rộng nhất, xếp lại trái→phải
-        cruns = sorted(sorted(cruns, key=lambda r: r[0] - r[1])[:n])
-    return [(x0 + 2, y0 + 2, x1 - 2, y1 - 2) for x0, x1 in cruns]
-
-
-def split_cuts(board_png: str, n: int, layout: str, out_dir: str) -> List[str]:
-    """Ảnh từng cut của dải storyboard: dò ô ảnh trên bảng thật; không dò được thì cắt theo LAYOUTS (chia đều khi
-    không vừa khuôn). Luôn trả ≤ n đường dẫn (có thể rỗng)."""
-    from PIL import Image
-    try:
-        im = Image.open(board_png).convert("RGB")
-    except Exception as e:      # noqa: BLE001
-        logger.warning("split_cuts: %s", e)
-        return []
-    W, H = im.size
-    boxes = None
-    try:
-        boxes = detect_cut_boxes(im, n)
-    except Exception as e:      # noqa: BLE001
-        logger.warning("detect_cut_boxes: %s", e)
-    if not boxes:
-        lay = LAYOUTS.get(layout) or LAYOUTS["chatgpt"]
-        y0, y1 = int(H * lay["rows"][0]), int(H * lay["rows"][1])
-        cols = lay["cols"] if lay["cols"] and len(lay["cols"]) >= n else [(i / n, (i + 1) / n) for i in range(n)]
-        boxes = [(int(W * cols[i][0]) + 2, y0, int(W * cols[i][1]) - 2, y1) for i in range(n)]
-        logger.info("split_cuts: no boxes detected, using the %s layout", layout)
-    os.makedirs(out_dir, exist_ok=True)
-    out = []
-    for i, box in enumerate(boxes[:n]):
-        p = os.path.join(out_dir, f"cut_{i+1:02d}.jpg")
-        im.crop(box).save(p, quality=94)
-        out.append(p)
-    return out

@@ -6,10 +6,12 @@ Luồng — đúng cách user và tôi làm tay ngày 2/10/2026 với Lin Zhian 
   intake    → lưu ảnh, tạo campaign + nhân vật/sản phẩm + tập trong Pod Studio (xem được ở /pod-studio)
   character → bảng nhân vật 10 chiều (schema `appearance` của extractor) từ ảnh: Muse (có ảnh) → Gemini → chỉ chữ
   shots     → chia N cảnh 10 s + đặt thoại (LLM, JSON; hỏng thì khuôn mẫu theo thể loại)
-  board     → Scene Panorama MỘT lượt vẽ (panorama.draw_board: chatgpt → muse → 9router)
-  cuts      → cắt dải storyboard thành N cut
-  clips     → chuỗi clip Muse 10 s: khung đầu vẽ từ ảnh tham chiếu, khung cuối clip trước → khung đầu clip sau,
-              chân dung đính vào MỌI clip (neo danh tính), nhân vật TỰ NÓI thoại (không giọng đọc ngoài hình)
+  board     → Scene Panorama MỘT lượt vẽ (panorama.draw_board: chatgpt → muse → 9router), rồi ĐỌC NGƯỢC bảng (read_board):
+              bối cảnh, ánh sáng, sơ đồ không gian, góc máy/vị trí từng cut → khối SCENE & CONTINUITY trong mọi prompt
+              (user 2/10/2026: "cái tôi cần trong panorama là lấy bối cảnh, góc quay, timeline")
+  clips     → chuỗi clip Muse 10 s: khung đầu clip 1 vẽ từ chân dung; KHUNG CUỐI clip trước CHÍNH LÀ khung đầu clip sau
+              (không vẽ lại); chân dung + khoá kiểu vẽ đính vào MỌI clip (neo danh tính = ảnh/mô tả người dùng đưa vào);
+              bảng panorama đính NGUYÊN làm ảnh thứ 3 + câu "làm clip từ CUT i" (không cắt cut); nhân vật TỰ NÓI thoại
   render    → ffmpeg ghép (+ phụ đề nếu bật) → /api/v1/pod_studio/export-video/<file>
 Mỗi bước ghi checkpoint (state.json trong thư mục dự án): Chạy lại là tiếp từ bước dở, không vẽ lại clip đã có.
 Hàm chạy ĐỒNG BỘ trong thread của worker (như content_video); lời gọi async bên trong dùng asyncio.run.
@@ -38,7 +40,7 @@ MAX_PRODUCTS = 2
 ASPECTS = ("9:16", "16:9", "1:1")
 STEPS = [
     ("intake", "Nhận ảnh & yêu cầu"), ("character", "Bảng nhân vật"), ("shots", "Chia cảnh & thoại"),
-    ("board", "Scene Panorama"), ("cuts", "Cắt storyboard"), ("clips", "Clip Muse"), ("render", "Ghép video"),
+    ("board", "Scene Panorama"), ("clips", "Clip Muse"), ("render", "Ghép video"),
 ]
 STEP_EXT = {name: EXT_NAME for name, _ in STEPS}
 _EXT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -246,6 +248,78 @@ def identity_block(name: str, appearance: str, extra: str = "") -> str:
             "reference portrait in every frame.")
 
 
+BOARD_READ_PROMPT = (
+    "You are reading a PRODUCTION DESIGN BOARD (scene panorama) for a short AI video: zone 1 character reference, zone 2 "
+    "environment / set design, zone 3 storyboard with numbered CUTS, zone 4 lighting/mood notes, zone 5 top-down floor plan "
+    "+ camera plan. Extract what a director needs to keep EVERY shot in the same space, in English. Reply with ONLY a JSON "
+    "object: {\"environment\": str (the set as drawn: place, architecture, props, colors — 40-80 words), \"lighting\": str "
+    "(key light direction, color temperature, mood — 15-40 words), \"spatial_map\": str (where the character stands and "
+    "moves, what is behind/left/right, where the cameras are, from the floor plan — 30-70 words), \"cuts\": [{\"cut\": int, "
+    "\"camera\": str (angle + movement as labeled), \"position\": str (where the character is in the set and body "
+    "orientation), \"background\": str (what is visible behind the character)}]}. Describe ONLY what is on the board."
+)
+
+
+def read_board(board_png: str, n: int, say: Callable[[str], None]) -> Dict[str, Any]:
+    """Đọc ngược bảng đã vẽ → bối cảnh, ánh sáng, sơ đồ không gian, góc máy/vị trí từng cut. Vision: Muse (nhìn ảnh) →
+    Gemini; trả chữ không phải JSON thì giữ nguyên văn ({"raw"}); không đọc được → {}."""
+    text = describe([board_png], BOARD_READ_PROMPT, say)
+    data = _parse_json(text) if text else None
+    if not isinstance(data, dict):
+        return {"raw": text[:900]} if text else {}
+    cuts = []
+    for c in list(data.get("cuts") or [])[:n]:
+        if isinstance(c, dict):
+            cuts.append({"cut": c.get("cut"), "camera": str(c.get("camera") or "")[:160],
+                         "position": str(c.get("position") or "")[:220], "background": str(c.get("background") or "")[:220]})
+    return {"environment": str(data.get("environment") or "")[:600], "lighting": str(data.get("lighting") or "")[:300],
+            "spatial_map": str(data.get("spatial_map") or "")[:500], "cuts": cuts}
+
+
+def board_block(i: int, aspect: str) -> str:
+    """Câu chỉ cho Muse dùng bảng panorama đính kèm: bối cảnh từ zone 2, làm clip này từ CUT i của zone 3, không vẽ lại bảng."""
+    return (f"PRODUCTION DESIGN BOARD: the attached board image is the visual reference for the SET (zone 2 — environment) "
+            f"and the STORYBOARD (zone 3). Make this shot from CUT {i} of the storyboard: its composition, camera angle and "
+            f"where the character stands in the set. Do NOT render the board itself, its panels, labels or text — output one "
+            f"clean {aspect} shot.\n")
+
+
+def scene_block(plan: Dict[str, Any], notes: Dict[str, Any], i: int, n: int) -> str:
+    """Khối SCENE & CONTINUITY cho clip i: bối cảnh/ánh sáng/sơ đồ từ bảng (không có bảng thì từ kế hoạch), góc máy + vị trí
+    của cut i, và dòng thời gian (cảnh trước → cảnh này → cảnh sau; clip > 1 bắt đầu ĐÚNG khung cuối clip trước)."""
+    shots = plan.get("shots") or []
+    shot = shots[i - 1] if i - 1 < len(shots) else {}
+    notes = notes or {}
+    cut = next((c for c in notes.get("cuts") or [] if str(c.get("cut")) == str(i)), None) or {}
+    lines = ["SCENE & CONTINUITY" + (" (read from the production design board):" if notes.get("environment") else ":"),
+             f"ENVIRONMENT: {notes.get('environment') or plan.get('environment') or ''}"]
+    if notes.get("lighting"):
+        lines.append(f"LIGHTING: {notes['lighting']}")
+    if notes.get("spatial_map"):
+        lines.append(f"SPATIAL MAP: {notes['spatial_map']}")
+    if notes.get("raw"):
+        lines.append(f"BOARD NOTES: {notes['raw'][:500]}")
+    cam = cut.get("camera") or shot.get("camera") or ""
+    lines.append(f"CAMERA FOR THIS SHOT: {cam}" + (f" · CHARACTER POSITION: {cut['position']}" if cut.get("position") else "")
+                 + (f" · BACKGROUND: {cut['background']}" if cut.get("background") else ""))
+    prev_t = shots[i - 2].get("title") if 2 <= i <= len(shots) else ""
+    next_t = shots[i].get("title") if i < len(shots) else ""
+    tl = (f"TIMELINE: shot {i} of {n}" + (f" · previous: «{prev_t}»" if prev_t else " · opening shot")
+          + f" · THIS SHOT: «{shot.get('title', '')}»" + (f" · next: «{next_t}»" if next_t else " · final shot"))
+    if i > 1:
+        tl += (". This clip starts EXACTLY on the attached first image — the final frame of the previous shot: same place, "
+               "same pose, same camera position — and continues the motion from there with no cut or jump.")
+    lines.append(tl)
+    # Bắt đầu / kết thúc của 10 s này (user 2/10/2026: "phân tích cho Muse biết bắt đầu, kết thúc của mỗi 10 s")
+    start, end = shot.get("start") or "", shot.get("end") or ""
+    if start or i > 1:
+        lines.append(f"START (0 s): {start or 'exactly the attached first image'}")
+    if end:
+        lines.append(f"END ({CLIP_SECONDS} s): {end}"
+                     + (" — hold exactly this state on the final frame; the next clip continues from it." if i < n else ""))
+    return "\n".join(lines)
+
+
 # ── chia cảnh + thoại ─────────────────────────────────────────────────────────
 
 FORMAT_RULES = {
@@ -295,9 +369,14 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         "DIALOGUE RULES: the user's request may contain lines the character must say — use those lines VERBATIM (same "
         "language, same words), spread them across the shots, at most ONE speaker and ONE line (≤ 25 words) per shot; "
         "shots without a line have dialogue \"\". Never invent brand claims.\n"
+        "CONTINUITY RULES: each clip is generated from the LAST FRAME of the previous clip, so for every shot write its START "
+        "state (frame 0: where the character is in the set, body pose, facing direction, camera position/angle) and its END "
+        f"state (frame {CLIP_SECONDS} s: the same four things). The END of shot k MUST be exactly the START of shot k+1 (same "
+        "place, pose, camera) — write them with the same words. Movement inside a shot must be achievable in 10 seconds.\n"
         "Reply with ONLY a JSON object: {\"title\": str, \"environment\": str (one sentence, the single location and light), "
         "\"shots\": [{\"title\": str, \"scene\": str (what we see, English, 25-45 words), \"camera\": str (e.g. "
-        "\"wide, slow push-in\"), \"action\": str, \"speaker\": str (character name or \"\"), \"dialogue\": str}]}"
+        "\"wide, slow push-in\"), \"action\": str, \"start\": str (15-30 words), \"end\": str (15-30 words), "
+        "\"speaker\": str (character name or \"\"), \"dialogue\": str}]}"
     )
     user = (f"Format: {fmt}. Number of shots: EXACTLY {n}.\nCharacters: {', '.join(names)}.\nProducts: {prod}.\n"
             f"Request from the user (may include the lines to say):\n{request.strip()}")
@@ -320,11 +399,18 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
                       "scene": str(s.get("scene") or s.get("action") or "")[:600],
                       "camera": str(s.get("camera") or "medium shot, slow push-in")[:120],
                       "action": str(s.get("action") or "")[:300],
+                      "start": str(s.get("start") or "")[:300], "end": str(s.get("end") or "")[:300],
                       "speaker": str(s.get("speaker") or "")[:60],
                       "dialogue": str(s.get("dialogue") or "")[:220]})
-    while len(shots) < n:                     # LLM trả thiếu → bù bằng cảnh cuối lặp lại nhẹ
-        last = shots[-1] if shots else {"title": "Shot", "scene": request[:300], "camera": "medium shot", "action": "", "speaker": "", "dialogue": ""}
-        shots.append({**last, "title": f"Shot {len(shots)+1}", "dialogue": "", "speaker": ""})
+    while len(shots) < n:                     # LLM trả thiếu → bù bằng cảnh cuối lặp lại nhẹ (đứng yên ở trạng thái cuối)
+        last = shots[-1] if shots else {"title": "Shot", "scene": request[:300], "camera": "medium shot", "action": "", "start": "", "end": "", "speaker": "", "dialogue": ""}
+        shots.append({**last, "title": f"Shot {len(shots)+1}", "start": last.get("end", ""), "dialogue": "", "speaker": ""})
+    # Dòng thời gian: END cảnh k = START cảnh k+1 (clip sau dựng từ khung cuối clip trước) — LLM bỏ trống bên nào thì chép bên kia.
+    for k in range(1, len(shots)):
+        if not shots[k]["start"] and shots[k - 1]["end"]:
+            shots[k]["start"] = shots[k - 1]["end"]
+        elif not shots[k - 1]["end"] and shots[k]["start"]:
+            shots[k - 1]["end"] = shots[k]["start"]
     plan["shots"] = shots
     plan["title"] = str(plan.get("title") or request.strip().split("\n")[0][:60] or "Video")[:80]
     # LLM quên bối cảnh → lấy từ chính yêu cầu (câu đầu thường tả địa điểm), đừng rơi về câu chung chung.
@@ -359,7 +445,10 @@ def template_shots(fmt: str, request: str, who: str, prod: str, n: int) -> Dict[
     for i in range(n):
         t, scene, cam = base[min(i, len(base) - 1)]
         line = lines[i] if i < len(lines) else ""        # mỗi câu một cảnh theo thứ tự; thiếu thì cảnh sau im
-        shots.append({"title": t, "scene": scene, "camera": cam, "action": "", "speaker": who if line else "", "dialogue": line})
+        start = shots[-1]["end"] if shots else f"{who} at the opening position of '{t}', camera at the start of its move"
+        end = f"{who} holding the final pose of '{t}', camera settled at the end of its move"
+        shots.append({"title": t, "scene": scene, "camera": cam, "action": "", "start": start, "end": end,
+                      "speaker": who if line else "", "dialogue": line})
     return {"title": request.strip().split("\n")[0][:60] or "Video", "environment": "a bright, clean location with soft natural light", "shots": shots}
 
 
@@ -573,16 +662,18 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                 say("board", "No engine could draw the board (" + "; ".join(res.get("tried") or []) [:300]
                     + ") — the clips use the reference images only", "skipped")
 
-        # ── cuts ──
-        check()
-        if "cuts" not in st:
-            cuts: List[str] = []
-            if (st.get("board") or {}).get("ok"):
-                import panorama
-                cuts = panorama.split_cuts(st["board"]["path"], n, st["board"].get("layout", "chatgpt"), os.path.join(proj, "cuts"))
-            st["cuts"] = cuts
+        # ── đọc bảng: bối cảnh · ánh sáng · sơ đồ không gian · góc máy/vị trí từng cut (vào prompt mọi clip) ──
+        if (st.get("board") or {}).get("ok") and "board_notes" not in st:
+            check()
+            say("board", "Reading the board: environment, lighting, camera angles and timeline…")
+            try:
+                st["board_notes"] = read_board(st["board"]["path"], n, lambda m: say("board", m))
+            except Exception as e:      # noqa: BLE001
+                say("board", f"Could not read the board ({str(e)[:100]}) — the clips use the written plan")
+                st["board_notes"] = {}
             save_state(task_id, st)
-            say("cuts", f"{len(cuts)} storyboard cut(s) prepared", "success" if cuts else "skipped")
+            if st["board_notes"].get("environment"):
+                say("board", f"Board read — set: {st['board_notes']['environment'][:100]}…", "success")
 
         # ── clips ──
         check()
@@ -592,58 +683,42 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         clips = st.setdefault("clips", {})
         main = models[0]
         style = main.get("style") or "photorealistic"
-        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2])
-        # Cut của bảng vẽ KHÔNG có ảnh tham chiếu (9router) có thể mặc đồ khác → nói rõ cut chỉ để lấy bố cục.
-        ident += ("\n\nIf a storyboard frame is attached, it is for composition and camera only — the character's face, hair "
-                  "and outfit ALWAYS follow the reference portrait.\n" + style_block(style))
+        # Nhận dạng = ảnh + mô tả NGƯỜI DÙNG đưa vào (bảng nhân vật rút từ chính ảnh đó); bảng panorama không dính tới nhận dạng.
+        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style)
+        # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
+        # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
+        board = st["board"]["path"] if (st.get("board") or {}).get("ok") and os.path.isfile(str(st["board"].get("path") or "")) else ""
         thread = st.get("thread") or "new"
         for i, shot in enumerate(plan["shots"], 1):
             check()
             if str(i) in clips and os.path.isfile(clips[str(i)]["path"]):
                 continue
-            cut = st["cuts"][i - 1] if i - 1 < len(st["cuts"]) else ""
             # nhân vật có mặt trong cảnh: người nói trước, rồi nhân vật chính — tối đa 2 chân dung (Muse nhận 3 ảnh)
             cast = [c for c in models if shot.get("speaker") and c["name"].lower() == shot["speaker"].lower()] or [main]
             cast = (cast + [c for c in models if c not in cast])[:2]
-            # Khung ĐẦU của MỌI clip đều vẽ lại bằng ảnh từ chân dung (clip 1: chân dung + sản phẩm/cut; clip sau: khung cuối
-            # clip trước + chân dung): nối thẳng từ khung cuối thì kiểu vẽ/mặt trôi cộng dồn — #158 ngày 2/10 clip 1 còn
-            # đúng chất tranh 3D, clip 2–3 thành người thật (user: "phải đồng bộ đúng style của nhân vật từ đầu luôn").
-            prev_last = last_frame(clips[str(i - 1)]["path"], os.path.join(proj, f"clip{i-1}_last.jpg")) if i > 1 else ""
-            startf = os.path.join(proj, f"clip{i}_start.jpg")
-            if not os.path.isfile(startf):
-                say("clips", f"Clip {i}/{n}: Muse is drawing the start frame from "
-                    + ("the previous clip's last frame + the reference portrait…" if prev_last else "the reference images…"),
-                    progress=int((i - 1) / n * 100))
-                if prev_last:
-                    refs = [prev_last, cast[0]["image"]] + ([cast[1]["image"]] if len(cast) > 1 else ([cut] if cut else ([products[0]["image"]] if products else [])))
-                    img_prompt = (
-                        f"A single {style} {aspect} frame that CONTINUES the FIRST attached image (the final frame of the previous "
-                        "shot): keep the same location, lighting, camera position and body position so the next shot starts exactly "
-                        "here — but re-draw the character to match the SECOND attached image (the reference portrait) EXACTLY: same "
-                        f"face, same hair, same outfit, same rendering style. Then: {shot['scene']}\n\n" + ident)
-                else:
-                    refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([cut] if cut else [])
-                    img_prompt = (
-                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the attached "
-                        "reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
-                        + " The portrait wins for identity; the storyboard frame (if attached) is for composition only.\n\n" + ident)
-                try:
-                    data = muse.generate_image_bytes(img_prompt, aspect, refs[:3])
+            # Nối clip: KHUNG CUỐI clip trước CHÍNH LÀ khung đầu clip sau (không vẽ lại — user 2/10/2026); chân dung đính vào
+            # mọi clip (neo danh tính + kiểu vẽ); ảnh thứ 3 = nhân vật 2 (nếu có trong cảnh) hoặc BẢNG hoặc sản phẩm.
+            scene = (board_block(i, aspect) if board else "") + scene_block(plan, st.get("board_notes") or {}, i, n)
+            third = [cast[1]["image"]] if len(cast) > 1 else ([board] if board else ([products[0]["image"]] if products else []))
+            if i == 1:
+                startf = os.path.join(proj, "clip1_start.jpg")
+                if not os.path.isfile(startf):
+                    say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
+                    refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([board] if board else [])
+                    data = muse.generate_image_bytes(
+                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
+                        "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
+                        + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
                     with open(startf, "wb") as f:
                         f.write(data)
-                except Exception as e:      # noqa: BLE001
-                    if not prev_last:
-                        raise
-                    # Muse không vẽ được khung đầu → nối thẳng từ khung cuối như cũ, nói rõ để người dùng biết vì sao trôi.
-                    say("clips", f"Clip {i}: could not re-draw the start frame ({str(e)[:100]}) — continuing from the last frame")
-                    startf = prev_last
-            refs = [startf, cast[0]["image"]] + ([cast[1]["image"]] if len(cast) > 1 else
-                                                 ([products[0]["image"]] if products and i == 1 else ([cut] if cut else ([products[0]["image"]] if products else []))))
+                refs = [startf, cast[0]["image"]] + third
+            else:
+                refs = [last_frame(clips[str(i - 1)]["path"], os.path.join(proj, f"clip{i-1}_last.jpg")), cast[0]["image"]] + third
             say("clips", f"Clip {i}/{n}: {shot['title']}" + (f" — says «{shot['dialogue'][:60]}»" if shot["dialogue"] else ""),
                 progress=int((i - 1) / n * 100))
             prompt = (f"{shot['scene']} Camera: {shot['camera']}. "
                       + (speak_block(shot["dialogue"], cast[0].get("gender", "")) if shot["dialogue"] else SILENT_BLOCK)
-                      + "\n\n" + ident)
+                      + "\n\n" + scene + "\n\n" + ident)
             t0 = time.time()
             v = muse.generate_video_clip(prompt, os.path.join(proj, f"clip{i}"), refs[:3], aspect, continue_from=True, thread_id=thread)
             thread = v.get("thread_id") or thread

@@ -7,7 +7,7 @@ Kiểm:
   B. plan_shots: LLM trả JSON → dùng; LLM hỏng → khuôn mẫu; trả thiếu → bù đủ n
   C. run(): 7 bước báo đúng tên, campaign/nhân vật/tập/storyboard ghi vào Pod Studio, clip + video cuối tồn tại,
      chạy lại = tiếp từ checkpoint (không vẽ lại clip), huỷ giữa chừng → Cancelled
-  D. panorama.split_cuts + route /ref-video/run tạo task Codex kind pod_studio.video
+  D. route /ref-video/run tạo task Codex kind pod_studio.video
 
 Run:  python tests/ref_video_test.py   (từ thư mục pod_studio)
 """
@@ -81,11 +81,15 @@ ok(spec["id"] == "pod_studio.video" and spec["submit_url"].startswith("/api/v1/p
 
 print("B. plan_shots")
 P._llm = lambda messages, max_tokens=1800: json.dumps({"title": "T", "environment": "a hall", "shots": [
-    {"title": "Hook", "scene": "s1", "camera": "wide", "action": "a", "speaker": "Model", "dialogue": "Xin chào"},
-    {"title": "Pay", "scene": "s2", "camera": "close", "action": "", "speaker": "", "dialogue": ""}]})
+    {"title": "Hook", "scene": "s1", "camera": "wide", "action": "a", "start": "by the door", "end": "she stops by the window, camera close", "speaker": "Model", "dialogue": "Xin chào"},
+    {"title": "Pay", "scene": "s2", "camera": "close", "action": "", "end": "she smiles at the window", "speaker": "", "dialogue": ""}]})
 plan = P.plan_shots(fmt="ad", request="r «Xin chào»", characters=[{"name": "Model"}], products=[], n=3, say=lambda m: None)
 ok(len(plan["shots"]) == 3 and plan["shots"][0]["dialogue"] == "Xin chào" and plan["shots"][2]["dialogue"] == "" and plan["title"] == "T",
    "LLM trả 2/3 → bù đủ 3, giữ thoại", plan["shots"])
+ok(plan["shots"][1]["start"] == "she stops by the window, camera close" and plan["shots"][2]["start"] == "she smiles at the window",
+   "END cảnh k = START cảnh k+1 (LLM bỏ trống start → chép end cảnh trước; cảnh bù đứng yên ở end)", [(s["start"], s["end"]) for s in plan["shots"]])
+tpl = P.template_shots("short", "x", "M", "", 3)
+ok(all(s["start"] and s["end"] for s in tpl["shots"]) and tpl["shots"][1]["start"] == tpl["shots"][0]["end"], "khuôn mẫu cũng có start/end nối nhau")
 P._llm = lambda messages, max_tokens=1800: (_ for _ in ()).throw(RuntimeError("down"))
 said = []
 plan = P.plan_shots(fmt="short", request="r «câu a»", characters=[{"name": "M"}], products=[], n=2, say=said.append)
@@ -96,7 +100,15 @@ print("C. run()")
 import types
 muse = types.SimpleNamespace()
 muse.settings = lambda: {"profile": "chayagent"}
-muse.ask = lambda prompt, files=None, timeout=0, **k: {"text": "1. FACE: oval. 2. EYES: brown. A young woman with long dark hair, lilac sweater, white skirt, platform shoes, dreamy mood. " * 2}
+BOARD_NOTES = {"environment": "a sunlit school hall with tall arched windows and wooden benches", "lighting": "golden morning light from the left",
+               "spatial_map": "the hall runs left to right; lockers behind, windows on the right; camera 1 in front, camera 2 tracks backward",
+               "cuts": [{"cut": 1, "camera": "close-up, slow tilt", "position": "by the window, facing camera", "background": "arched window"},
+                        {"cut": 2, "camera": "medium, tracking backward", "position": "walking down the hall", "background": "lockers"}]}
+def fake_ask(prompt, files=None, timeout=0, **k):
+    if "PRODUCTION DESIGN BOARD" in prompt:           # đọc bảng → JSON bối cảnh/góc máy
+        return {"text": json.dumps(BOARD_NOTES)}
+    return {"text": "1. FACE: oval. 2. EYES: brown. A young woman with long dark hair, lilac sweater, white skirt, platform shoes, dreamy mood. " * 2}
+muse.ask = fake_ask
 img_calls, clip_calls = [], []
 def gen_img(prompt, aspect, refs, timeout=300):
     img_calls.append((prompt, aspect, list(refs)))
@@ -112,14 +124,14 @@ muse.generate_video_clip = gen_clip
 sys.modules["tubecli.core.muse"] = muse
 import tubecli.core as _core
 _core.muse = muse
-# giả lập engine vẽ bảng: trả một ảnh thật để split_cuts cắt được
+# giả lập engine vẽ bảng: trả một ảnh thật (bảng đính nguyên vào clip)
 def fake_draw(prompt, refs, out_png, **kw):
     kw["say"]("fake engine") if kw.get("say") else None
     jpg(out_png, (30, 40, 90), (1280, 720)); return {"ok": True, "engine": "fake", "path": out_png, "layout": "chatgpt", "seconds": 1, "tried": []}
 panorama.draw_board = fake_draw
 P._llm = lambda messages, max_tokens=1800: json.dumps({"title": "Campus", "environment": "a sunlit hall", "shots": [
-    {"title": "Hook", "scene": "walks", "camera": "wide", "action": "", "speaker": "", "dialogue": ""},
-    {"title": "Line", "scene": "talks", "camera": "close", "action": "", "speaker": "Model", "dialogue": "Tôi được tạo từ tubecli.app"}]})
+    {"title": "Hook", "scene": "walks", "camera": "wide", "action": "", "start": "at the window, facing the hall", "end": "she turns to the camera by the bench", "speaker": "", "dialogue": ""},
+    {"title": "Line", "scene": "talks", "camera": "close", "action": "", "start": "she turns to the camera by the bench", "end": "she smiles, camera close", "speaker": "Model", "dialogue": "Tôi được tạo từ tubecli.app"}]})
 model_img = jpg(TMP / "model.jpg")
 prod_img = jpg(TMP / "prod.jpg", (50, 50, 200), (300, 300))
 reports = []
@@ -128,22 +140,33 @@ payload = {"task_id": "t-abc", "model_images": [{"url": "", "filepath": model_im
 text = P.run(payload, lambda name, status, msg="", label="", progress=None: reports.append((name, status, msg)), lambda: False)
 steps = [r[0] for r in reports]
 ok([s for s, _ in P.STEPS if s in steps] == [s for s, _ in P.STEPS], "7 bước đều báo", sorted(set(steps)))
-ok(all(any(r[0] == s and r[1] == "success" for r in reports) for s in ("intake", "character", "shots", "board", "cuts", "clips", "render")), "mỗi bước có success", [r for r in reports if r[1] not in ("running", "success")])
+ok(all(any(r[0] == s and r[1] == "success" for r in reports) for s in ("intake", "character", "shots", "board", "clips", "render")), "mỗi bước có success", [r for r in reports if r[1] not in ("running", "success")])
 st = P.load_state("t-abc")
 ok(st.get("campaign_id") and st.get("episode_id") and len(st["models"]) == 1 and len(st["products"]) == 1, "campaign + nhân vật + sản phẩm", st.keys())
 ok(st["models"][0]["appearance"].startswith("1. FACE") and st["models"][0]["gender"] == "female", "appearance từ Muse + giới tính", st["models"][0].get("gender"))
-ok(st["board"]["ok"] and len(st["cuts"]) == 2 and all(os.path.isfile(c) for c in st["cuts"]), "bảng + 2 cut", st.get("cuts"))
+ok(st["board"]["ok"] and os.path.isfile(st["board"]["path"]) and "cuts" not in st, "bảng vẽ xong, không cắt cut", st.get("board"))
 ok(len(clip_calls) == 2 and clip_calls[1]["thread"] == "T-1" and "tubecli.app" in clip_calls[1]["prompt"] and "IDENTITY LOCK" in clip_calls[1]["prompt"]
    and "Nobody speaks" in clip_calls[0]["prompt"], "clip 1 im, clip 2 nói; cùng chat; khối IDENTITY", [c["prompt"][:80] for c in clip_calls])
-ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip2_start.jpg") and clip_calls[1]["refs"][1] == model_img,
-   "clip 2 refs = khung đầu VẼ LẠI + chân dung + (cut/sản phẩm)", clip_calls[1]["refs"])
-ok(img_calls and img_calls[0][2][0] == model_img and len(img_calls[0][2]) == 3, "khung đầu clip 1 vẽ từ chân dung + sản phẩm + cut", img_calls[0][2])
-ok(len(img_calls) == 2 and img_calls[1][2][0].endswith("clip1_last.jpg") and img_calls[1][2][1] == model_img
-   and "CONTINUES the FIRST attached image" in img_calls[1][0] and "RENDERING STYLE" in img_calls[1][0],
-   "khung đầu clip 2 vẽ lại từ khung cuối clip 1 + chân dung (khoá kiểu vẽ)", [c[2] for c in img_calls])
+ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip1_last.jpg") and clip_calls[1]["refs"][1] == model_img
+   and clip_calls[1]["refs"][2].endswith("board.png"), "clip 2 refs = KHUNG CUỐI clip 1 (nguyên, không vẽ lại) + chân dung + BẢNG nguyên", clip_calls[1]["refs"])
+ok(len(img_calls) == 1 and img_calls[0][2][0] == model_img and img_calls[0][2][1] == prod_img and img_calls[0][2][2].endswith("board.png"),
+   "chỉ khung đầu clip 1 vẽ: chân dung + sản phẩm + bảng", [c[2] for c in img_calls])
+ok("Make this shot from CUT 1 of the storyboard" in clip_calls[0]["prompt"] and "Make this shot from CUT 2" in clip_calls[1]["prompt"]
+   and "Do NOT render the board" in img_calls[0][0], "câu «làm clip từ CUT i» trong clip + khung đầu", clip_calls[1]["prompt"][:120])
+ok("START (0 s): at the window, facing the hall" in clip_calls[0]["prompt"] and "END (10 s): she turns to the camera by the bench — hold exactly" in clip_calls[0]["prompt"]
+   and "START (0 s): she turns to the camera by the bench" in clip_calls[1]["prompt"] and "END (10 s): she smiles, camera close" in clip_calls[1]["prompt"]
+   and "hold exactly" not in clip_calls[1]["prompt"].split("END (10 s)")[1], "mỗi clip có START 0 s / END 10 s, END clip 1 = START clip 2", clip_calls[1]["prompt"][-400:])
 ok(img_calls[0][0].startswith("A single photorealistic 9:16 frame") and "RENDERING STYLE: photorealistic" in img_calls[0][0]
    and "RENDERING STYLE: photorealistic" in clip_calls[0]["prompt"] and st["models"][0]["style"] == "photorealistic",
    "kiểu vẽ ảnh thật ghim vào khung đầu + clip", img_calls[0][0][:60])
+ok(st["board_notes"]["environment"].startswith("a sunlit school hall") and len(st["board_notes"]["cuts"]) == 2, "đọc bảng → bối cảnh + 2 cut", st.get("board_notes"))
+ok("arched windows" in clip_calls[0]["prompt"] and "close-up, slow tilt" in clip_calls[0]["prompt"] and "opening shot" in clip_calls[0]["prompt"]
+   and "final frame of the previous shot" not in clip_calls[0]["prompt"], "clip 1: bối cảnh + góc máy cut 1 + timeline mở màn", clip_calls[0]["prompt"][:200])
+ok("tracking backward" in clip_calls[1]["prompt"] and "final frame of the previous shot" in clip_calls[1]["prompt"] and "lockers" in clip_calls[1]["prompt"]
+   and "final shot" in clip_calls[1]["prompt"] and "arched windows" in img_calls[0][0],
+   "clip 2: góc máy cut 2 + bắt đầu ĐÚNG khung cuối; khung đầu clip 1 có bối cảnh bảng", clip_calls[1]["prompt"][-300:])
+sb = P.scene_block({"environment": "a plain room", "shots": [{"title": "A", "camera": "wide"}]}, {}, 1, 1)
+ok("ENVIRONMENT: a plain room" in sb and "CAMERA FOR THIS SHOT: wide" in sb and "final shot" in sb and "(read from" not in sb, "scene_block không bảng → từ kế hoạch", sb)
 final = st["final"]["path"]
 dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", final], capture_output=True, text=True).stdout.strip())
 ok(os.path.isfile(final) and 19.5 < dur < 20.6 and st["final"]["url"].startswith("/api/v1/pod_studio/export-video/"), "video cuối 20 s + url", dur)
@@ -182,35 +205,7 @@ s4 = P.load_state("t-drama")
 ok(len(s4["models"]) == 2 and [m["name"] for m in s4["models"]] == ["Character 1", "Character 2"], "drama: mỗi ảnh một nhân vật", s4["models"])
 P._data_dir = lambda: str(TMP / "pod_studio")
 
-print("D. split_cuts + route")
-board = jpg(TMP / "board.png", (5, 5, 5), (1000, 600))
-cuts = panorama.split_cuts(board, 3, "gptimage", str(TMP / "cuts"))
-ok(len(cuts) == 3 and all(os.path.isfile(c) for c in cuts), "split 3 cut (gptimage) — bảng trơn → lùi về khuôn")
-ok(len(panorama.split_cuts(board, 5, "chatgpt", str(TMP / "cuts5"))) == 5, "split 5 cut (chatgpt, chia đều)")
-# bảng giả theo bố cục gpt-image: nền navy, dải storyboard = 3 ô ảnh nhiễu + ô chữ trắng thưa chen giữa, sơ đồ hẹp bên phải
-import random
-from PIL import Image as _Im, ImageDraw as _Dr
-random.seed(7)
-bd = _Im.new("RGB", (1600, 900), (10, 22, 40)); d = _Dr.Draw(bd)
-photo_boxes = [(20, 470, 380, 700), (560, 470, 930, 700), (1100, 470, 1470, 700)]
-for (x0, y0, x1, y1) in photo_boxes + [(1500, 470, 1580, 700)]:          # ô thứ 4 = sơ đồ hẹp (phải bị bỏ)
-    px = bd.load()
-    for x in range(x0, x1):
-        for y in range(y0, y1):
-            px[x, y] = (random.randint(60, 230), random.randint(60, 230), random.randint(60, 230))
-for x0 in (395, 945):                                                   # ô chữ: vài dòng trắng mảnh
-    for i in range(9):
-        d.rectangle((x0, 500 + i * 22, x0 + 140 - (i % 3) * 30, 504 + i * 22), fill=(240, 240, 240))
-d.rectangle((20, 60, 1580, 420), fill=(120, 110, 100))                   # vùng 1+2 (ảnh lớn phía trên, ngoài cửa sổ dò)
-bd.save(TMP / "board_gpt.png")
-boxes = panorama.detect_cut_boxes(bd, 3)
-ok(boxes and len(boxes) == 3 and all(abs(b[0] - e[0]) <= 4 and abs(b[2] - e[2]) <= 4 and abs(b[1] - e[1]) <= 4 and abs(b[3] - e[3]) <= 4
-   for b, e in zip(boxes, photo_boxes)), "detect_cut_boxes: 3 ô ảnh đúng vị trí, bỏ ô chữ + sơ đồ hẹp", boxes)
-cuts_g = panorama.split_cuts(str(TMP / "board_gpt.png"), 3, "chatgpt", str(TMP / "cuts_g"))
-_sz = _Im.open(cuts_g[1]).size if len(cuts_g) == 3 else (0, 0)
-ok(len(cuts_g) == 3 and abs(_sz[0] - 366) <= 4 and abs(_sz[1] - 226) <= 4, "split_cuts dùng ô dò được (không theo khuôn chatgpt)", _sz)
-ok(panorama.detect_cut_boxes(_Im.new("RGB", (800, 500), (10, 22, 40)), 3) is None, "bảng trơn → None")
-ok(panorama.split_cuts(str(TMP / "nope.png"), 3, "chatgpt", str(TMP / "x")) == [], "ảnh hỏng → []")
+print("D. route /ref-video/run")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import ref_video_routes as R
