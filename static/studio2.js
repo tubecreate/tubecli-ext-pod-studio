@@ -261,6 +261,16 @@ function _setWizValues(data) {
             if (id === 'wizNoTextPrompt' && typeof val === 'boolean') {
                 val = val ? 'notext' : 'none';
             }
+            // Mẫu dùng chung với Content Studio (kho mẫu của lõi, 3/10/2026): CS ghi kiểu hình bằng CHỮ TỰ DO
+            // ("Japanese Edo Watercolor") — không có trong danh sách chọn ở đây → đưa vào ô Custom thay vì để trống.
+            const customOf = { wizStyle: 'wizStyleCustom', wizCharacterStyle: 'wizCharStyleCustom' };
+            if (el.tagName === 'SELECT' && customOf[id] && val && val !== '__custom__'
+                && !Array.from(el.options).some(o => o.value === val)) {
+                const box = document.getElementById(customOf[id]);
+                if (box) box.value = val;
+                data = { ...data, [customOf[id]]: val };
+                val = '__custom__';
+            }
             el.value = val;
             // Show custom input if needed
             if (id === 'wizStyle' && val === '__custom__') toggleCustomStyleInput('wizStyle', 'wizStyleCustom');

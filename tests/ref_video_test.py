@@ -32,6 +32,8 @@ import panorama  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="refvideo_"))
 P._data_dir = lambda: str(TMP / "pod_studio")
+import tubecli.config as _cfg  # noqa: E402
+_cfg.DATA_DIR = TMP                # kho mẫu chung của lõi (tubecli.core.templates) ghi vào thư mục tạm, không đụng kho thật
 PASS = FAIL = 0
 
 
@@ -91,7 +93,7 @@ ok(rb.get("environment", "").startswith("studio studio") and rb["cuts"][0]["came
 P.describe = _old_describe
 spec = P.task_kind_spec()
 ok(spec["id"] == "pod_studio.video" and spec["submit_url"].startswith("/api/v1/pod_studio/ref-video/")
-   and [f["key"] for f in spec["fields"]][:3] == ["model_images", "product_images", "request"], "task_kind_spec")
+   and [f["key"] for f in spec["fields"]][:4] == ["template", "model_images", "product_images", "request"], "task_kind_spec")
 
 print("B. plan_shots")
 P._llm = lambda messages, max_tokens=1800: json.dumps({"title": "T", "environment": "a hall", "shots": [
@@ -272,6 +274,66 @@ ok(r.status_code == 200 and r.json()["task"]["id"] == "task-1" and created["lane
    and "«hi»" in created["goal"], "POST /run → task làn video + event kind", (r.status_code, r.text[:200]))
 ok(c.post("/api/v1/pod_studio/ref-video/run", json={"model_images": [], "request": "x"}).status_code == 400, "thiếu ảnh → 400")
 ok(c.get("/api/v1/pod_studio/ref-video/kind").json()["id"] == "pod_studio.video", "GET /kind")
+
+print("E. mẫu dùng chung (kho mẫu của lõi)")
+import templates_routes as TR  # noqa: E402
+from tubecli.core import templates as CT  # noqa: E402
+app.include_router(TR.router)
+c = TestClient(app)
+spec = P.task_kind_spec()
+ok(spec["fields"][0]["key"] == "template" and spec["template_save_url"] == "/api/v1/pod_studio/ref-video/templates"
+   and spec["template_keys"] == list(P.TEMPLATE_KEYS) and any(f["key"] == "style_custom" for f in spec["fields"]),
+   "form: ô Mẫu đầu tiên + ô mô tả kiểu hình + khai «Lưu thành mẫu»", [f["key"] for f in spec["fields"]])
+# mẫu Content Studio (phần wizard) → hiện ở ô Mẫu với fills dựng từ phần chung
+CT.save_section("Edo Nhật", "wizard", {"wizAspectRatio": "16:9", "wizStyle": "Japanese Edo Watercolor", "wizVideoLength": "short_60s",
+                                       "wizPipelineTemplate": "explainer", "wizSubtitleStyle": "jp_telop", "wizSceneKit": "edo"}, origin="content_studio")
+opts = c.get("/api/v1/pod_studio/ref-video/options/templates").json()["options"]
+edo = next((o for o in opts if o["value"] == "Edo Nhật"), None)
+ok(opts[0]["value"] == "" and edo and edo["origin"] == "content_studio"
+   and edo["fills"] == {"aspect": "16:9", "style": "painting", "style_custom": "Japanese Edo Watercolor", "format": "short", "clips": 6, "subtitles": True},
+   "mẫu CS hiện ở ô Mẫu, fills dựng từ phần chung", edo)
+r = c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "Tóc xanh 3D", "values": {"format": "short", "clips": "3", "aspect": "9:16",
+           "style": "3d", "style_custom": "", "subtitles": False, "request": "KHÔNG được lưu"}})
+ok(r.status_code == 200 and r.json()["template"]["fills"]["style"] == "3d", "«Lưu thành mẫu» từ form", r.text[:200])
+tv = CT.get_template("Tóc xanh 3D")
+ok(tv["sections"]["ref_video"]["data"] == {"format": "short", "clips": 3, "aspect": "9:16", "style": "3d", "style_custom": "", "subtitles": False},
+   "chỉ lưu các ô mẫu quản (không lưu yêu cầu/ảnh), ép kiểu số", tv["sections"]["ref_video"]["data"])
+ok(c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "x", "values": {}}).status_code == 400
+   and c.post("/api/v1/pod_studio/ref-video/templates", json={"name": " ", "values": {"format": "ad"}}).status_code == 400
+   and c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "x", "values": {"clips": "abc"}}).status_code == 400, "lỗi đầu vào → 400")
+wiz = CT.section_view(CT.get_template("Tóc xanh 3D"), "wizard")
+ok(wiz.get("wizStyle") == "Semi-realistic 3D CG render" and wiz.get("wizAspectRatio") == "9:16", "Content Studio thấy mẫu Pod (khoá wiz* dựng sẵn)", wiz)
+# preset của trình hướng dẫn Pod (cùng khoá wiz*) — route trước đây không có
+r = c.post("/api/v1/pod_studio/presets", json={"name": " Pod wiz ", "data": {"wizStyle": "Pixar", "wizVideoEngine": "grok"}})
+ok(r.json() == {"success": True, "saved": ["Pod wiz"]}, "POST /presets lưu preset trình hướng dẫn", r.text[:200])
+pres = c.get("/api/v1/pod_studio/presets").json()["presets"]
+ok(pres.get("Pod wiz") == {"wizStyle": "Pixar", "wizVideoEngine": "grok"} and pres.get("Edo Nhật", {}).get("wizSceneKit") == "edo"
+   and "Tóc xanh 3D" in pres, "GET /presets: preset Pod + mẫu CS + mẫu pipe đều có", sorted(pres))
+ok(c.post("/api/v1/pod_studio/presets", json={"presets": {"ok": {}, "": {}}}).status_code == 400 and CT.get_template("ok") is None, "lô có tên rỗng → không ghi gì")
+ok(c.delete("/api/v1/pod_studio/presets/Pod wiz").json()["success"] and CT.get_template("Pod wiz") is None, "DELETE /presets")
+# chạy bằng TÊN mẫu (agent/API): ô không gửi lấy theo mẫu, ô đã gửi thắng
+created.clear()
+r = c.post("/api/v1/pod_studio/ref-video/run", json={"model_images": [{"filepath": model_img}], "request": "x «hi»", "template": "Tóc xanh 3D", "aspect": "16:9"})
+ev = created.get("event") or {}
+ok(r.status_code == 200 and ev.get("style") == "3d" and ev.get("format") == "short" and ev.get("clips") == 3 and ev.get("aspect") == "16:9"
+   and ev.get("template") == "Tóc xanh 3D", "run với template: lấy kiểu/thể loại/số clip từ mẫu, khung hình đã gửi thắng", ev)
+ok(c.post("/api/v1/pod_studio/ref-video/run", json={"model_images": [{"filepath": model_img}], "request": "x", "template": "không có"}).status_code == 404, "mẫu không có → 404")
+# khách workspace chia sẻ không ghi được mẫu
+gapp = FastAPI()
+
+
+@gapp.middleware("http")
+async def _as_guest(request, call_next):
+    request.state.guest_scope = {"id": "g"}
+    return await call_next(request)
+gapp.include_router(TR.router)
+cg = TestClient(gapp)
+ok(cg.post("/api/v1/pod_studio/ref-video/templates", json={"name": "g", "values": {"format": "ad"}}).status_code == 403
+   and cg.post("/api/v1/pod_studio/presets", json={"name": "g", "data": {}}).status_code == 403
+   and cg.delete("/api/v1/pod_studio/presets/Edo Nhật").status_code == 403 and CT.get_template("Edo Nhật") is not None, "khách: ghi/xoá mẫu → 403")
+# câu tả kiểu riêng (từ mẫu) đi vào prompt
+ok(P.style_name("painting", "Japanese Edo Watercolor") == "Japanese Edo Watercolor" and "RENDERING STYLE: Japanese Edo Watercolor (painted illustration" in P.style_block("painting", "Japanese Edo Watercolor"),
+   "style_custom vào RENDERING STYLE + khung đầu")
 
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)

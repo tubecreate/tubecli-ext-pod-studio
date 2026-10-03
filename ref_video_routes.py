@@ -30,6 +30,8 @@ class RunRequest(BaseModel):
     clips: Any = 3
     aspect: str = "9:16"
     style: str = "auto"
+    style_custom: str = ""
+    template: str = ""
     chatgpt_profile: str = ""
     subtitles: Any = False
     title: str = ""
@@ -37,6 +39,26 @@ class RunRequest(BaseModel):
     board_engines: str = ""
     created_by: str = "user"
     queue: bool = False
+
+
+def _apply_template(req: "RunRequest", P) -> None:
+    """Có `template`: các ô mẫu quản mà người gọi KHÔNG gửi thì lấy theo mẫu (form Bảng việc đã tự điền khi chọn mẫu;
+    đường này cho agent/API chỉ gửi tên mẫu + ảnh + yêu cầu). Mẫu không có → 404."""
+    name = (req.template or "").strip()
+    if not name:
+        return
+    try:
+        from tubecli.core import templates as T
+    except ImportError:
+        raise HTTPException(501, "This TubeCLI core has no shared template store — update TubeCLI.")
+    t = T.get_template(name)
+    if not t:
+        raise HTTPException(404, f"Template «{name}» not found")
+    sent = getattr(req, "model_fields_set", None) or getattr(req, "__fields_set__", set())
+    view = T.section_view(t, "ref_video")
+    for k in P.TEMPLATE_KEYS:
+        if k not in sent and k in view:
+            setattr(req, k, view[k])
 
 
 @router.get("/kind")
@@ -66,6 +88,7 @@ async def run(req: RunRequest, request: Request):
     if getattr(request.state, "guest_scope", None):
         raise HTTPException(403, "Not available in a shared workspace.")
     P = _pipe()
+    _apply_template(req, P)
     models = [x for x in req.model_images if P._resolve_image(x)]
     if not models:
         raise HTTPException(400, "Add at least one model/character photo.")
@@ -98,6 +121,7 @@ async def run(req: RunRequest, request: Request):
         "request": req.request.strip(), "format": fmt, "clips": clips,
         "aspect": req.aspect if req.aspect in P.ASPECTS else "9:16", "chatgpt_profile": req.chatgpt_profile or "",
         "style": req.style if req.style in P.STYLE_PRESETS else "auto",
+        "style_custom": (req.style_custom or "").strip()[:300], "template": (req.template or "").strip(),
         "subtitles": bool(req.subtitles), "title": title, "language": req.language or "", "board_engines": req.board_engines or "",
     }
     codex_manager.append_event(task["id"], "log", f"Reference video queued: {clips} clip(s), {fmt}", actor=P.ACTOR, data=payload)

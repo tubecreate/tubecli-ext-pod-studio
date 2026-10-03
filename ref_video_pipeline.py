@@ -39,6 +39,8 @@ MAX_MODELS = 3
 MAX_PRODUCTS = 2
 ASPECTS = ("9:16", "16:9", "1:1")
 RETRY_WAIT = 20          # giây nghỉ trước khi gọi lại Muse một lần (test đặt 0)
+# Các ô của form mà MẪU quản (kho mẫu chung của lõi, phần "ref_video") — ảnh, yêu cầu, thoại, tiêu đề luôn nhập theo task.
+TEMPLATE_KEYS = ("format", "clips", "aspect", "style", "style_custom", "subtitles")
 STEPS = [
     ("intake", "Nhận ảnh & yêu cầu"), ("character", "Bảng nhân vật"), ("shots", "Chia cảnh & thoại"),
     ("board", "Scene Panorama"), ("clips", "Clip Muse"), ("render", "Ghép video"),
@@ -204,15 +206,19 @@ def guess_gender(appearance: str) -> str:
     return ""
 
 
-def style_name(style: str) -> str:
-    return STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])["name"]
+def style_name(style: str, custom: str = "") -> str:
+    """Tên kiểu hình chen vào "A single <tên> frame"; mẫu có câu tả riêng (vd «Japanese Edo Watercolor») thì dùng câu ấy."""
+    return custom.strip() if custom and custom.strip() else STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])["name"]
 
 
-def style_block(style: str) -> str:
+def style_block(style: str, custom: str = "") -> str:
     """Câu ghim kiểu hình vào prompt ảnh/video — giữ NGUYÊN một kiểu từ khung đầu tới khung cuối."""
     p = STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])
-    return (f"RENDERING STYLE: {p['name']} — {p['desc']}. Keep exactly this rendering style, the same as the attached "
-            "reference portrait, in every frame from the first to the last.")
+    keep = ("Keep exactly this rendering style, the same as the attached reference portrait, in every frame from the "
+            "first to the last.")
+    if custom and custom.strip():
+        return f"RENDERING STYLE: {custom.strip()} ({p['name']} — {p['desc']}). {keep}"
+    return f"RENDERING STYLE: {p['name']} — {p['desc']}. {keep}"
 PRODUCT_PROMPT = (
     "Describe the product in the attached image(s) in English, 150-300 characters, one paragraph: type, color, shape, "
     "material & texture, label/logo text and position, design/print details, packaging. Reply with the paragraph only."
@@ -595,6 +601,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
     aspect = str(payload.get("aspect") or "9:16")
     aspect = aspect if aspect in ASPECTS else "9:16"
     request = str(payload.get("request") or "").strip()
+    style_custom = str(payload.get("style_custom") or "").strip()[:300]     # câu tả kiểu hình riêng (thường từ mẫu)
     try:
         # ── intake ──
         check()
@@ -677,8 +684,8 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             style = resolve_style(payload.get("style"), models[0].get("style") if models else "")
             prompt = panorama.build_board_prompt(title=plan["title"], fmt=fmt, characters=models, products=products,
                                                  environment=plan["environment"], shots=plan["shots"],
-                                                 style="Photorealistic" if style == "photo"
-                                                 else f"{style_name(style)} (same rendering style as the character reference)")
+                                                 style="Photorealistic" if style == "photo" and not style_custom
+                                                 else f"{style_name(style, style_custom)} (same rendering style as the character reference)")
             refs = [c["image"] for c in models] + [p["image"] for p in products]
             engines = [e for e in str(payload.get("board_engines") or "chatgpt,muse,9router").split(",") if e.strip()]
             res = panorama.draw_board(prompt, refs, os.path.join(proj, "board.png"), engines=engines,
@@ -726,7 +733,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         main = models[0]
         style = resolve_style(payload.get("style"), main.get("style"))
         # Nhận dạng = ảnh + mô tả NGƯỜI DÙNG đưa vào (bảng nhân vật rút từ chính ảnh đó); bảng panorama không dính tới nhận dạng.
-        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style)
+        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style, style_custom)
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
         # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
         board = ""
@@ -750,7 +757,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                     say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([board] if board else [])
                     data = muse.generate_image_bytes(
-                        f"A single {style_name(style)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
+                        f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
                         "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
                         + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
                     with open(startf, "wb") as f:
@@ -841,7 +848,16 @@ def task_kind_spec() -> Dict[str, Any]:
         "submit_label": L("Create video", "Tạo video"),
         "submit_url": "/api/v1/pod_studio/ref-video/run",
         "upload_url": "/api/v1/pod_studio/gallery/upload-image",
+        # Mẫu ở kho mẫu chung của lõi (dùng chung với Content Studio): chọn mẫu → điền các ô TEMPLATE_KEYS
+        # (option có `fills`); «Lưu thành mẫu» gửi các ô ấy tới template_save_url.
+        "template_field": "template",
+        "template_keys": list(TEMPLATE_KEYS),
+        "template_save_url": "/api/v1/pod_studio/ref-video/templates",
         "fields": [
+            {"key": "template", "type": "select", "label": L("Template", "Mẫu"),
+             "options_url": "/api/v1/pod_studio/ref-video/options/templates",
+             "hint": L("Fills the style, format, clips… — templates are shared with Content Studio",
+                       "Điền sẵn kiểu hình, thể loại, số clip… — mẫu dùng chung với Content Studio")},
             {"key": "model_images", "type": "images", "required": True, "max": MAX_MODELS,
              "label": L("Model / character photos", "Ảnh người mẫu / nhân vật"),
              "hint": L("A clear front view works best; up to 3 characters for drama", "Ảnh chính diện rõ mặt; drama được tới 3 nhân vật")},
@@ -862,6 +878,8 @@ def task_kind_spec() -> Dict[str, Any]:
              "options": [{"value": "auto", "label": L("Same as the photo (auto)", "Giống ảnh (tự nhận)")}]
                         + [{"value": k, "label": v["label"]} for k, v in STYLE_PRESETS.items()],
              "hint": L("Kept the same in every clip", "Giữ nguyên trong mọi clip")},
+            {"key": "style_custom", "type": "text", "label": L("Style description (optional)", "Mô tả kiểu hình (không bắt buộc)"),
+             "placeholder": L("e.g. Japanese Edo watercolor, soft paper texture", "vd Tranh màu nước Nhật thời Edo, nền giấy mềm")},
             {"key": "chatgpt_profile", "type": "select", "label": L("Browser profile signed in to ChatGPT (for the board)",
                                                                    "Hồ sơ trình duyệt đã đăng nhập ChatGPT (vẽ bảng)"),
              "options_url": "/api/v1/pod_studio/ref-video/options/profiles",

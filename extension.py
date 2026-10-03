@@ -17,7 +17,7 @@ logger = logging.getLogger("PodStudio")
 
 class PodStudioExtension(Extension):
     name = "pod_studio"
-    version = "1.1.0"
+    version = "1.2.0"
     description = "AI POD Studio — Video Ad script writing with AI"
     author = "TubeCreate"
     extension_type = "external"
@@ -221,6 +221,12 @@ class PodStudioExtension(Extension):
                 router.include_router(sub.router)
             except Exception as e:
                 logger.warning(f"POD Studio: reference-video routes not loaded: {e}")
+            # Mẫu trên kho mẫu chung của lõi — dùng chung với Content Studio (3/10/2026).
+            try:
+                tpl = self._load_local("pod_templates_routes", "templates_routes.py")
+                router.include_router(tpl.router)
+            except Exception as e:
+                logger.warning(f"POD Studio: template routes not loaded: {e}")
             logger.info(f"POD Studio: loaded router, {len(router.routes) if router else 0} routes")
             return router
         except Exception as e:
