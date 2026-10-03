@@ -146,7 +146,8 @@ APPEARANCE_PROMPT = (
     "texture); 2. EYES (shape, exact color, lashes, makeup); 3. EYEBROWS & NOSE & LIPS; 4. EXPRESSION & MOOD; "
     "5. HAIR (exact color — say if light/dark —, length, texture, style, bangs); 6. HAIR ACCESSORIES; 7. EARRINGS & "
     "JEWELRY; 8. CLOTHING - TOP (neckline, sleeves, fabric, color, pattern, decorations); 9. CLOTHING - BOTTOM "
-    "(style, fabric, color) + shoes/socks; 10. OVERALL AESTHETIC; 11. ART STYLE (exactly one of: real photograph / "
+    "(style, fabric, color) + shoes/socks; 10. OVERALL AESTHETIC (start with the gender — woman / man / girl / boy — "
+    "and the apparent age, e.g. \"young woman, ~20yo\"); 11. ART STYLE (exactly one of: real photograph / "
     "semi-realistic 3D CG render / 2D anime illustration / painting — choose 3D CG render when the image has volumetric "
     "3D shading and individually rendered hair strands, EVEN IF the face is anime-styled; 2D anime only for flat "
     "cel-shaded line art). Describe ONLY what is visible; estimate age and height. Reply with the paragraph only — no "
@@ -711,11 +712,15 @@ def voice_lock(name: str, appearance: str, gender: str, lines: List[str], fmt: s
     """MỘT câu tả giọng cố định cho một nhân vật trong cả task — gửi y nguyên ở mọi clip."""
     key = preset if preset in VOICE_PRESETS else VOICE_BY_FORMAT.get(fmt, "")
     style = VOICE_PRESETS[key]["desc"] if key else VOICE_DRAMA
+    # Bảng nhân vật cũ không ghi giới (demo #166: «young adult  voice») → bảo Muse theo NGƯỜI TRONG ẢNH.
     who = {"female": "woman's", "male": "man's"}.get(gender, "")
     lang = line_language(lines)
     tongue = (f" Native {lang} speaker, {_ACCENT.get(lang, f'a clear, standard {lang} accent')}." if lang else "")
     extra = f" Voice style from the user (this wins): {custom.strip()[:200]}." if (custom or "").strip() else ""
-    return (f"VOICE LOCK — {name}: one consistent {age_phrase(appearance)} {who} voice, {style}.{tongue}{extra} "
+    head = (f"one consistent {age_phrase(appearance)} {who} voice" if who
+            else f"one consistent {age_phrase(appearance)} voice that fits the person in the reference portrait "
+                 "(their apparent gender and age)")
+    return (f"VOICE LOCK — {name}: {head}, {style}.{tongue}{extra} "
             "Clean close-mic studio sound: no echo, no reverb, no voice effects, no pitch shifting. Use EXACTLY this "
             "voice — same timbre, pitch, accent, speaking speed and loudness — in every clip of this video.")
 

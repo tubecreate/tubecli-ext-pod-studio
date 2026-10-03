@@ -100,6 +100,9 @@ ok("VOICE LOCK — Mai" in _vl and "young adult (about 20)" in _vl and "woman's"
    and "bright, upbeat" in _vl and "every clip" in _vl, "voice_lock: tuổi, giới, ngôn ngữ từ thoại, kiểu tươi cho quảng cáo", _vl)
 ok("Southern accent" in P.voice_lock("Mai", "", "female", ["hi there friends"], "ad", "warm", "Southern accent")
    and "warm, soft" in P.voice_lock("Mai", "", "female", [], "ad", "warm"), "chọn kiểu giọng + mô tả riêng thắng")
+_vg = P.voice_lock("Model", "x", "", ["Xin chào"], "ad")
+ok("fits the person in the reference portrait" in _vg and "  " not in _vg, "không dò được giới tính → giọng theo người trong ảnh, không thừa dấu cách", _vg)
+ok("start with the gender" in P.APPEARANCE_PROMPT, "bảng nhân vật phải ghi giới tính + tuổi ở mục 10")
 ok(P.line_language(["こんにちは"]) == "Japanese" and P.line_language(["Hello my friends"]) == "English" and P.line_language([]) == "",
    "dò ngôn ngữ thoại")
 _sb = P.speak_block("Áo này ấm lắm", "female", _vl)
