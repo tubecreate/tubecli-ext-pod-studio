@@ -512,6 +512,18 @@ ok(r.status_code == 200 and r.json()["task_id"] == "task-ft-1" and rv.get("style
    and rv.get("clips") == 3 and len(rv.get("model_images") or []) == 1 and os.path.isfile(rv["model_images"][0])
    and rv["model_images"][0] != model_img and "templates" in rv["model_images"][0], "from-task (latest): kiểu 3d theo payload, người mẫu chép riêng", (r.status_code, rv))
 ok(c.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"task_id": "khong-co", "name": "x"}).status_code == 404, "task không có → 404")
+# bìa mẫu (3/10/2026): một khung Muse theo kiểu + người mẫu mặc định, lưu khoá cover; GET trả ảnh; có rồi thì không vẽ lại
+n_img = len(img_calls)
+r = c.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={})
+cv = CT.section_view(CT.get_template("Từ task 161"), "ref_video")
+ok(r.status_code == 200 and os.path.isfile(r.json()["path"]) and cv.get("cover") == r.json()["path"] and len(img_calls) == n_img + 1
+   and "Redraw the person IN THIS STYLE" in img_calls[-1][0] and img_calls[-1][2] == [cv["model_images"][0]] and "3D CG" in img_calls[-1][0],
+   "bìa mẫu: một khung Muse theo kiểu của mẫu + người mẫu mặc định, ghi khoá cover", (r.status_code, r.text[:200]))
+ok(c.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={}).json().get("cached") is True, "bìa đã có → không vẽ lại")
+_g = c.get(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover")
+ok(_g.status_code == 200 and _g.headers.get("content-type", "").startswith("image/"), "GET bìa trả ảnh")
+ok(c.post("/api/v1/pod_studio/ref-video/templates/tpl_nope/cover", json={}).status_code == 404
+   and cg.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={}).status_code == 403, "mẫu không có → 404; khách → 403")
 ok(cg.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"name": "x"}).status_code == 403, "khách: from-task → 403")
 # câu tả kiểu riêng (từ mẫu) đi vào prompt
 ok(P.style_name("painting", "Japanese Edo Watercolor") == "Japanese Edo Watercolor" and "RENDERING STYLE: Japanese Edo Watercolor (painted illustration" in P.style_block("painting", "Japanese Edo Watercolor"),

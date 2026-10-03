@@ -269,3 +269,71 @@ async def save_template(body: SaveTemplate, request: Request):
         raise HTTPException(400, "Nothing to save — the template needs at least one setting.")
     t = T.save_section(name, "ref_video", data, origin=ORIGIN)
     return {"success": True, "template": {"id": t["id"], "name": t["name"], "fills": fills_of(T.section_view(t, "ref_video"))}}
+
+
+# ── ẢNH BÌA MẪU (3/10/2026: 30 mẫu kiểu nghệ thuật cần bìa riêng trên Town) ───────────────────────────────────────
+# Một khung Muse theo kiểu của mẫu + người mẫu mặc định (≈1 phút) thay vì dựng cả video. Lưu cạnh ảnh người mẫu của mẫu
+# và ghi khoá "cover" vào phần ref_video; GET trả ảnh để Bảng việc / cloud lấy.
+class CoverBody(BaseModel):
+    force: bool = False
+
+
+def _cover_path(P, t: Dict[str, Any]) -> str:
+    import re
+    slug = re.sub(r"[^\w-]+", "_", str(t.get("name") or ""), flags=re.UNICODE).strip("_")[:40] or "template"
+    return os.path.join(P._data_dir(), "templates", slug, "cover.jpg")
+
+
+@router.post("/ref-video/templates/{key:path}/cover")
+async def template_cover(key: str, request: Request, body: CoverBody = CoverBody()):
+    _deny_guest(request)
+    T = _store()
+    if T is None:
+        raise HTTPException(501, "This TubeCLI core has no shared template store — update TubeCLI.")
+    P = _pipe()
+    t = T.get_template(key)
+    if not t:
+        raise HTTPException(404, f"Template «{key}» not found")
+    v = T.section_view(t, "ref_video")
+    imgs = [p for p in (v.get("model_images") or []) if isinstance(p, str) and os.path.isfile(p)]
+    if not imgs:
+        raise HTTPException(400, "This template has no default model photo — a cover needs one.")
+    out = _cover_path(P, t)
+    if os.path.isfile(out) and not body.force:
+        return {"success": True, "path": out, "cached": True, "url": f"/api/v1/pod_studio/ref-video/templates/{t['id']}/cover"}
+    style = P.resolve_style(v.get("style"), "")
+    custom = str(v.get("style_custom") or "")
+    aspect = v.get("aspect") if v.get("aspect") in P.ASPECTS else "9:16"
+    preset = P.STYLE_PRESETS[style]
+    prompt = (f"A single {P.style_name(style, custom)} {aspect} frame — the cover image of an ad-video template: the person "
+              "from the attached reference portrait stands in a setting that fits this style, looks at the camera with a "
+              "friendly smile and holds a small plain unbranded product (a cup, a bottle or a box). No text, captions, logos "
+              "or watermarks.\n\n"
+              f"RENDERING STYLE: {P.style_name(style, custom)}"
+              + (f" ({preset['name']} — {preset['desc']})" if custom else f" — {preset['desc']}")
+              + ". Redraw the person IN THIS STYLE — keep their face shape, hair, outfit and colors recognisable.")
+    import asyncio
+    from tubecli.core import muse
+    try:
+        data = await asyncio.to_thread(P.muse_image_fresh, muse, prompt, aspect, imgs[:1])
+    except Exception as e:      # noqa: BLE001 — Muse từ chối / bận: nói lý do, không 500
+        raise HTTPException(502, f"Muse did not draw the cover: {' '.join(str(e).split())[:200]}")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(data)
+    T.save_section(t["name"], "ref_video", {"cover": out}, origin=ORIGIN)
+    return {"success": True, "path": out, "cached": False, "url": f"/api/v1/pod_studio/ref-video/templates/{t['id']}/cover"}
+
+
+@router.get("/ref-video/templates/{key:path}/cover")
+async def template_cover_get(key: str):
+    from fastapi.responses import FileResponse
+    T = _store()
+    t = T.get_template(key) if T else None
+    if not t:
+        raise HTTPException(404, f"Template «{key}» not found")
+    v = T.section_view(t, "ref_video")
+    p = str(v.get("cover") or "") or _cover_path(_pipe(), t)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "This template has no cover yet.")
+    return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
