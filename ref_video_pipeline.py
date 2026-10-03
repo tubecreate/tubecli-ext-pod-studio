@@ -144,31 +144,53 @@ APPEARANCE_PROMPT = (
     "5. HAIR (exact color — say if light/dark —, length, texture, style, bangs); 6. HAIR ACCESSORIES; 7. EARRINGS & "
     "JEWELRY; 8. CLOTHING - TOP (neckline, sleeves, fabric, color, pattern, decorations); 9. CLOTHING - BOTTOM "
     "(style, fabric, color) + shoes/socks; 10. OVERALL AESTHETIC; 11. ART STYLE (exactly one of: real photograph / "
-    "3D render / anime illustration / painting). Describe ONLY what is visible; estimate age and height. Reply with "
-    "the paragraph only — no title, no markdown."
+    "semi-realistic 3D CG render / 2D anime illustration / painting — choose 3D CG render when the image has volumetric "
+    "3D shading and individually rendered hair strands, EVEN IF the face is anime-styled; 2D anime only for flat "
+    "cel-shaded line art). Describe ONLY what is visible; estimate age and height. Reply with the paragraph only — no "
+    "title, no markdown."
 )
-STYLES = {
-    "anime illustration": r"anime|manga|illustrat|cartoon|drawn|2d art|cel[- ]shad",
-    "3D render": r"3d render|3d[- ]model|cgi|rendered|render\b|video game character|game[- ]style",
-    "painting": r"painting|painted|watercolou?r|oil on|ink wash|brush ?stroke",
+# Kiểu hình: khoá → tên (chen vào câu "A single <tên> frame") + câu tả (khối RENDERING STYLE). «3d» tách khỏi «anime»
+# vì nhân vật tóc xanh 3/10/2026 là 3D CG bán thực mặt kiểu anime — Muse gọi là «anime illustration» → video ra 2D.
+STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "3d": {"name": "semi-realistic 3D CG render", "label": {"en": "3D CG (semi-realistic)", "vi": "3D CG (bán thực)"},
+           "desc": "game-cinematic quality 3D character render: volumetric soft shading, subsurface-scattered skin, "
+                   "individually rendered hair strands, physically based materials and lighting, depth of field — NOT flat "
+                   "2D anime line art, NOT a real photograph"},
+    "anime": {"name": "2D anime illustration", "label": {"en": "2D anime", "vi": "Anime 2D"},
+              "desc": "clean line art, cel shading, flat color areas, anime proportions — NOT a 3D render, NOT a photograph"},
+    "photo": {"name": "photorealistic", "label": {"en": "Real photo", "vi": "Ảnh thật"},
+              "desc": "a real photograph of a real human: natural skin texture, real camera optics and lighting"},
+    "painting": {"name": "painted illustration", "label": {"en": "Painting", "vi": "Tranh vẽ"},
+                 "desc": "a painted illustration with visible brush strokes and painterly color — NOT a photograph"},
 }
+_STYLE_PATTERNS = (     # thứ tự quan trọng: «anime-styled 3D render» phải ra 3d
+    ("3d", r"\b3d\b|\bcg\b|cgi|render|video game|game[- ](?:style|cinematic|character)|unreal|octane"),
+    ("anime", r"anime|manga|cel[- ]shad|2d|cartoon|line art|illustrat|drawn"),
+    ("painting", r"painting|painted|watercolou?r|oil on|ink wash|brush ?stroke"),
+    ("photo", r"photo|real|camera"),
+)
 
 
 def art_style(appearance: str) -> str:
-    """Kiểu vẽ của ảnh tham chiếu từ bảng nhân vật (mục 11 hoặc từ khoá) — nhân vật anime/3D phải giữ đúng kiểu, không
-    ép «photorealistic» (nhân vật tóc xanh tai mèo 2/10/2026 là tranh 3D)."""
+    """Khoá kiểu hình (3d | anime | photo | painting) từ bảng nhân vật: mục 11 trước, không có thì dò cả đoạn; mặc
+    định ảnh thật. Nhân vật 3D/anime phải giữ đúng kiểu, không ép thành người thật (#158, 2/10/2026)."""
     text = str(appearance or "")
-    m = re.search(r"ART STYLE\s*[:\-–]\s*([^.;\n]{3,60})", text, re.I)
-    head = m.group(1) if m else ""
-    for name, pat in STYLES.items():
-        if re.search(pat, head, re.I):
-            return name
-    if head and re.search(r"photo|real", head, re.I):
-        return "photorealistic"
-    for name, pat in STYLES.items():
-        if re.search(pat, text, re.I):
-            return name
-    return "photorealistic"
+    m = re.search(r"ART STYLE\s*[:\-–]\s*([^.;\n]{3,80})", text, re.I)
+    for chunk in ((m.group(1) if m else ""), text):
+        if not chunk:
+            continue
+        for key, pat in _STYLE_PATTERNS:
+            if key == "photo" and chunk is text:
+                continue        # cả đoạn hay có chữ "realistic" → chỉ tin «photo/real» khi nằm trong mục 11
+            if re.search(pat, chunk, re.I):
+                return key
+    return "photo"
+
+
+def resolve_style(chosen: str, detected: str) -> str:
+    """Kiểu người dùng chọn trong form thắng; «auto»/rỗng/lạ → kiểu dò được từ ảnh."""
+    c = str(chosen or "").strip().lower()
+    return c if c in STYLE_PRESETS else (detected if detected in STYLE_PRESETS else "photo")
 
 
 def guess_gender(appearance: str) -> str:
@@ -182,11 +204,15 @@ def guess_gender(appearance: str) -> str:
     return ""
 
 
+def style_name(style: str) -> str:
+    return STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])["name"]
+
+
 def style_block(style: str) -> str:
-    """Câu ghim kiểu vẽ vào prompt ảnh/video: cùng kiểu với chân dung tham chiếu."""
-    s = style or "photorealistic"
-    return (f"RENDERING STYLE: {s} — exactly the same rendering style as the attached reference portrait "
-            + ("(a real photograph, real human)." if s == "photorealistic" else f"(keep it {s}, do NOT turn the character into a real-photo human)."))
+    """Câu ghim kiểu hình vào prompt ảnh/video — giữ NGUYÊN một kiểu từ khung đầu tới khung cuối."""
+    p = STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])
+    return (f"RENDERING STYLE: {p['name']} — {p['desc']}. Keep exactly this rendering style, the same as the attached "
+            "reference portrait, in every frame from the first to the last.")
 PRODUCT_PROMPT = (
     "Describe the product in the attached image(s) in English, 150-300 characters, one paragraph: type, color, shape, "
     "material & texture, label/logo text and position, design/print details, packaging. Reply with the paragraph only."
@@ -648,11 +674,11 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             if _EXT_DIR not in sys.path:
                 sys.path.insert(0, _EXT_DIR)
             import panorama
-            style = (models[0].get("style") if models else "") or "photorealistic"
+            style = resolve_style(payload.get("style"), models[0].get("style") if models else "")
             prompt = panorama.build_board_prompt(title=plan["title"], fmt=fmt, characters=models, products=products,
                                                  environment=plan["environment"], shots=plan["shots"],
-                                                 style="Photorealistic" if style == "photorealistic"
-                                                 else f"{style.capitalize()} (same rendering style as the character reference)")
+                                                 style="Photorealistic" if style == "photo"
+                                                 else f"{style_name(style)} (same rendering style as the character reference)")
             refs = [c["image"] for c in models] + [p["image"] for p in products]
             engines = [e for e in str(payload.get("board_engines") or "chatgpt,muse,9router").split(",") if e.strip()]
             res = panorama.draw_board(prompt, refs, os.path.join(proj, "board.png"), engines=engines,
@@ -698,7 +724,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             raise RuntimeError("Muse is not set up: pick the browser profile signed in to muse.ai in Cloud API Keys → Muse.")
         clips = st.setdefault("clips", {})
         main = models[0]
-        style = main.get("style") or "photorealistic"
+        style = resolve_style(payload.get("style"), main.get("style"))
         # Nhận dạng = ảnh + mô tả NGƯỜI DÙNG đưa vào (bảng nhân vật rút từ chính ảnh đó); bảng panorama không dính tới nhận dạng.
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style)
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
@@ -724,7 +750,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                     say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([board] if board else [])
                     data = muse.generate_image_bytes(
-                        f"A single {style} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
+                        f"A single {style_name(style)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
                         "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
                         + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
                     with open(startf, "wb") as f:
@@ -832,6 +858,10 @@ def task_kind_spec() -> Dict[str, Any]:
              "label": L("Clips (×10 s)", "Số clip (×10 s)")},
             {"key": "aspect", "type": "select", "default": "9:16", "label": L("Aspect ratio", "Khung hình"),
              "options": [{"value": "9:16", "label": "9:16"}, {"value": "16:9", "label": "16:9"}, {"value": "1:1", "label": "1:1"}]},
+            {"key": "style", "type": "select", "default": "auto", "label": L("Rendering style", "Kiểu hình"),
+             "options": [{"value": "auto", "label": L("Same as the photo (auto)", "Giống ảnh (tự nhận)")}]
+                        + [{"value": k, "label": v["label"]} for k, v in STYLE_PRESETS.items()],
+             "hint": L("Kept the same in every clip", "Giữ nguyên trong mọi clip")},
             {"key": "chatgpt_profile", "type": "select", "label": L("Browser profile signed in to ChatGPT (for the board)",
                                                                    "Hồ sơ trình duyệt đã đăng nhập ChatGPT (vẽ bảng)"),
              "options_url": "/api/v1/pod_studio/ref-video/options/profiles",

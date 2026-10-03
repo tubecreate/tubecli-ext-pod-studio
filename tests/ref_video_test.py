@@ -68,11 +68,19 @@ t2 = P.template_shots("short", "x «câu a» «câu b» «câu c» «câu d»", 
 ok([s["dialogue"] for s in t2["shots"]] == ["câu a", "câu b", "câu c"], "nhiều thoại hơn shot → cắt bớt (thoại ≥ 3 ký tự)")
 ok("exactly: \"Hi\"" in P.speak_block("Hi", "female") and "female voice" in P.speak_block("Hi", "female"), "speak_block")
 ok("IDENTITY LOCK — Lin" in P.identity_block("Lin", "x") and "attached reference" in P.identity_block("Lin", ""), "identity_block có/không appearance")
-ok(P.art_style("1. FACE: oval … 11. ART STYLE: anime illustration.") == "anime illustration"
-   and P.art_style("… 11. ART STYLE: real photograph.") == "photorealistic"
-   and P.art_style("a stylized 3D render of a girl with cat-ear headphones") == "3D render"
-   and P.art_style("a young woman in a cream vest") == "photorealistic" and P.art_style("") == "photorealistic", "art_style: mục 11 ưu tiên, rồi từ khoá, mặc định ảnh thật")
-ok("do NOT turn" in P.style_block("anime illustration") and "real photograph" in P.style_block("photorealistic"), "style_block")
+ok(P.art_style("1. FACE: oval … 11. ART STYLE: 2D anime illustration.") == "anime"
+   and P.art_style("… 11. ART STYLE: real photograph.") == "photo"
+   and P.art_style("… 11. ART STYLE: semi-realistic 3D CG render.") == "3d"
+   and P.art_style("… 11. ART STYLE: anime-styled 3D render.") == "3d"
+   and P.art_style("a stylized 3D render of a girl with cat-ear headphones") == "3d"
+   and P.art_style("a young woman in a cream vest, realistic look") == "photo" and P.art_style("") == "photo",
+   "art_style: mục 11 ưu tiên (3D thắng anime), rồi từ khoá, mặc định ảnh thật")
+ok(P.resolve_style("3d", "anime") == "3d" and P.resolve_style("auto", "anime") == "anime" and P.resolve_style("", "") == "photo"
+   and P.resolve_style("weird", "3d") == "3d", "resolve_style: chọn trong form thắng, auto → kiểu dò được")
+ok("NOT flat 2D anime" in P.style_block("3d") and "semi-realistic 3D CG render" in P.style_block("3d")
+   and "real photograph" in P.style_block("photo") and P.style_name("nope") == "photorealistic", "style_block / style_name")
+_sf = next(f for f in P.task_kind_spec()["fields"] if f["key"] == "style")
+ok(_sf["default"] == "auto" and [o["value"] for o in _sf["options"]] == ["auto", "3d", "anime", "photo", "painting"], "form có ô Kiểu hình", _sf["options"])
 ok(P.guess_gender("cyberpunk techwear anime heroine") == "female" and P.guess_gender("a young man") == "male"
    and P.guess_gender("the person") == "", "guess_gender: heroine → nữ")
 _old_describe = P.describe
@@ -168,7 +176,7 @@ ok("START (0 s): at the window, facing the hall" in clip_calls[0]["prompt"] and 
    and "START (0 s): she turns to the camera by the bench" in clip_calls[1]["prompt"] and "END (10 s): she smiles, camera close" in clip_calls[1]["prompt"]
    and "hold exactly" not in clip_calls[1]["prompt"].split("END (10 s)")[1], "mỗi clip có START 0 s / END 10 s, END clip 1 = START clip 2", clip_calls[1]["prompt"][-400:])
 ok(img_calls[0][0].startswith("A single photorealistic 9:16 frame") and "RENDERING STYLE: photorealistic" in img_calls[0][0]
-   and "RENDERING STYLE: photorealistic" in clip_calls[0]["prompt"] and st["models"][0]["style"] == "photorealistic",
+   and "RENDERING STYLE: photorealistic" in clip_calls[0]["prompt"] and st["models"][0]["style"] == "photo",
    "kiểu vẽ ảnh thật ghim vào khung đầu + clip", img_calls[0][0][:60])
 ok(st["board_notes"]["environment"].startswith("a sunlit school hall") and len(st["board_notes"]["cuts"]) == 2, "đọc bảng → bối cảnh + 2 cut", st.get("board_notes"))
 ok("arched windows" in clip_calls[0]["prompt"] and "close-up, slow tilt" in clip_calls[0]["prompt"] and "opening shot" in clip_calls[0]["prompt"]
@@ -226,6 +234,12 @@ try:
 except _Refused:
     ok(True, "Muse từ chối → không thử lại, nổi lỗi ngay")
 muse.generate_video_clip = _gen_ok
+# chọn «3D CG» trong form → thắng kiểu dò được (ảnh giả được tả là ảnh thật)
+P._data_dir = lambda: str(TMP / "pod_style")
+n_img, n_clip = len(img_calls), len(clip_calls)
+P.run({**payload, "task_id": "t-3d", "clips": 1, "style": "3d"}, lambda *a, **k: None, lambda: False)
+ok(img_calls[n_img][0].startswith("A single semi-realistic 3D CG render 9:16 frame") and "NOT flat 2D anime" in clip_calls[n_clip]["prompt"]
+   and P.load_state("t-3d")["models"][0]["style"] == "photo", "style=3d trong form: khung đầu + clip theo 3D, kiểu dò được vẫn lưu", img_calls[n_img][0][:70])
 P._data_dir = lambda: str(TMP / "pod_studio")
 
 print("C2. gom ảnh người mẫu theo thể loại")

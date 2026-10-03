@@ -29,6 +29,7 @@ class RunRequest(BaseModel):
     format: str = "ad"
     clips: Any = 3
     aspect: str = "9:16"
+    style: str = "auto"
     chatgpt_profile: str = ""
     subtitles: Any = False
     title: str = ""
@@ -96,6 +97,7 @@ async def run(req: RunRequest, request: Request):
         "kind": P.KIND, "task_id": task["id"], "model_images": req.model_images, "product_images": req.product_images,
         "request": req.request.strip(), "format": fmt, "clips": clips,
         "aspect": req.aspect if req.aspect in P.ASPECTS else "9:16", "chatgpt_profile": req.chatgpt_profile or "",
+        "style": req.style if req.style in P.STYLE_PRESETS else "auto",
         "subtitles": bool(req.subtitles), "title": title, "language": req.language or "", "board_engines": req.board_engines or "",
     }
     codex_manager.append_event(task["id"], "log", f"Reference video queued: {clips} clip(s), {fmt}", actor=P.ACTOR, data=payload)
