@@ -31,6 +31,9 @@ class RunRequest(BaseModel):
     aspect: str = "9:16"
     style: str = "auto"
     style_custom: str = ""
+    camera_style: str = "auto"      # kiểu quay (CAMERA_STYLES) — mẫu giữ được
+    voice: str = "auto"             # kiểu giọng (VOICE_PRESETS) — mẫu giữ được
+    voice_custom: str = ""
     template: str = ""
     watermark: Any = False          # nhãn «AI · tubecli.app» — việc thuê trên Town luôn bật
     hire: str = ""                  # mã việc thuê Town (core/public_hire) — ghi vào origin của task để chủ thấy
@@ -131,6 +134,8 @@ async def run(req: RunRequest, request: Request):
         "aspect": req.aspect if req.aspect in P.ASPECTS else "9:16", "chatgpt_profile": req.chatgpt_profile or "",
         "style": req.style if req.style in P.STYLE_PRESETS else "auto",
         "style_custom": (req.style_custom or "").strip()[:300], "template": (req.template or "").strip(),
+        "camera_style": req.camera_style if req.camera_style in P.CAMERA_STYLES else "auto",
+        "voice": req.voice if req.voice in P.VOICE_PRESETS else "auto", "voice_custom": (req.voice_custom or "").strip()[:200],
         "watermark": req.watermark in (True, 1, "1", "true", "on"),
         "subtitles": bool(req.subtitles), "title": title, "language": req.language or "", "board_engines": req.board_engines or "",
     }

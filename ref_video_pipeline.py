@@ -40,7 +40,8 @@ MAX_PRODUCTS = 2
 ASPECTS = ("9:16", "16:9", "1:1")
 RETRY_WAIT = 20          # giây nghỉ trước khi gọi lại Muse một lần (test đặt 0)
 # Các ô của form mà MẪU quản (kho mẫu chung của lõi, phần "ref_video") — ảnh, yêu cầu, thoại, tiêu đề luôn nhập theo task.
-TEMPLATE_KEYS = ("format", "clips", "aspect", "style", "style_custom", "subtitles")
+TEMPLATE_KEYS = ("format", "clips", "aspect", "style", "style_custom", "subtitles", "voice", "voice_custom",
+                 "camera_style")
 STEPS = [
     ("intake", "Nhận ảnh & yêu cầu"), ("character", "Bảng nhân vật"), ("shots", "Chia cảnh & thoại"),
     ("board", "Scene Panorama"), ("clips", "Clip Muse"), ("render", "Ghép video"),
@@ -164,11 +165,33 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
               "desc": "a real photograph of a real human: natural skin texture, real camera optics and lighting"},
     "painting": {"name": "painted illustration", "label": {"en": "Painting", "vi": "Tranh vẽ"},
                  "desc": "a painted illustration with visible brush strokes and painterly color — NOT a photograph"},
+    # Thêm 3/10/2026 (user: «điện ảnh, anime, hoạt hình, thuỷ mặc, mực màu, người que»). Kiểu KHÁC ảnh người mẫu thì
+    # style_block bảo Muse VẼ LẠI người trong ảnh theo kiểu này (giữ tóc/đồ/màu nhận ra được), không đòi «giống ảnh».
+    "cinematic": {"name": "cinematic film still", "label": {"en": "Cinematic", "vi": "Điện ảnh"},
+                  "desc": "a frame from a feature film: anamorphic widescreen feel, filmic color grade, gentle film grain, "
+                          "motivated dramatic light, shallow depth of field — a real-looking movie shot, NOT an illustration"},
+    "cartoon": {"name": "stylized 3D animated-feature cartoon", "label": {"en": "Animated cartoon", "vi": "Hoạt hình"},
+                "desc": "family animated-feature look: soft rounded shapes, big expressive eyes, slightly exaggerated "
+                        "proportions, bright saturated colors, smooth clean shading — NOT a photograph, NOT anime line art"},
+    "ink_wash": {"name": "East Asian ink wash painting (sumi-e)", "label": {"en": "Ink wash (sumi-e)", "vi": "Thuỷ mặc"},
+                 "desc": "black ink on rice paper: expressive calligraphic brush strokes, soft grey washes, generous "
+                         "empty paper space, at most one small accent of color — NOT a photograph, NOT 3D"},
+    "color_ink": {"name": "colored ink illustration", "label": {"en": "Colored ink", "vi": "Mực màu"},
+                  "desc": "loose ink line drawing with transparent colored-ink washes that bleed at the edges, visible "
+                          "paper texture, limited harmonious palette — NOT a photograph, NOT 3D"},
+    "stick_figure": {"name": "minimal stick-figure doodle", "label": {"en": "Stick figure", "vi": "Người que"},
+                     "desc": "simple stick figures with round heads drawn in thick black marker on a clean white "
+                             "background, minimal props, playful doodle animation; the character keeps one or two "
+                             "signature traits (hair shape, outfit color) so we know who it is — NOT realistic"},
 }
 _STYLE_PATTERNS = (     # thứ tự quan trọng: «anime-styled 3D render» phải ra 3d
+    ("stick_figure", r"stick[- ]?figure|doodle|người que"),
+    ("ink_wash", r"ink[- ]wash|sumi|thu[ỷỷ]\s*mặc|thủy mặc"),
+    ("color_ink", r"colou?red ink|ink and watercolou?r|ink illustration|mực màu"),
     ("3d", r"\b3d\b|\bcg\b|cgi|render|video game|game[- ](?:style|cinematic|character)|unreal|octane"),
-    ("anime", r"anime|manga|cel[- ]shad|2d|cartoon|line art|illustrat|drawn"),
-    ("painting", r"painting|painted|watercolou?r|oil on|ink wash|brush ?stroke"),
+    ("anime", r"anime|manga|cel[- ]shad|2d|line art|illustrat|drawn"),
+    ("cartoon", r"cartoon|animated feature|pixar"),
+    ("painting", r"painting|painted|watercolou?r|oil on|brush ?stroke"),
     ("photo", r"photo|real|camera"),
 )
 
@@ -211,11 +234,16 @@ def style_name(style: str, custom: str = "") -> str:
     return custom.strip() if custom and custom.strip() else STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])["name"]
 
 
-def style_block(style: str, custom: str = "") -> str:
-    """Câu ghim kiểu hình vào prompt ảnh/video — giữ NGUYÊN một kiểu từ khung đầu tới khung cuối."""
+def style_block(style: str, custom: str = "", detected: str = "") -> str:
+    """Câu ghim kiểu hình vào prompt ảnh/video — giữ NGUYÊN một kiểu từ khung đầu tới khung cuối. `detected` = kiểu của
+    ảnh người mẫu: chọn kiểu KHÁC (vd ảnh thật → thuỷ mặc) thì phải bảo VẼ LẠI người trong ảnh theo kiểu mới."""
     p = STYLE_PRESETS.get(style, STYLE_PRESETS["photo"])
     keep = ("Keep exactly this rendering style, the same as the attached reference portrait, in every frame from the "
             "first to the last.")
+    if detected and detected in STYLE_PRESETS and detected != style:
+        keep = ("Redraw the person from the attached reference portrait IN THIS STYLE — keep their face shape, hair, "
+                "outfit and colors recognisable — and keep exactly this rendering style in every frame from the first "
+                "to the last.")
     if custom and custom.strip():
         return f"RENDERING STYLE: {custom.strip()} ({p['name']} — {p['desc']}). {keep}"
     return f"RENDERING STYLE: {p['name']} — {p['desc']}. {keep}"
@@ -348,6 +376,11 @@ def scene_block(plan: Dict[str, Any], notes: Dict[str, Any], i: int, n: int) -> 
     if notes.get("raw"):
         lines.append(f"BOARD NOTES: {notes['raw'][:500]}")
     cam = cut.get("camera") or shot.get("camera") or ""
+    if plan.get("camera_style"):
+        lines.append(f"CAMERA STYLE (whole video): {plan['camera_style']}")
+    if shot.get("action"):
+        lines.append(f"ACTION (0-{CLIP_SECONDS} s): {shot['action']} — the character keeps moving and doing this; never "
+                     "just stands still staring at the camera.")
     lines.append(f"CAMERA FOR THIS SHOT: {cam}" + (f" · CHARACTER POSITION: {cut['position']}" if cut.get("position") else "")
                  + (f" · BACKGROUND: {cut['background']}" if cut.get("background") else ""))
     prev_t = shots[i - 2].get("title") if 2 <= i <= len(shots) else ""
@@ -419,6 +452,58 @@ _WEAR_RE = re.compile(r",?\s*\b(?:wearing|dressed in|clad in)\s+(?:[\w'’-]+\s+
 _ASKS_WARDROBE_RE = re.compile(r"\b(?:wear|wears|wearing|outfit|dress|clothes|costume|áo|váy|quần|mặc|trang phục)\b", re.I)
 
 
+# ── KIỂU QUAY (user 3/10/2026: «camera plan chưa thể hiện được kiểu quay, ví dụ kiểu quay điện ảnh góc rộng») ─────
+# Bước viết cảnh ghi mỗi cảnh: CỠ CẢNH · ỐNG KÍNH (mm) · GÓC · CHUYỂN ĐỘNG; kiểu quay chung đi vào bảng (zone 4 vẽ nhãn
+# từng máy) + mọi clip. Chọn ở form / lưu trong mẫu (camera_style).
+CAMERA_STYLES: Dict[str, Dict[str, Any]] = {
+    "cinematic": {"label": {"en": "Cinematic wide (film look)", "vi": "Điện ảnh góc rộng"},
+                  "desc": "cinematic film language: open on a WIDE establishing shot (24-35 mm), smooth dolly / gimbal / "
+                          "slow crane moves, medium tracking shots for action, 85 mm shallow-depth close-ups for emotion "
+                          "and product detail, motivated light, steady 24 fps feel"},
+    "handheld": {"label": {"en": "Handheld vlog (TikTok)", "vi": "Cầm tay kiểu vlog (TikTok)"},
+                 "desc": "handheld smartphone vlog: eye-level, slight natural shake, close and personal framing, quick "
+                         "reframes and whip pans, natural light, the camera moves with the person"},
+    "studio": {"label": {"en": "Studio commercial", "vi": "Quảng cáo studio"},
+               "desc": "clean studio commercial: locked-off frames and very slow push-ins, crisp focus, seamless "
+                       "background feel, hero product close-ups with macro detail, soft key + rim light"},
+    "dynamic": {"label": {"en": "Dynamic (orbit, drone)", "vi": "Năng động (xoay vòng, flycam)"},
+                "desc": "dynamic energetic camera: low-angle hero shots, 360° orbits around the person, fast push-ins, "
+                        "aerial drone reveals of the location, speed ramps between moves"},
+}
+CAMERA_BY_FORMAT = {"ad": "cinematic", "short": "handheld", "drama": "cinematic"}
+
+
+def camera_style_desc(key: str, fmt: str = "ad") -> str:
+    k = key if key in CAMERA_STYLES else CAMERA_BY_FORMAT.get(fmt, "cinematic")
+    return CAMERA_STYLES[k]["desc"]
+
+
+def muse_image_fresh(muse, prompt: str, aspect: str, refs: List[str]) -> bytes:
+    """Vẽ một ảnh trong CHAT MỚI của Muse. Chạy lại #164 (3/10/2026): lượt thử lại gõ vào CÙNG chat với lần bị từ chối,
+    Muse đáp «it's the same blocked generation with shorter wording» — lời từ chối dính theo chat, thử lại vô nghĩa.
+    Lõi mới: generate_image_bytes(thread_id=…); lõi cũ: tự đi muse.ask(thread_id="new")."""
+    import inspect
+    import tempfile
+    try:
+        if "thread_id" in inspect.signature(muse.generate_image_bytes).parameters:
+            return muse.generate_image_bytes(prompt, aspect, refs, thread_id="new")
+    except (TypeError, ValueError):
+        pass
+    if hasattr(muse, "image_request") and hasattr(muse, "ask"):
+        with tempfile.TemporaryDirectory(prefix="pod_img_") as tmp:
+            res = muse.ask(muse.image_request(prompt, aspect, bool(refs)), want_images=True, files=list(refs), image_dir=tmp,
+                           max_images=1, timeout=300, thread_id="new")
+            imgs = [i for i in (res.get("images") or []) if isinstance(i, dict) and i.get("path")]
+            if not imgs:
+                said = " ".join(str(res.get("text") or "").split())[:240]
+                kind = muse._no_output_kind(said) if hasattr(muse, "_no_output_kind") else "refused"
+                raise muse.MuseError(kind, f"Muse did not draw an image{': ' + said if said else '.'}")
+            with open(imgs[0]["path"], "rb") as f:
+                data = f.read()
+        return muse._to_jpeg(data) if hasattr(muse, "_to_jpeg") else data
+    return muse.generate_image_bytes(prompt, aspect, refs)
+
+
 def strip_wardrobe(text: str, request: str = "") -> str:
     """Lột trang phục tự chế khỏi một câu tả cảnh — trừ khi khách tự nói về trang phục."""
     if not text or _ASKS_WARDROBE_RE.search(request or ""):
@@ -430,7 +515,7 @@ def strip_wardrobe(text: str, request: str = "") -> str:
 
 
 def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List[Dict], n: int,
-               say: Callable[[str], None]) -> Dict[str, Any]:
+               say: Callable[[str], None], camera_style: str = "") -> Dict[str, Any]:
     """{"title", "environment", "shots": [{title, scene, camera, action, speaker, dialogue}]} — LLM, lùi về khuôn mẫu."""
     names = [c["name"] for c in characters] or ["the character"]
     prod = ", ".join(p["name"] for p in products) or "none"
@@ -443,6 +528,14 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         "shots without a line have dialogue \"\". Never invent brand claims.\n"
         # Việc thuê #164 (3/10/2026): khách chỉ gõ «đi trên đường làng việt nam», bước này tự cho người mẫu mặc «áo dài»
         # trong khi ảnh người mẫu mặc đồ khác → khung vẽ mang HAI bộ đồ, Muse từ chối vẽ cả việc.
+        # User 3/10/2026: «roadmap cũng cần người mẫu hành động nữa chứ không chỉ nhìn vào màn hình»
+        "ACTION RULES: in EVERY shot the character performs ONE clear physical action with a strong verb (walks, turns, "
+        "picks up / shows / tries on / uses the product, touches the fabric, sits down, dances a step, interacts with the "
+        "set or another character). Never a shot where the character only stands and looks at the camera. Lines are "
+        "spoken WHILE doing the action; look into the camera only on a line that addresses the viewer (hook or call to "
+        "action), otherwise look at the product, the other character or where they are going.\n"
+        "CAMERA LANGUAGE: {camera}. Every \"camera\" names SHOT SIZE, LENS, ANGLE and MOVEMENT, e.g. \"wide establishing "
+        "shot, 24 mm, eye level, slow dolly back\". Vary the shot size between consecutive shots.\n"
         "WARDROBE RULE: the characters' look (face, hair, outfit, shoes, accessories) comes ONLY from their reference "
         "photos. Never describe, add or change clothing, hair or accessories in any field — call them by name (e.g. "
         "\"the model\") — unless the user's request explicitly asks for a different outfit.\n"
@@ -451,10 +544,13 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         f"state (frame {CLIP_SECONDS} s: the same four things). The END of shot k MUST be exactly the START of shot k+1 (same "
         "place, pose, camera) — write them with the same words. Movement inside a shot must be achievable in 10 seconds.\n"
         "Reply with ONLY a JSON object: {\"title\": str, \"environment\": str (one sentence, the single location and light), "
-        "\"shots\": [{\"title\": str, \"scene\": str (what we see, English, 25-45 words), \"camera\": str (e.g. "
-        "\"wide, slow push-in\"), \"action\": str, \"start\": str (15-30 words), \"end\": str (15-30 words), "
+        "\"shots\": [{\"title\": str, \"scene\": str (what we see, English, 25-45 words), \"camera\": str (shot size, "
+        "lens, angle, movement — e.g. \"wide establishing shot, 24 mm, eye level, slow dolly back\"), \"action\": str "
+        "(the character's physical action in these 10 s, verb first, 8-20 words), \"start\": str (15-30 words), "
+        "\"end\": str (15-30 words), "
         "\"speaker\": str (character name or \"\"), \"dialogue\": str}]}"
     )
+    sys_prompt = sys_prompt.replace("{camera}", camera_style_desc(camera_style, fmt))
     user = (f"Format: {fmt}. Number of shots: EXACTLY {n}.\nCharacters: {', '.join(names)}.\nProducts: {prod}.\n"
             f"Request from the user (may include the lines to say):\n{request.strip()}")
     plan = None
@@ -492,6 +588,7 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         for k in ("scene", "action", "start", "end"):
             sh[k] = strip_wardrobe(sh[k], request)
     plan["shots"] = shots
+    plan["camera_style"] = camera_style_desc(camera_style, fmt)
     plan["title"] = str(plan.get("title") or request.strip().split("\n")[0][:60] or "Video")[:80]
     # LLM quên bối cảnh → lấy từ chính yêu cầu (câu đầu thường tả địa điểm), đừng rơi về câu chung chung.
     plan["environment"] = str(plan.get("environment") or request.strip().split("\n")[0][:200]
@@ -534,12 +631,93 @@ def template_shots(fmt: str, request: str, who: str, prod: str, n: int) -> Dict[
 
 # ── Muse clip ─────────────────────────────────────────────────────────────────
 
-def speak_block(line: str, gender_hint: str = "") -> str:
-    voice = "her own natural young female voice" if gender_hint == "female" else \
-            "his own natural young male voice" if gender_hint == "male" else "their own natural voice"
-    return (f"The character looks at the camera and SPEAKS this line in its original language, in {voice} with "
+def speak_block(line: str, gender_hint: str = "", voice: str = "") -> str:
+    """Lời xin NÓI một câu. `voice` = khối VOICE LOCK của nhân vật (voice_lock) — có thì mọi clip mang CÙNG một câu tả
+    giọng; thiếu (gọi kiểu cũ) thì câu chung chung theo giới tính như trước."""
+    if voice:
+        return (f"While doing this shot's action, the character SPEAKS this line in its original language with accurate "
+                f"lip-sync (looking into the camera only if the shot says so) — "
+                f"the audio must contain exactly: \"{line}\".\n{voice}\nNo narrator, no voice-over, no background music, "
+                "only gentle ambient sound.")
+    who = "her own natural young female voice" if gender_hint == "female" else \
+        "his own natural young male voice" if gender_hint == "male" else "their own natural voice"
+    return (f"While doing this shot's action, the character SPEAKS this line in its original language, in {who} with "
             f"accurate lip-sync — the audio must contain exactly: \"{line}\". No narrator, no voice-over, no background "
             "music, only gentle ambient sound.")
+
+
+# ── GIỌNG (user 3/10/2026: «giữa các lần tạo video chưa nhất quán giọng tạo với muse, tối ưu luôn style giọng») ──
+# Mỗi clip là MỘT lượt Muse riêng; lời xin cũ chỉ nói «giọng nữ trẻ tự nhiên» nên mỗi lượt Muse tự bịa một giọng. Nay
+# mỗi task dựng MỘT câu tả giọng cố định cho từng nhân vật (giới tính, tuổi, ngôn ngữ + giọng vùng, âm sắc, cao độ, tốc
+# độ, năng lượng, chất thu âm) — lưu vào state, gửi y nguyên ở mọi clip, clip sau còn được nhắc «cùng người nói như các
+# clip trước trong chat này». Kiểu giọng chọn ở form / lưu trong mẫu (voice, voice_custom).
+VOICE_PRESETS = {
+    "bright": {"label": {"en": "Bright presenter", "vi": "Tươi sáng, năng động"},
+               "desc": "bright, upbeat and clear like a friendly presenter; medium-high pitch; lively but unhurried pace; "
+                       "a smile you can hear"},
+    "warm": {"label": {"en": "Warm & gentle", "vi": "Ấm áp, nhẹ nhàng"},
+             "desc": "warm, soft and friendly; medium-low pitch; calm, relaxed pace; close and intimate, like talking to "
+                     "one friend"},
+    "elegant": {"label": {"en": "Deep & elegant", "vi": "Trầm, sang trọng"},
+                "desc": "low, smooth and velvety; poised and confident; slow, deliberate pace with soft pauses — a luxury-"
+                        "brand voice"},
+    "sweet": {"label": {"en": "Sweet & youthful", "vi": "Trong trẻo, dễ thương"},
+              "desc": "light, clear and sweet; youthful and playful; medium-high pitch; bouncy, cheerful rhythm"},
+    "pro": {"label": {"en": "Clear & professional", "vi": "Rõ ràng, chuyên nghiệp"},
+            "desc": "crisp, articulate and confident; neutral warm tone; steady medium pace like a product expert"},
+}
+# «Tự chọn» theo thể loại: quảng cáo cần giọng tươi; video ngắn kể chuyện cần ấm; drama để diễn theo cảnh nhưng GIỮ âm sắc.
+VOICE_BY_FORMAT = {"ad": "bright", "short": "warm"}
+VOICE_DRAMA = ("natural, expressive acting voice that follows each moment's emotion, while the timbre, pitch range and "
+               "accent stay exactly the same")
+_LANG_MARKS = (
+    ("Vietnamese", re.compile(r"[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]", re.I)),
+    ("Japanese", re.compile(r"[\u3040-\u30ff]")),
+    ("Korean", re.compile(r"[\uac00-\ud7af]")),
+    ("Chinese (Mandarin)", re.compile(r"[\u4e00-\u9fff]")),
+    ("Thai", re.compile(r"[\u0e00-\u0e7f]")),
+    ("Russian", re.compile(r"[\u0400-\u04ff]")),
+)
+_ACCENT = {"Vietnamese": "a clear, standard Vietnamese accent with correct tones",
+           "Chinese (Mandarin)": "a clear standard Mandarin accent", "English": "a neutral, clear English accent"}
+
+
+def line_language(lines: List[str]) -> str:
+    text = " ".join(lines or [])
+    for name, rx in _LANG_MARKS:
+        if rx.search(text):
+            return name
+    return "English" if re.search(r"[A-Za-z]{3,}", text) else ""
+
+
+def age_phrase(appearance: str) -> str:
+    m = re.search(r"~?\s*(\d{1,2})\s*(?:yo\b|y/o|years?[ -]old|tuổi)", str(appearance or ""), re.I)
+    n = int(m.group(1)) if m else 0
+    if not n:
+        return "young adult"
+    if n < 13:
+        return "child's"
+    if n < 18:
+        return "teenage"
+    if n < 30:
+        return f"young adult (about {n})"
+    if n < 50:
+        return f"adult (about {n})"
+    return f"mature (about {n})"
+
+
+def voice_lock(name: str, appearance: str, gender: str, lines: List[str], fmt: str = "ad",
+               preset: str = "auto", custom: str = "") -> str:
+    """MỘT câu tả giọng cố định cho một nhân vật trong cả task — gửi y nguyên ở mọi clip."""
+    key = preset if preset in VOICE_PRESETS else VOICE_BY_FORMAT.get(fmt, "")
+    style = VOICE_PRESETS[key]["desc"] if key else VOICE_DRAMA
+    who = {"female": "woman's", "male": "man's"}.get(gender, "")
+    lang = line_language(lines)
+    tongue = (f" Native {lang} speaker, {_ACCENT.get(lang, f'a clear, standard {lang} accent')}." if lang else "")
+    extra = f" Voice style from the user (this wins): {custom.strip()[:200]}." if (custom or "").strip() else ""
+    return (f"VOICE LOCK — {name}: one consistent {age_phrase(appearance)} {who} voice, {style}.{tongue}{extra} "
+            "Clean close-mic studio sound: no echo, no reverb, no voice effects, no pitch shifting. Use EXACTLY this "
+            "voice — same timbre, pitch, accent, speaking speed and loudness — in every clip of this video.")
 
 
 SILENT_BLOCK = "Nobody speaks in this shot. No narrator, no voice-over, no background music, only gentle ambient sound."
@@ -577,7 +755,7 @@ def concat(paths: List[str], out: str, subtitles: Optional[List[str]] = None, wo
         has_audio = any(s["codec_type"] == "audio" for s in streams)
         inputs += ["-i", p]
         fc.append(f"[{k}:v]scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v{k}]")
-        fc.append(f"[{k}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{k}]" if has_audio
+        fc.append(f"[{k}:a]loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[a{k}]" if has_audio
                   else f"anullsrc=r=48000:cl=stereo,atrim=0:{CLIP_SECONDS}[a{k}]")
         maps += f"[v{k}][a{k}]"
     fc.append(f"{maps}concat=n={len(paths)}:v=1:a=1[v][a]")
@@ -661,6 +839,9 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
     aspect = aspect if aspect in ASPECTS else "9:16"
     request = str(payload.get("request") or "").strip()
     style_custom = str(payload.get("style_custom") or "").strip()[:300]     # câu tả kiểu hình riêng (thường từ mẫu)
+    camera_style = str(payload.get("camera_style") or "auto")
+    voice_preset = str(payload.get("voice") or "auto")
+    voice_custom = str(payload.get("voice_custom") or "").strip()[:200]
     try:
         # ── intake ──
         check()
@@ -720,7 +901,8 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         check()
         if not st.get("plan"):
             say("shots", f"Planning {n} shots ({fmt}) and placing the lines…")
-            plan = plan_shots(fmt=fmt, request=request, characters=models, products=products, n=n, say=lambda m: say("shots", m))
+            plan = plan_shots(fmt=fmt, request=request, characters=models, products=products, n=n, say=lambda m: say("shots", m),
+                              camera_style=camera_style)
             st["plan"] = plan
             save_state(task_id, st)
             db = _db()
@@ -732,6 +914,9 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             spoken = sum(1 for s in plan["shots"] if s["dialogue"])
             say("shots", f"{len(plan['shots'])} shots, {spoken} with a spoken line · {plan['environment'][:80]}", "success")
         plan = st["plan"]
+        # Kế hoạch LƯU từ bản cũ (chạy lại task #164) chưa qua bộ lọc trang phục → lọc lúc dùng, không ghi đè checkpoint.
+        plan = {**plan, "shots": [{**s, **{k: strip_wardrobe(str(s.get(k) or ""), request) for k in ("scene", "action", "start", "end")}}
+                                  for s in plan.get("shots") or []]}
 
         # ── board ──
         check()
@@ -740,11 +925,16 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             if _EXT_DIR not in sys.path:
                 sys.path.insert(0, _EXT_DIR)
             import panorama
-            style = resolve_style(payload.get("style"), models[0].get("style") if models else "")
+            detected = models[0].get("style") if models else ""
+            style = resolve_style(payload.get("style"), detected)
             prompt = panorama.build_board_prompt(title=plan["title"], fmt=fmt, characters=models, products=products,
                                                  environment=plan["environment"], shots=plan["shots"],
                                                  style="Photorealistic" if style == "photo" and not style_custom
-                                                 else f"{style_name(style, style_custom)} (same rendering style as the character reference)")
+                                                 else f"{style_name(style, style_custom)} (same rendering style as the character reference)"
+                                                 if style == detected or style_custom
+                                                 else f"{style_name(style, style_custom)} — {STYLE_PRESETS[style]['desc']} "
+                                                      "(redraw the reference person in this style)",
+                                                 camera_style=plan.get("camera_style") or camera_style_desc(camera_style, fmt))
             refs = [c["image"] for c in models] + [p["image"] for p in products]
             engines = [e for e in str(payload.get("board_engines") or "chatgpt,muse,9router").split(",") if e.strip()]
             res = panorama.draw_board(prompt, refs, os.path.join(proj, "board.png"), engines=engines,
@@ -792,13 +982,20 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         main = models[0]
         style = resolve_style(payload.get("style"), main.get("style"))
         # Nhận dạng = ảnh + mô tả NGƯỜI DÙNG đưa vào (bảng nhân vật rút từ chính ảnh đó); bảng panorama không dính tới nhận dạng.
-        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style, style_custom)
+        ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style, style_custom, main.get("style", ""))
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
         # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
         board = ""
         if (st.get("board") or {}).get("ok") and os.path.isfile(str(st["board"].get("path") or "")):
             board = shrink_image(st["board"]["path"], os.path.join(proj, "board_ref.jpg"))
         thread = st.get("thread") or "new"
+        # Khoá giọng: dựng MỘT lần cho cả task (chạy lại giữ nguyên câu cũ — clip đã có nghe khớp clip mới).
+        if not st.get("voices"):
+            all_lines = [s["dialogue"] for s in plan["shots"] if s.get("dialogue")]
+            st["voices"] = {c["name"]: voice_lock(c["name"], c.get("appearance", ""), c.get("gender", ""), all_lines, fmt,
+                                                  voice_preset, voice_custom) for c in models}
+            save_state(task_id, st)
+        spoke = False
         for i, shot in enumerate(plan["shots"], 1):
             check()
             if str(i) in clips and os.path.isfile(clips[str(i)]["path"]):
@@ -816,7 +1013,10 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                     say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([board] if board else [])
                     try:
-                        data = muse.generate_image_bytes(
+                        # Chat MỚI ngay lượt đầu: chat dùng chung còn nhớ lời từ chối của task trước (#164 chạy lại:
+                        # «it's the same request I've already declined») — khung đầu không cần ngữ cảnh cũ nào.
+                        data = muse_image_fresh(
+                            muse,
                             f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
                             "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
                             + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
@@ -827,8 +1027,10 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                         # trong cảnh ≠ ảnh người mẫu, bảng panorama vẽ khác). Thử lại MỘT lần: chỉ bối cảnh + tư thế đầu +
                         # đúng ảnh người mẫu, KHÔNG bảng. Lần hai vẫn hỏng thì lời của Muse đi tới khách (public_hire).
                         say("clips", f"Muse did not draw the first frame ({' '.join(str(e).split())[:140]}) — retrying once "
-                                     "with a simpler prompt: only the set, the start pose and the person exactly as in the photo")
-                        data = muse.generate_image_bytes(
+                                     "in a NEW Muse chat with a simpler prompt: only the set, the start pose and the person "
+                                     "exactly as in the photo")
+                        data = muse_image_fresh(
+                            muse,
                             f"A single {style_name(style, style_custom)} {aspect} frame. Setting: {plan.get('environment', '')} "
                             f"{shot.get('start') or ''} The person is EXACTLY the individual in the attached reference portrait: "
                             "same face, hair, outfit and accessories as in the photo — do not change or add clothing."
@@ -843,7 +1045,10 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             say("clips", f"Clip {i}/{n}: {shot['title']}" + (f" — says «{shot['dialogue'][:60]}»" if shot["dialogue"] else ""),
                 progress=int((i - 1) / n * 100))
             prompt = (f"{shot['scene']} Camera: {shot['camera']}. "
-                      + (speak_block(shot["dialogue"], cast[0].get("gender", "")) if shot["dialogue"] else SILENT_BLOCK)
+                      + (speak_block(shot["dialogue"], cast[0].get("gender", ""),
+                                     (st.get("voices") or {}).get(cast[0]["name"], "")
+                                     + (" It must sound like the SAME speaker as in the earlier clips of this chat." if spoke else ""))
+                         if shot["dialogue"] else SILENT_BLOCK)
                       + "\n\n" + scene + "\n\n" + ident)
             t0 = time.time()
             for attempt in (1, 2):
@@ -857,6 +1062,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                     say("clips", f"Clip {i}: Muse did not answer ({str(e)[:90]}) — retrying once in 20 s")
                     time.sleep(RETRY_WAIT)
             thread = v.get("thread_id") or thread
+            spoke = spoke or bool(shot["dialogue"])
             name = f"rv_{re.sub(r'[^0-9A-Za-z]', '', task_id)[:12]}_clip{i}.mp4"
             dst = os.path.join(_videos_dir(), name)
             shutil.copyfile(v["path"], dst)
@@ -959,6 +1165,16 @@ def task_kind_spec() -> Dict[str, Any]:
                                                                    "Hồ sơ trình duyệt đã đăng nhập ChatGPT (vẽ bảng)"),
              "options_url": "/api/v1/pod_studio/ref-video/options/profiles",
              "hint": L("Leave empty to draw the board with Muse, then gpt-image-2", "Để trống thì vẽ bảng bằng Muse, rồi gpt-image-2")},
+            {"key": "camera_style", "type": "select", "default": "auto", "label": L("Camera style", "Kiểu quay"),
+             "options": [{"value": "auto", "label": L("Auto by format (ad: cinematic, short: handheld)", "Tự chọn theo thể loại (quảng cáo: điện ảnh, video ngắn: cầm tay)")}]
+                        + [{"value": k, "label": v["label"]} for k, v in CAMERA_STYLES.items()],
+             "hint": L("Shot sizes, lenses and camera moves — drawn on the board's camera plan", "Cỡ cảnh, ống kính, chuyển động máy — vẽ lên camera plan của bảng")},
+            {"key": "voice", "type": "select", "default": "auto", "label": L("Voice style", "Kiểu giọng"),
+             "options": [{"value": "auto", "label": L("Auto by format (ad: bright, short: warm)", "Tự chọn theo thể loại (quảng cáo: tươi, video ngắn: ấm)")}]
+                        + [{"value": k, "label": v["label"]} for k, v in VOICE_PRESETS.items()],
+             "hint": L("The same voice in every clip of the video", "Cùng một giọng trong mọi clip của video")},
+            {"key": "voice_custom", "type": "text", "label": L("Voice description (optional)", "Mô tả giọng (không bắt buộc)"),
+             "placeholder": L("e.g. Southern Vietnamese accent, soft and slightly husky", "vd giọng miền Nam, nhẹ, hơi khàn")},
             {"key": "subtitles", "type": "checkbox", "default": False, "label": L("Burn subtitles of the lines", "Đốt phụ đề các câu thoại")},
             {"key": "title", "type": "text", "label": L("Title (optional)", "Tiêu đề (không bắt buộc)")},
         ],

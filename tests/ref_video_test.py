@@ -82,7 +82,29 @@ ok(P.resolve_style("3d", "anime") == "3d" and P.resolve_style("auto", "anime") =
 ok("NOT flat 2D anime" in P.style_block("3d") and "semi-realistic 3D CG render" in P.style_block("3d")
    and "real photograph" in P.style_block("photo") and P.style_name("nope") == "photorealistic", "style_block / style_name")
 _sf = next(f for f in P.task_kind_spec()["fields"] if f["key"] == "style")
-ok(_sf["default"] == "auto" and [o["value"] for o in _sf["options"]] == ["auto", "3d", "anime", "photo", "painting"], "form có ô Kiểu hình", _sf["options"])
+ok(_sf["default"] == "auto" and [o["value"] for o in _sf["options"]] == ["auto", "3d", "anime", "photo", "painting", "cinematic",
+   "cartoon", "ink_wash", "color_ink", "stick_figure"], "form có ô Kiểu hình (thêm điện ảnh, hoạt hình, thuỷ mặc, mực màu, người que)", _sf["options"])
+ok(P.art_style("11. ART STYLE: black ink wash painting, sumi-e.") == "ink_wash" and P.art_style("11. ART STYLE: stick figure doodle.") == "stick_figure"
+   and P.art_style("11. ART STYLE: colored ink illustration.") == "color_ink" and P.art_style("11. ART STYLE: Pixar-like cartoon.") == "cartoon",
+   "art_style dò được các kiểu mới")
+ok("Redraw the person from the attached reference portrait IN THIS STYLE" in P.style_block("ink_wash", "", "photo")
+   and "the same as the attached reference portrait" in P.style_block("3d", "", "3d"), "kiểu khác ảnh → vẽ lại người theo kiểu mới; cùng kiểu → giữ như ảnh")
+# kiểu quay + giọng trong form và trong mẫu
+_keys = [f["key"] for f in P.task_kind_spec()["fields"]]
+ok("camera_style" in _keys and "voice" in _keys and "voice_custom" in _keys
+   and {"camera_style", "voice", "voice_custom"} <= set(P.TEMPLATE_KEYS), "form + mẫu có Kiểu quay, Kiểu giọng, Mô tả giọng", _keys)
+ok("WIDE establishing" in P.camera_style_desc("auto", "ad") and "handheld" in P.camera_style_desc("auto", "short")
+   and "orbit" in P.camera_style_desc("dynamic"), "kiểu quay: tự chọn theo thể loại / chọn tay")
+_vl = P.voice_lock("Mai", "… 10. OVERALL AESTHETIC: ~20yo princess", "female", ["Xin chào, áo này ấm lắm"], "ad")
+ok("VOICE LOCK — Mai" in _vl and "young adult (about 20)" in _vl and "woman's" in _vl and "Native Vietnamese speaker" in _vl
+   and "bright, upbeat" in _vl and "every clip" in _vl, "voice_lock: tuổi, giới, ngôn ngữ từ thoại, kiểu tươi cho quảng cáo", _vl)
+ok("Southern accent" in P.voice_lock("Mai", "", "female", ["hi there friends"], "ad", "warm", "Southern accent")
+   and "warm, soft" in P.voice_lock("Mai", "", "female", [], "ad", "warm"), "chọn kiểu giọng + mô tả riêng thắng")
+ok(P.line_language(["こんにちは"]) == "Japanese" and P.line_language(["Hello my friends"]) == "English" and P.line_language([]) == "",
+   "dò ngôn ngữ thoại")
+_sb = P.speak_block("Áo này ấm lắm", "female", _vl)
+ok("While doing this shot's action" in _sb and "looks at the camera and SPEAKS" not in _sb and "VOICE LOCK" in _sb,
+   "câu thoại nói TRONG lúc hành động, mang khối VOICE LOCK", _sb)
 ok(P.guess_gender("cyberpunk techwear anime heroine") == "female" and P.guess_gender("a young man") == "male"
    and P.guess_gender("the person") == "", "guess_gender: heroine → nữ")
 _old_describe = P.describe
@@ -192,6 +214,13 @@ final = st["final"]["path"]
 dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", final], capture_output=True, text=True).stdout.strip())
 ok(os.path.isfile(final) and 19.5 < dur < 20.6 and st["final"]["url"].startswith("/api/v1/pod_studio/export-video/"), "video cuối 20 s + url", dur)
 ok("tubecli.app" in text and st["final"]["url"] in text, "kết quả có link + thoại")
+ok("VOICE LOCK — Model" in clip_calls[1]["prompt"] and st.get("voices", {}).get("Model", "").startswith("VOICE LOCK")
+   and "Native Vietnamese speaker" in clip_calls[1]["prompt"], "clip có thoại mang khoá giọng đã LƯU của task", clip_calls[1]["prompt"][-600:])
+ok("CAMERA STYLE (whole video): cinematic" in clip_calls[0]["prompt"], "clip mang kiểu quay chung của video")
+_bp = panorama.build_board_prompt(title="T", fmt="ad", characters=[], products=[], environment="a hall", camera_style="cinematic wide",
+                                  shots=[{"camera": "wide establishing shot, 24 mm, eye level, slow dolly back", "scene": "s", "action": "walks to the window"}])
+ok("Camera 1: wide establishing shot, 24 mm, eye level, slow dolly back" in _bp and "CAMERA STYLE: cinematic wide" in _bp
+   and "ACTION: walks to the window" in _bp and "CUT k · SHOT SIZE · LENS · MOVE" in _bp, "bảng: camera plan có nhãn kiểu quay từng máy + hành động", _bp[-900:])
 from pod_db.json_store import JsonStore
 db = JsonStore.get_instance(P._data_dir())
 sbs = db.list_storyboards(st["episode_id"])
@@ -266,7 +295,7 @@ P.run(village, lambda name, status, msg="", label="", progress=None: said_f.appe
 st_f = P.load_state("t-frame")
 ok(any("WARDROBE RULE" in s for s in sys_seen), "câu lệnh viết cảnh có luật trang phục")
 ok(all("áo dài" not in s[k] for s in st_f["plan"]["shots"] for k in ("scene", "start", "end")), "kế hoạch cảnh đã lột trang phục tự chế", st_f["plan"]["shots"])
-ok(_img_n["n"] == 2 and any("retrying once with a simpler prompt" in m for m in said_f) and "1" in st_f["clips"]
+ok(_img_n["n"] == 2 and any("retrying once in a NEW Muse chat" in m for m in said_f) and "1" in st_f["clips"]
    and "áo dài" not in img_calls[-1][0] and "village road at golden hour" in img_calls[-1][0] and img_calls[-1][2] == [model_img],
    "khung đầu bị từ chối → thử lại MỘT lần: bối cảnh + tư thế + chân dung, KHÔNG bảng", (said_f[-3:], img_calls[-1][2]))
 ok("áo dài" not in clip_calls[-1]["prompt"], "câu lệnh clip không còn «áo dài»")
@@ -277,6 +306,18 @@ try:
 except _NoImg as e:
     ok("still no" in str(e), "lần hai vẫn không vẽ → nổi lỗi kèm lời Muse (public_hire chuyển cho khách)")
 P._llm, muse.generate_image_bytes = _llm_prev, _img_ok
+# thử lại phải đi CHAT MỚI (chạy lại #164: chat cũ nhớ lời từ chối) — lõi mới qua thread_id, lõi cũ qua ask(thread_id="new")
+seen_fresh = []
+m_new = types.SimpleNamespace(generate_image_bytes=lambda prompt, aspect, refs, timeout=300, thread_id="": (seen_fresh.append(thread_id), b"img")[1])
+m_old = types.SimpleNamespace(image_request=lambda p, a, r: "REQ " + p,
+                              ask=lambda prompt, **k: (seen_fresh.append(k.get("thread_id")), {"images": [], "text": "Still no."})[1],
+                              MuseError=_NoImg, _no_output_kind=lambda s: "refused",
+                              generate_image_bytes=lambda *a, **k: b"old")
+ok(P.muse_image_fresh(m_new, "p", "9:16", []) == b"img" and seen_fresh == ["new"], "lõi mới: generate_image_bytes(thread_id=\"new\")", seen_fresh)
+try:
+    P.muse_image_fresh(m_old, "p", "9:16", [model_img]); ok(False, "lõi cũ không vẽ → phải nổi lỗi")
+except _NoImg as e:
+    ok(seen_fresh[-1] == "new" and "Still no." in str(e), "lõi cũ: muse.ask(thread_id=\"new\"), không vẽ → lỗi kèm lời Muse", (seen_fresh, str(e)))
 # chọn «3D CG» trong form → thắng kiểu dò được (ảnh giả được tả là ảnh thật)
 P._data_dir = lambda: str(TMP / "pod_style")
 n_img, n_clip = len(img_calls), len(clip_calls)

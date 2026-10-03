@@ -24,7 +24,7 @@ ENGINES = ("chatgpt", "muse", "9router")
 NR_IMAGE_MODEL = "cx/gpt-image-2"
 
 def build_board_prompt(*, title: str, fmt: str, characters: List[Dict], products: List[Dict], environment: str,
-                       shots: List[Dict], aspect: str = "16:9", style: str = "Photorealistic") -> str:
+                       shots: List[Dict], aspect: str = "16:9", style: str = "Photorealistic", camera_style: str = "") -> str:
     """Prompt bảng theo khuôn Pod Studio (zone 1–5), N cut = số clip; mọi câu tiếng Anh (prompt AI luôn tiếng Anh)."""
     n = max(1, len(shots))
     char_lines = "\n".join(f"  - {c.get('name') or 'Character'}: {(c.get('appearance') or c.get('description') or '')[:700]}"
@@ -33,8 +33,11 @@ def build_board_prompt(*, title: str, fmt: str, characters: List[Dict], products
                            for p in products[:2])
     # mỗi cut ghi rõ bắt đầu → kết thúc (10 s): bảng là dòng thời gian cho Muse, cuối cut k = đầu cut k+1
     cut_lines = "\n".join(f"  Cut {i+1} ({(s.get('camera') or 'shot').upper()}): {s.get('scene') or s.get('action') or ''}"
+                          + (f" — ACTION: {s['action']}" if s.get("action") else "")
                           + (f" — STARTS: {s['start']}" if s.get("start") else "") + (f"; ENDS: {s['end']}" if s.get("end") else "")
                           for i, s in enumerate(shots))
+    # Camera plan phải ĐỌC được kiểu quay (user 3/10/2026): nhãn từng máy = cỡ cảnh · ống kính · chuyển động
+    cam_lines = "\n".join(f"  Camera {i+1}: {s.get('camera') or 'medium shot'}" for i, s in enumerate(shots))
     kind = {"ad": "fashion / product ad", "short": "short-form social video", "drama": "short drama"}.get(fmt, "video")
     return (
         f'Create a professional cinematic PRODUCTION DESIGN BOARD for the {kind} "{title}" — a single comprehensive '
@@ -54,8 +57,12 @@ def build_board_prompt(*, title: str, fmt: str, characters: List[Dict], products
         f"{n} sequential cinematic CUTS arranged horizontally (Cut 1 … Cut {n}), each a portrait 9:16 frame of the SAME "
         f"character(s) in the SAME outfit:\n{cut_lines}\n\n"
         "ZONE 4 — FLOOR PLAN + CAMERA PLAN (TOP-DOWN)\nA TOP-DOWN plan of the location: walls, windows, furniture as simple "
-        f"shapes; camera positions as numbered icons (Cut 1 … Cut {n}) with angle arrows and dotted movement paths; the "
-        "character(s) marked with figure icons.\n\n"
+        f"shapes; camera positions as numbered icons (Cut 1 … Cut {n}) with a field-of-view cone (wide lens = wide cone, "
+        "long lens = narrow cone) and a dotted arrow for the move; the character(s) marked with figure icons and their "
+        "walking path. NEXT TO EACH CAMERA a short readable LABEL: \"CUT k · SHOT SIZE · LENS · MOVE\" — use these:\n"
+        f"{cam_lines}\n"
+        + (f"Header line of this zone: \"CAMERA STYLE: {camera_style[:120]}\"\n" if camera_style else "")
+        + "Small legend: shot sizes (WIDE / MEDIUM / CLOSE-UP) and moves (DOLLY, TRACKING, ORBIT, CRANE, PUSH-IN, HANDHELD).\n\n"
         "ZONE 5 — LIGHTING / MOOD / STYLE NOTES\nTitle label: \"4. LIGHTING / MOOD / STYLE NOTES\"\n"
         f"Lighting refs + MOOD for: {environment}\n\n"
         f"VISUAL STYLE: dark navy bg (#0a1628), white text labels, cyan accents. {style} for every still. "
