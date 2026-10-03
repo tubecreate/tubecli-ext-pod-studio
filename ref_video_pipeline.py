@@ -954,7 +954,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                                                  environment=plan["environment"], shots=plan["shots"],
                                                  style="Photorealistic" if style == "photo" and not style_custom
                                                  else f"{style_name(style, style_custom)} (same rendering style as the character reference)"
-                                                 if style == detected or style_custom
+                                                 if style == detected
                                                  else f"{style_name(style, style_custom)} — {STYLE_PRESETS[style]['desc']} "
                                                       "(redraw the reference person in this style)",
                                                  camera_style=plan.get("camera_style") or camera_style_desc(camera_style, fmt))
@@ -1008,12 +1008,15 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style, style_custom, main.get("style", ""))
         # Kiểu hình ĐỔI so với ảnh người mẫu (chọn tay, khác kiểu dò được) → clip chỉ đính khung ĐÃ vẽ theo kiểu mới (+ sản
         # phẩm): chân dung / bảng kiểu cũ kéo video về lại kiểu cũ (demo Người que 3/10/2026 ra ảnh thật).
-        transform = bool(main.get("style")) and style != main.get("style") and not style_custom
+        # Mô tả kiểu riêng (style_custom) với kiểu nền khác ảnh → cũng đổi kiểu (1.3.10: bộ 30 kiểu nghệ thuật của user).
+        transform = bool(main.get("style")) and style != main.get("style")
         ident_clip = ident if not transform else (
             "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n"
-            + f"RENDERING STYLE: {STYLE_PRESETS[style]['name']} — {STYLE_PRESETS[style]['desc']}. The attached first image "
-              "is ALREADY in this style: keep EXACTLY its rendering style, line work and colors in every frame — never turn it "
-              "into a photograph or a 3D render.")
+            + f"RENDERING STYLE: {style_name(style, style_custom)}"
+            + (f" ({STYLE_PRESETS[style]['name']} — {STYLE_PRESETS[style]['desc']})" if style_custom
+               else f" — {STYLE_PRESETS[style]['desc']}")
+            + ". The attached first image is ALREADY in this style: keep EXACTLY its rendering style, line work and colors "
+              "in every frame — never turn it into a photograph or a 3D render.")
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
         # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
         board = ""

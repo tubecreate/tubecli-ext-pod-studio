@@ -344,6 +344,16 @@ ok(len(_r3) == 2 and _r3[0].endswith("clip1_start.jpg") and _r3[1] == prod_img a
    and not any(x.endswith("board_ref.jpg") for x in _r3) and "ALREADY in this style" in clip_calls[n_clip]["prompt"]
    and "Make this shot from CUT" not in clip_calls[n_clip]["prompt"],
    "đổi kiểu so với ảnh (ảnh thật → 3D): clip chỉ đính khung ĐÃ vẽ kiểu mới + sản phẩm, không chân dung / bảng kiểu cũ", _r3)
+# 1.3.10: mô tả kiểu RIÊNG (style_custom) với kiểu nền khác ảnh → cũng đổi kiểu (bộ 30 kiểu nghệ thuật của user 3/10/2026)
+P._data_dir = lambda: str(TMP / "pod_custom")
+n_img, n_clip = len(img_calls), len(clip_calls)
+P.run({**payload, "task_id": "t-custom", "clips": 1, "style": "painting", "style_custom": "Dunhuang mural: mineral pigments on plaster"},
+      lambda *a, **k: None, lambda: False)
+_r4 = clip_calls[n_clip]["refs"]
+ok(len(_r4) == 2 and _r4[0].endswith("clip1_start.jpg") and model_img not in _r4
+   and "RENDERING STYLE: Dunhuang mural: mineral pigments on plaster (painted illustration" in clip_calls[n_clip]["prompt"]
+   and "ALREADY in this style" in clip_calls[n_clip]["prompt"] and "Dunhuang mural" in img_calls[n_img][0],
+   "style_custom + kiểu nền khác ảnh → clip chỉ đính khung kiểu mới, lời xin mang câu tả riêng", (_r4, clip_calls[n_clip]["prompt"][-300:]))
 P._data_dir = lambda: str(TMP / "pod_studio")
 
 print("C2. gom ảnh người mẫu theo thể loại")
