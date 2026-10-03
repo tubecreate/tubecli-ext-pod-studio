@@ -276,12 +276,18 @@ async def save_template(body: SaveTemplate, request: Request):
 # và ghi khoá "cover" vào phần ref_video; GET trả ảnh để Bảng việc / cloud lấy.
 class CoverBody(BaseModel):
     force: bool = False
+    aspect: str = ""        # "" = khung hình của mẫu; "16:9" / "9:16" / "1:1" = bản bìa riêng cho khung đó
 
 
-def _cover_path(P, t: Dict[str, Any]) -> str:
+def _cover_path(P, t: Dict[str, Any], aspect: str = "") -> str:
     import re
     slug = re.sub(r"[^\w-]+", "_", str(t.get("name") or ""), flags=re.UNICODE).strip("_")[:40] or "template"
-    return os.path.join(P._data_dir(), "templates", slug, "cover.jpg")
+    suffix = "" if not aspect or aspect == "9:16" else "_" + aspect.replace(":", "")
+    return os.path.join(P._data_dir(), "templates", slug, f"cover{suffix}.jpg")
+
+
+def _cover_key(aspect: str) -> str:
+    return "cover" if not aspect or aspect == "9:16" else "cover_" + aspect.replace(":", "")
 
 
 @router.post("/ref-video/templates/{key:path}/cover")
@@ -298,12 +304,14 @@ async def template_cover(key: str, request: Request, body: CoverBody = CoverBody
     imgs = [p for p in (v.get("model_images") or []) if isinstance(p, str) and os.path.isfile(p)]
     if not imgs:
         raise HTTPException(400, "This template has no default model photo — a cover needs one.")
-    out = _cover_path(P, t)
+    aspect = body.aspect if body.aspect in P.ASPECTS else (v.get("aspect") if v.get("aspect") in P.ASPECTS else "9:16")
+    want = body.aspect if body.aspect in P.ASPECTS else ""
+    out = _cover_path(P, t, want)
+    url = f"/api/v1/pod_studio/ref-video/templates/{t['id']}/cover" + (f"?aspect={want}" if want else "")
     if os.path.isfile(out) and not body.force:
-        return {"success": True, "path": out, "cached": True, "url": f"/api/v1/pod_studio/ref-video/templates/{t['id']}/cover"}
+        return {"success": True, "path": out, "cached": True, "url": url}
     style = P.resolve_style(v.get("style"), "")
     custom = str(v.get("style_custom") or "")
-    aspect = v.get("aspect") if v.get("aspect") in P.ASPECTS else "9:16"
     preset = P.STYLE_PRESETS[style]
     prompt = (f"A single {P.style_name(style, custom)} {aspect} frame — the cover image of an ad-video template: the person "
               "from the attached reference portrait stands in a setting that fits this style, looks at the camera with a "
@@ -321,19 +329,21 @@ async def template_cover(key: str, request: Request, body: CoverBody = CoverBody
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "wb") as f:
         f.write(data)
-    T.save_section(t["name"], "ref_video", {"cover": out}, origin=ORIGIN)
-    return {"success": True, "path": out, "cached": False, "url": f"/api/v1/pod_studio/ref-video/templates/{t['id']}/cover"}
+    T.save_section(t["name"], "ref_video", {_cover_key(want): out}, origin=ORIGIN)
+    return {"success": True, "path": out, "cached": False, "url": url}
 
 
 @router.get("/ref-video/templates/{key:path}/cover")
-async def template_cover_get(key: str):
+async def template_cover_get(key: str, aspect: str = ""):
     from fastapi.responses import FileResponse
     T = _store()
     t = T.get_template(key) if T else None
     if not t:
         raise HTTPException(404, f"Template «{key}» not found")
     v = T.section_view(t, "ref_video")
-    p = str(v.get("cover") or "") or _cover_path(_pipe(), t)
+    P = _pipe()
+    want = aspect if aspect in P.ASPECTS else ""
+    p = str(v.get(_cover_key(want)) or "") or _cover_path(P, t, want)
     if not os.path.isfile(p):
         raise HTTPException(404, "This template has no cover yet.")
     return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})

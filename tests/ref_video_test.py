@@ -522,6 +522,13 @@ ok(r.status_code == 200 and os.path.isfile(r.json()["path"]) and cv.get("cover")
 ok(c.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={}).json().get("cached") is True, "bìa đã có → không vẽ lại")
 _g = c.get(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover")
 ok(_g.status_code == 200 and _g.headers.get("content-type", "").startswith("image/"), "GET bìa trả ảnh")
+# bản 16:9 riêng (Town có công tắc 9:16 / 16:9): file cover_169.jpg + khoá cover_169, GET ?aspect=16:9
+r169 = c.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={"aspect": "16:9"})
+cv2 = CT.section_view(CT.get_template("Từ task 161"), "ref_video")
+ok(r169.status_code == 200 and r169.json()["path"].endswith("cover_169.jpg") and cv2.get("cover_169") == r169.json()["path"]
+   and cv2.get("cover") != cv2.get("cover_169") and img_calls[-1][1] == "16:9" and "16:9 frame" in img_calls[-1][0]
+   and c.get(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover?aspect=16:9").status_code == 200,
+   "bìa 16:9 riêng: file + khoá cover_169, lời xin khung 16:9, GET ?aspect=16:9", (r169.text[:200], cv2.get("cover_169")))
 ok(c.post("/api/v1/pod_studio/ref-video/templates/tpl_nope/cover", json={}).status_code == 404
    and cg.post(f"/api/v1/pod_studio/ref-video/templates/{tf['id']}/cover", json={}).status_code == 403, "mẫu không có → 404; khách → 403")
 ok(cg.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"name": "x"}).status_code == 403, "khách: from-task → 403")
