@@ -83,11 +83,13 @@ ok("NOT flat 2D anime" in P.style_block("3d") and "semi-realistic 3D CG render" 
    and "real photograph" in P.style_block("photo") and P.style_name("nope") == "photorealistic", "style_block / style_name")
 _sf = next(f for f in P.task_kind_spec()["fields"] if f["key"] == "style")
 ok(_sf["default"] == "auto" and [o["value"] for o in _sf["options"]] == ["auto", "3d", "anime", "photo", "painting", "cinematic",
-   "cartoon", "ink_wash", "color_ink", "illusion_3d", "stick_figure"], "form có ô Kiểu hình (thêm điện ảnh, hoạt hình, thuỷ mặc, mực màu, người que)", _sf["options"])
+   "cartoon", "ink_wash", "color_ink", "illusion_3d", "stick_figure", "craft"], "form có ô Kiểu hình (thêm điện ảnh, hoạt hình, thuỷ mặc, mực màu, người que)", _sf["options"])
 ok(P.art_style("11. ART STYLE: black ink wash painting, sumi-e.") == "ink_wash" and P.art_style("11. ART STYLE: stick figure doodle.") == "stick_figure"
    and P.art_style("11. ART STYLE: colored ink illustration.") == "color_ink" and P.art_style("11. ART STYLE: Pixar-like cartoon.") == "cartoon"
-   and P.art_style("11. ART STYLE: 3D illusion, stepping out of a scroll.") == "illusion_3d",
-   "art_style dò được các kiểu mới")
+   and P.art_style("11. ART STYLE: 3D illusion, stepping out of a scroll.") == "illusion_3d"
+   and P.art_style("11. ART STYLE: needle-felt wool craft photo.") == "craft"
+   and P.art_style("8. CLOTHING: oversized knit cardigan. 11. ART STYLE: semi-realistic 3D CG render.") == "3d",
+   "art_style dò được các kiểu mới (craft không bắt nhầm «knit» trong mục trang phục)")
 ok("Redraw the person from the attached reference portrait IN THIS STYLE" in P.style_block("ink_wash", "", "photo")
    and "the same as the attached reference portrait" in P.style_block("3d", "", "3d"), "kiểu khác ảnh → vẽ lại người theo kiểu mới; cùng kiểu → giữ như ảnh")
 # kiểu quay + giọng trong form và trong mẫu
@@ -176,7 +178,9 @@ sys.modules["tubecli.core.muse"] = muse
 import tubecli.core as _core
 _core.muse = muse
 # giả lập engine vẽ bảng: trả một ảnh thật (bảng đính nguyên vào clip)
+board_prompts = []
 def fake_draw(prompt, refs, out_png, **kw):
+    board_prompts.append(prompt)
     kw["say"]("fake engine") if kw.get("say") else None
     jpg(out_png, (30, 40, 90), (1280, 720)); return {"ok": True, "engine": "fake", "path": out_png, "layout": "chatgpt", "seconds": 1, "tried": []}
 panorama.draw_board = fake_draw
@@ -354,6 +358,15 @@ ok(len(_r4) == 2 and _r4[0].endswith("clip1_start.jpg") and model_img not in _r4
    and "RENDERING STYLE: Dunhuang mural: mineral pigments on plaster (painted illustration" in clip_calls[n_clip]["prompt"]
    and "ALREADY in this style" in clip_calls[n_clip]["prompt"] and "Dunhuang mural" in img_calls[n_img][0],
    "style_custom + kiểu nền khác ảnh → clip chỉ đính khung kiểu mới, lời xin mang câu tả riêng", (_r4, clip_calls[n_clip]["prompt"][-300:]))
+# 1.3.11: kiểu nền TRÙNG kiểu ảnh (3d) nhưng có mô tả riêng (đẳng cự, đất sét…) → vẫn đổi kiểu
+P._data_dir = lambda: str(TMP / "pod_custom2")
+n_img, n_clip = len(img_calls), len(clip_calls)
+P.run({**payload, "task_id": "t-custom2", "clips": 1, "style": "photo", "style_custom": "Isometric 3D miniature diorama look"},
+      lambda *a, **k: None, lambda: False)
+_r5 = clip_calls[n_clip]["refs"]
+ok(len(_r5) == 2 and _r5[0].endswith("clip1_start.jpg") and model_img not in _r5 and "Isometric 3D miniature" in clip_calls[n_clip]["prompt"]
+   and "redraw the reference person in this style" in board_prompts[-1],
+   "style_custom + kiểu nền TRÙNG kiểu ảnh → vẫn đổi kiểu (chỉ khung mới + sản phẩm)", _r5)
 P._data_dir = lambda: str(TMP / "pod_studio")
 
 print("C2. gom ảnh người mẫu theo thể loại")

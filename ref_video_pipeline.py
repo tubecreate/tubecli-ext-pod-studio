@@ -192,8 +192,16 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
                      "desc": "simple stick figures with round heads drawn in thick black marker on a clean white "
                              "background, minimal props, playful doodle animation; the character keeps one or two "
                              "signature traits (hair shape, outfit color) so we know who it is — NOT realistic"},
+    # Chất liệu THỦ CÔNG (1.3.11): nhân vật được làm lại thành vật thể thật — đất sét, len dạ, len móc, giấy cắt, chỉ thêu,
+    # cắt dán — rồi chụp như mô hình thu nhỏ. Mẫu ghi chất liệu cụ thể trong style_custom.
+    "craft": {"name": "handcrafted material art", "label": {"en": "Handcraft (clay, felt, paper)", "vi": "Thủ công (đất sét, len, giấy)"},
+              "desc": "the subject is remade as a physical handcrafted object — clay, felted wool, crocheted yarn, cut paper, "
+                      "embroidery thread or collage — photographed as a real miniature with soft light and shallow depth of "
+                      "field; visible material texture and tiny handmade marks — NOT a drawing, NOT a photo of a real human, "
+                      "NOT a smooth CG render"},
 }
 _STYLE_PATTERNS = (     # thứ tự quan trọng: «anime-styled 3D render» phải ra 3d
+    ("craft", r"\b(?:clay|felted|needle[- ]felt|crochet(?:ed)?|yarn|paper[- ]?cut|papercraft|paper sculpture|embroider(?:y|ed)|collage)\b"),
     ("stick_figure", r"stick[- ]?figure|doodle|người que"),
     ("ink_wash", r"ink[- ]wash|sumi|thu[ỷỷ]\s*mặc|thủy mặc"),
     ("color_ink", r"colou?red ink|ink and watercolou?r|ink illustration|mực màu"),
@@ -954,7 +962,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                                                  environment=plan["environment"], shots=plan["shots"],
                                                  style="Photorealistic" if style == "photo" and not style_custom
                                                  else f"{style_name(style, style_custom)} (same rendering style as the character reference)"
-                                                 if style == detected
+                                                 if style == detected and not style_custom
                                                  else f"{style_name(style, style_custom)} — {STYLE_PRESETS[style]['desc']} "
                                                       "(redraw the reference person in this style)",
                                                  camera_style=plan.get("camera_style") or camera_style_desc(camera_style, fmt))
@@ -1009,7 +1017,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         # Kiểu hình ĐỔI so với ảnh người mẫu (chọn tay, khác kiểu dò được) → clip chỉ đính khung ĐÃ vẽ theo kiểu mới (+ sản
         # phẩm): chân dung / bảng kiểu cũ kéo video về lại kiểu cũ (demo Người que 3/10/2026 ra ảnh thật).
         # Mô tả kiểu riêng (style_custom) với kiểu nền khác ảnh → cũng đổi kiểu (1.3.10: bộ 30 kiểu nghệ thuật của user).
-        transform = bool(main.get("style")) and style != main.get("style")
+        transform = bool(main.get("style")) and (style != main.get("style") or bool(style_custom))
         ident_clip = ident if not transform else (
             "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n"
             + f"RENDERING STYLE: {style_name(style, style_custom)}"
