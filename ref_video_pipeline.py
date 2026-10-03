@@ -524,8 +524,16 @@ def last_frame(video: str, out_jpg: str) -> str:
     return out_jpg
 
 
-def concat(paths: List[str], out: str, subtitles: Optional[List[str]] = None, workdir: str = "") -> str:
-    """Ghép các clip (scale/pad về cỡ clip 1, 24 fps, thiếu tiếng thì chèn im lặng); phụ đề .srt đốt cứng nếu có."""
+WATERMARK_TEXT = "AI · tubecli.app"
+
+
+def concat(paths: List[str], out: str, subtitles: Optional[List[str]] = None, workdir: str = "",
+           watermark: str = "") -> str:
+    """Ghép các clip (scale/pad về cỡ clip 1, 24 fps, thiếu tiếng thì chèn im lặng); phụ đề .srt đốt cứng nếu có.
+
+    watermark: nhãn nhỏ góc trên phải suốt video — BẮT BUỘC với việc thuê trên Town (khách được gửi ảnh người thật,
+    3/10/2026): đốt nhãn hỏng thì NÉM lỗi (việc báo hỏng, khách được hoàn) chứ không giao video thiếu nhãn.
+    Phụ đề hỏng thì vẫn giữ bản không phụ đề như trước."""
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", paths[0]],
                                       capture_output=True, text=True).stdout)
     vs = next(s for s in probe["streams"] if s["codec_type"] == "video")
@@ -541,28 +549,47 @@ def concat(paths: List[str], out: str, subtitles: Optional[List[str]] = None, wo
                   else f"anullsrc=r=48000:cl=stereo,atrim=0:{CLIP_SECONDS}[a{k}]")
         maps += f"[v{k}][a{k}]"
     fc.append(f"{maps}concat=n={len(paths)}:v=1:a=1[v][a]")
-    tmp = out + ".concat.mp4" if subtitles else out
+    subs = [s for s in (subtitles or [])] if subtitles and any(subtitles) else []
+    tmp = out + ".concat.mp4" if (subs or watermark) else out
     _ffmpeg(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
              "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", tmp])
-    if subtitles:
-        # subtitles= cần đường dẫn không có "C:" → chạy trong thư mục dự án với tên tương đối
-        wd = workdir or os.path.dirname(out)
-        srt = os.path.join(wd, "subs.srt")
-        with open(srt, "w", encoding="utf-8") as f:
-            for i, line in enumerate(subtitles):
+    if not (subs or watermark):
+        return out
+    # subtitles= cần đường dẫn không có "C:" → chạy trong thư mục dự án với tên tương đối
+    wd = workdir or os.path.dirname(out)
+
+    def burn(vf: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-vf", vf,
+                               "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-c:a", "copy", "-movflags", "+faststart", out],
+                              cwd=wd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    vf_subs = vf_wm = ""
+    if subs:
+        with open(os.path.join(wd, "subs.srt"), "w", encoding="utf-8") as f:
+            for i, line in enumerate(subs):
                 if not line:
                     continue
                 t0, t1 = i * CLIP_SECONDS + 0.2, (i + 1) * CLIP_SECONDS - 0.2
                 f.write(f"{i+1}\n{_ts(t0)} --> {_ts(t1)}\n{line}\n\n")
-        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp,
-                            "-vf", "subtitles=subs.srt:force_style='FontName=Segoe UI,FontSize=20,Bold=1,Outline=1.5,MarginV=60'",
-                            "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-c:a", "copy", "-movflags", "+faststart", out],
-                           cwd=wd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if r.returncode:
-            logger.warning("subtitles failed (%s) — keeping the version without subtitles", r.stderr[-200:])
-            shutil.move(tmp, out)
-        else:
-            os.remove(tmp)
+        vf_subs = "subtitles=subs.srt:force_style='FontName=Segoe UI,FontSize=20,Bold=1,Outline=1.5,MarginV=60'"
+    if watermark:
+        with open(os.path.join(wd, "wm.srt"), "w", encoding="utf-8") as f:
+            f.write(f"1\n{_ts(0)} --> {_ts(len(paths) * CLIP_SECONDS + 5)}\n{watermark}\n\n")
+        # Alignment theo bảng SSA CŨ (libass dùng cho force_style của .srt): 7 = góc trên phải — 9 là GIỮA-TRÁI
+        # (đo điểm ảnh 3/10/2026, đặt 9 theo bàn phím số ASS là nhãn nằm giữa khung). Chữ trắng mờ ~75 %, viền mảnh.
+        vf_wm = ("subtitles=wm.srt:force_style='FontName=Segoe UI,FontSize=11,Bold=1,PrimaryColour=&H40FFFFFF,"
+                 "OutlineColour=&H80000000,Outline=1,Shadow=0,Alignment=7,MarginR=16,MarginV=14'")
+    r = burn(",".join(x for x in (vf_subs, vf_wm) if x))
+    if r.returncode and vf_subs and vf_wm:
+        logger.warning("subtitles failed (%s) — retrying with the AI label only", r.stderr[-200:])
+        r = burn(vf_wm)
+    if r.returncode:
+        if watermark:
+            raise RuntimeError(f"Could not burn the AI label into the video: {r.stderr[-300:]}")
+        logger.warning("subtitles failed (%s) — keeping the version without subtitles", r.stderr[-200:])
+        shutil.move(tmp, out)
+    else:
+        os.remove(tmp)
     return out
 
 
@@ -806,7 +833,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             fname = f"refvideo_{re.sub(r'[^0-9A-Za-z]', '', task_id)[:12]}_{int(time.time())}.mp4"
             out = os.path.join(_exports_dir(), fname)
             subs = [s["dialogue"] for s in plan["shots"]] if payload.get("subtitles") else None
-            concat(paths, out, subs, workdir=proj)
+            concat(paths, out, subs, workdir=proj, watermark=WATERMARK_TEXT if payload.get("watermark") else "")
             st["final"] = {"path": out, "url": f"/api/v1/pod_studio/export-video/{fname}"}
             save_state(task_id, st)
             try:

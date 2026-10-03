@@ -32,6 +32,8 @@ class RunRequest(BaseModel):
     style: str = "auto"
     style_custom: str = ""
     template: str = ""
+    watermark: Any = False          # nhãn «AI · tubecli.app» — việc thuê trên Town luôn bật
+    hire: str = ""                  # mã việc thuê Town (core/public_hire) — ghi vào origin của task để chủ thấy
     chatgpt_profile: str = ""
     subtitles: Any = False
     title: str = ""
@@ -59,6 +61,12 @@ def _apply_template(req: "RunRequest", P) -> None:
     for k in P.TEMPLATE_KEYS:
         if k not in sent and k in view:
             setattr(req, k, view[k])
+    # NGƯỜI MẪU MẶC ĐỊNH của mẫu (vd cô tóc xanh 3D của task #161): người gọi không gửi ảnh người mẫu nào thì dùng
+    # ảnh của mẫu — việc thuê trên Town: khách chỉ gửi ảnh sản phẩm + thoại. Chỉ nhận file CÓ THẬT trên máy.
+    if not [x for x in (req.model_images or []) if P._resolve_image(x)]:
+        own = [p for p in (view.get("model_images") or []) if isinstance(p, str) and os.path.isfile(p)]
+        if own:
+            req.model_images = own[:P.MAX_MODELS]
 
 
 @router.get("/kind")
@@ -113,7 +121,8 @@ async def run(req: RunRequest, request: Request):
         "character speaks the lines) → join",
     ] + ([""] + [f"- Line: «{l}»" for l in lines] if lines else []))
     task = codex_manager.create_task(
-        goal=goal, title=title[:150], created_by=req.created_by or "user", origin={"extension": "pod_studio"},
+        goal=goal, title=title[:150], created_by=req.created_by or "user",
+        origin={"extension": "pod_studio", **({"hire": req.hire[:16]} if req.hire else {})},
         assignee_type="agent", assignee_id="", assignee_name="Pod Studio", approval_required=False,
         lane="video", hold=bool(req.queue))
     payload: Dict[str, Any] = {
@@ -122,6 +131,7 @@ async def run(req: RunRequest, request: Request):
         "aspect": req.aspect if req.aspect in P.ASPECTS else "9:16", "chatgpt_profile": req.chatgpt_profile or "",
         "style": req.style if req.style in P.STYLE_PRESETS else "auto",
         "style_custom": (req.style_custom or "").strip()[:300], "template": (req.template or "").strip(),
+        "watermark": req.watermark in (True, 1, "1", "true", "on"),
         "subtitles": bool(req.subtitles), "title": title, "language": req.language or "", "board_engines": req.board_engines or "",
     }
     codex_manager.append_event(task["id"], "log", f"Reference video queued: {clips} clip(s), {fmt}", actor=P.ACTOR, data=payload)

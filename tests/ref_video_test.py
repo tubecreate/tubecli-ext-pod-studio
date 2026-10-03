@@ -331,6 +331,34 @@ cg = TestClient(gapp)
 ok(cg.post("/api/v1/pod_studio/ref-video/templates", json={"name": "g", "values": {"format": "ad"}}).status_code == 403
    and cg.post("/api/v1/pod_studio/presets", json={"name": "g", "data": {}}).status_code == 403
    and cg.delete("/api/v1/pod_studio/presets/Edo Nhật").status_code == 403 and CT.get_template("Edo Nhật") is not None, "khách: ghi/xoá mẫu → 403")
+# NGƯỜI MẪU MẶC ĐỊNH của mẫu: không gửi ảnh người mẫu → dùng ảnh của mẫu; việc thuê gắn mã vào origin + nhãn AI
+CT.save_section("Tóc xanh 3D", "ref_video", {"format": "short", "clips": 3, "aspect": "9:16", "style": "3d",
+                                             "model_images": [model_img, str(TMP / "khong-co.jpg")]}, origin="pod_studio")
+created.clear()
+r = c.post("/api/v1/pod_studio/ref-video/run", json={"model_images": [], "product_images": [prod_img], "request": "Áo «Mặc thử nhé»",
+                                                     "template": "Tóc xanh 3D", "hire": "abc123def456", "watermark": True, "created_by": "hire"})
+ev = created.get("event") or {}
+ok(r.status_code == 200 and ev.get("model_images") == [model_img] and ev.get("watermark") is True and ev.get("style") == "3d"
+   and created.get("origin") == {"extension": "pod_studio", "hire": "abc123def456"} and created.get("created_by") == "hire",
+   "mẫu có người mẫu mặc định: chỉ gửi sản phẩm vẫn chạy (file không có bị bỏ) + origin hire + nhãn AI", (r.status_code, ev.get("model_images"), created.get("origin")))
+ok(c.post("/api/v1/pod_studio/ref-video/run", json={"model_images": [], "request": "x", "template": "Edo Nhật"}).status_code == 400,
+   "mẫu KHÔNG có người mẫu + không gửi ảnh → 400")
+# nhãn AI đốt thật bằng ffmpeg (libass) — 2 clip màu 10 s
+wm_dir = TMP / "wm"; wm_dir.mkdir(exist_ok=True)
+v1, v2 = mp4(wm_dir / "a.mp4", "blue"), mp4(wm_dir / "b.mp4", "black")
+outp = str(wm_dir / "out.mp4")
+P.concat([v1, v2], outp, ["Xin chào", ""], workdir=str(wm_dir), watermark=P.WATERMARK_TEXT)
+dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", outp], capture_output=True, text=True).stdout.strip() or 0)
+ok(os.path.isfile(outp) and 19.5 < dur < 20.6 and (wm_dir / "wm.srt").read_text(encoding="utf-8").count("AI · tubecli.app") == 1
+   and not os.path.exists(outp + ".concat.mp4"), "concat + nhãn AI + phụ đề: ra 20 s, file tạm dọn", dur)
+# vùng góc trên phải sáng hơn nền đen của clip 2 (có chữ nhãn), góc trên trái thì không
+fr = str(wm_dir / "f.png")
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "15", "-i", outp, "-frames:v", "1", fr], check=True)
+from PIL import Image as _ImW
+_im = _ImW.open(fr).convert("L"); _w, _h = _im.size
+_tr = max(_im.crop((int(_w * 0.55), 0, _w, int(_h * 0.12))).getdata())
+_tl = max(_im.crop((0, 0, int(_w * 0.4), int(_h * 0.12))).getdata())
+ok(_tr > 120 and _tl < 40, "nhãn nằm góc trên phải (đo điểm ảnh khung giây 15)", (_tr, _tl))
 # câu tả kiểu riêng (từ mẫu) đi vào prompt
 ok(P.style_name("painting", "Japanese Edo Watercolor") == "Japanese Edo Watercolor" and "RENDERING STYLE: Japanese Edo Watercolor (painted illustration" in P.style_block("painting", "Japanese Edo Watercolor"),
    "style_custom vào RENDERING STYLE + khung đầu")
