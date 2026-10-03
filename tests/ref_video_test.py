@@ -83,9 +83,10 @@ ok("NOT flat 2D anime" in P.style_block("3d") and "semi-realistic 3D CG render" 
    and "real photograph" in P.style_block("photo") and P.style_name("nope") == "photorealistic", "style_block / style_name")
 _sf = next(f for f in P.task_kind_spec()["fields"] if f["key"] == "style")
 ok(_sf["default"] == "auto" and [o["value"] for o in _sf["options"]] == ["auto", "3d", "anime", "photo", "painting", "cinematic",
-   "cartoon", "ink_wash", "color_ink", "stick_figure"], "form có ô Kiểu hình (thêm điện ảnh, hoạt hình, thuỷ mặc, mực màu, người que)", _sf["options"])
+   "cartoon", "ink_wash", "color_ink", "illusion_3d", "stick_figure"], "form có ô Kiểu hình (thêm điện ảnh, hoạt hình, thuỷ mặc, mực màu, người que)", _sf["options"])
 ok(P.art_style("11. ART STYLE: black ink wash painting, sumi-e.") == "ink_wash" and P.art_style("11. ART STYLE: stick figure doodle.") == "stick_figure"
-   and P.art_style("11. ART STYLE: colored ink illustration.") == "color_ink" and P.art_style("11. ART STYLE: Pixar-like cartoon.") == "cartoon",
+   and P.art_style("11. ART STYLE: colored ink illustration.") == "color_ink" and P.art_style("11. ART STYLE: Pixar-like cartoon.") == "cartoon"
+   and P.art_style("11. ART STYLE: 3D illusion, stepping out of a scroll.") == "illusion_3d",
    "art_style dò được các kiểu mới")
 ok("Redraw the person from the attached reference portrait IN THIS STYLE" in P.style_block("ink_wash", "", "photo")
    and "the same as the attached reference portrait" in P.style_block("3d", "", "3d"), "kiểu khác ảnh → vẽ lại người theo kiểu mới; cùng kiểu → giữ như ảnh")

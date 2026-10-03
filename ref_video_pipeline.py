@@ -180,6 +180,14 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
     "color_ink": {"name": "colored ink illustration", "label": {"en": "Colored ink", "vi": "Mực màu"},
                   "desc": "loose ink line drawing with transparent colored-ink washes that bleed at the edges, visible "
                           "paper texture, limited harmonious palette — NOT a photograph, NOT 3D"},
+    # «3D Illusion» (user 3/10/2026, thử với nữ kiếm khách cổ trang): nhân vật BƯỚC RA khỏi một khung phẳng — tranh treo,
+    # khung ảnh, màn hình — phần đã ra ngoài là 3D thật có bóng đổ, phần trong khung vẫn là tranh phẳng.
+    "illusion_3d": {"name": "3D illusion (stepping out of the frame)", "label": {"en": "3D Illusion", "vi": "3D Illusion"},
+                    "desc": "game-cinematic 3D CG character in a forced-perspective illusion: they break out of a flat "
+                            "frame — a hanging scroll painting, a framed picture or a screen — part of the body and "
+                            "costume already crossing the frame edge into real space with correct contact shadows and "
+                            "depth, while what is still inside the frame stays a flat painted picture; volumetric soft "
+                            "shading, individually rendered hair strands — NOT a flat illustration, NOT a real photograph"},
     "stick_figure": {"name": "minimal stick-figure doodle", "label": {"en": "Stick figure", "vi": "Người que"},
                      "desc": "simple stick figures with round heads drawn in thick black marker on a clean white "
                              "background, minimal props, playful doodle animation; the character keeps one or two "
@@ -189,6 +197,7 @@ _STYLE_PATTERNS = (     # thứ tự quan trọng: «anime-styled 3D render» ph
     ("stick_figure", r"stick[- ]?figure|doodle|người que"),
     ("ink_wash", r"ink[- ]wash|sumi|thu[ỷỷ]\s*mặc|thủy mặc"),
     ("color_ink", r"colou?red ink|ink and watercolou?r|ink illustration|mực màu"),
+    ("illusion_3d", r"3d illusion|pop[- ]?out|out of (?:the )?frame"),
     ("3d", r"\b3d\b|\bcg\b|cgi|render|video game|game[- ](?:style|cinematic|character)|unreal|octane"),
     ("anime", r"anime|manga|cel[- ]shad|2d|line art|illustrat|drawn"),
     ("cartoon", r"cartoon|animated feature|pixar"),
