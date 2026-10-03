@@ -191,6 +191,8 @@ ok(len(clip_calls) == 2 and clip_calls[1]["thread"] == "T-1" and "tubecli.app" i
    and "Nobody speaks" in clip_calls[0]["prompt"], "clip 1 im, clip 2 nói; cùng chat; khối IDENTITY", [c["prompt"][:80] for c in clip_calls])
 ok(len(clip_calls[1]["refs"]) == 3 and clip_calls[1]["refs"][0].endswith("clip1_last.jpg") and clip_calls[1]["refs"][1] == model_img
    and clip_calls[1]["refs"][2].endswith("board_ref.jpg"), "clip 2 refs = KHUNG CUỐI clip 1 (nguyên, không vẽ lại) + chân dung + BẢNG nguyên (bản JPEG nhẹ)", clip_calls[1]["refs"])
+ok("ONLY the very first instant (0 s) of this shot: at the window, facing the hall" in img_calls[0][0]
+   and "has NOT happened yet" in img_calls[0][0], "khung đầu vẽ TRẠNG THÁI GIÂY 0 (start), không vẽ cả diễn biến", img_calls[0][0][:200])
 ok(len(img_calls) == 1 and img_calls[0][2][0] == model_img and img_calls[0][2][1] == prod_img and img_calls[0][2][2].endswith("board_ref.jpg"),
    "chỉ khung đầu clip 1 vẽ: chân dung + sản phẩm + bảng", [c[2] for c in img_calls])
 from PIL import Image as _ImS

@@ -1031,7 +1031,13 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                         # «it's the same request I've already declined») — khung đầu không cần ngữ cảnh cũ nào.
                         data = muse_image_fresh(
                             muse,
-                            f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
+                            # Khung đầu = TRẠNG THÁI Ở GIÂY 0, không phải cả diễn biến (demo 3D Illusion cổ trang 3/10/2026:
+                            # câu tả «bước ra khỏi tranh» → Muse vẽ luôn lúc đã ra ngoài, clip mất đúng khoảnh khắc bước ra).
+                            (f"A single {style_name(style, style_custom)} {aspect} frame showing ONLY the very first instant "
+                             f"(0 s) of this shot: {shot['start']} What happens later in the shot ({shot['scene']}) has NOT "
+                             "happened yet in this frame. " if shot.get("start") else
+                             f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} ")
+                            + "The person must be the SAME individual as in the "
                             "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
                             + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
                     except Exception as e:      # noqa: BLE001
