@@ -330,6 +330,11 @@ n_img, n_clip = len(img_calls), len(clip_calls)
 P.run({**payload, "task_id": "t-3d", "clips": 1, "style": "3d"}, lambda *a, **k: None, lambda: False)
 ok(img_calls[n_img][0].startswith("A single semi-realistic 3D CG render 9:16 frame") and "NOT flat 2D anime" in clip_calls[n_clip]["prompt"]
    and P.load_state("t-3d")["models"][0]["style"] == "photo", "style=3d trong form: khung đầu + clip theo 3D, kiểu dò được vẫn lưu", img_calls[n_img][0][:70])
+_r3 = clip_calls[n_clip]["refs"]
+ok(len(_r3) == 2 and _r3[0].endswith("clip1_start.jpg") and _r3[1] == prod_img and model_img not in _r3
+   and not any(x.endswith("board_ref.jpg") for x in _r3) and "ALREADY in this style" in clip_calls[n_clip]["prompt"]
+   and "Make this shot from CUT" not in clip_calls[n_clip]["prompt"],
+   "đổi kiểu so với ảnh (ảnh thật → 3D): clip chỉ đính khung ĐÃ vẽ kiểu mới + sản phẩm, không chân dung / bảng kiểu cũ", _r3)
 P._data_dir = lambda: str(TMP / "pod_studio")
 
 print("C2. gom ảnh người mẫu theo thể loại")

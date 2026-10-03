@@ -1,7 +1,7 @@
 {
     "name": "pod_studio",
     "display_name": "POD Ad Studio",
-    "version": "1.3.7",
+    "version": "1.3.8",
     "description": "AI POD Video Ad Studio — Script writing, product/model extraction, shot-to-shot storyboard generation for POD videos; Codex pipe «Video from reference images» (Scene Panorama → Muse clips)",
     "author": "TubeCreate",
     "entry": "extension.py",

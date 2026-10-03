@@ -997,6 +997,14 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
         style = resolve_style(payload.get("style"), main.get("style"))
         # Nhận dạng = ảnh + mô tả NGƯỜI DÙNG đưa vào (bảng nhân vật rút từ chính ảnh đó); bảng panorama không dính tới nhận dạng.
         ident = "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n" + style_block(style, style_custom, main.get("style", ""))
+        # Kiểu hình ĐỔI so với ảnh người mẫu (chọn tay, khác kiểu dò được) → clip chỉ đính khung ĐÃ vẽ theo kiểu mới (+ sản
+        # phẩm): chân dung / bảng kiểu cũ kéo video về lại kiểu cũ (demo Người que 3/10/2026 ra ảnh thật).
+        transform = bool(main.get("style")) and style != main.get("style") and not style_custom
+        ident_clip = ident if not transform else (
+            "\n\n".join(identity_block(c["name"], c.get("appearance", ""), request) for c in models[:2]) + "\n"
+            + f"RENDERING STYLE: {STYLE_PRESETS[style]['name']} — {STYLE_PRESETS[style]['desc']}. The attached first image "
+              "is ALREADY in this style: keep EXACTLY its rendering style, line work and colors in every frame — never turn it "
+              "into a photograph or a 3D render.")
         # Bảng panorama gửi NGUYÊN cho Muse làm tham chiếu bối cảnh + storyboard, chỉ cần nói làm clip từ CUT nào — không cắt
         # (user 2/10/2026: "bản thân cái panorama là tham chiếu rồi, chỉ là Muse chưa biết làm video từ đoạn nào").
         board = ""
@@ -1021,6 +1029,8 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
             # mọi clip (neo danh tính + kiểu vẽ); ảnh thứ 3 = nhân vật 2 (nếu có trong cảnh) hoặc BẢNG hoặc sản phẩm.
             scene = (board_block(i, aspect) if board else "") + scene_block(plan, st.get("board_notes") or {}, i, n)
             third = [cast[1]["image"]] if len(cast) > 1 else ([board] if board else ([products[0]["image"]] if products else []))
+            clip_scene = scene if not transform else scene_block(plan, st.get("board_notes") or {}, i, n)
+            clip_extra = ([products[0]["image"]] if products else []) if transform else [cast[0]["image"]] + third
             if i == 1:
                 startf = os.path.join(proj, "clip1_start.jpg")
                 if not os.path.isfile(startf):
@@ -1059,9 +1069,9 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                         say("clips", "First frame drawn on the second try")
                     with open(startf, "wb") as f:
                         f.write(data)
-                refs = [startf, cast[0]["image"]] + third
+                refs = [startf] + clip_extra
             else:
-                refs = [last_frame(clips[str(i - 1)]["path"], os.path.join(proj, f"clip{i-1}_last.jpg")), cast[0]["image"]] + third
+                refs = [last_frame(clips[str(i - 1)]["path"], os.path.join(proj, f"clip{i-1}_last.jpg"))] + clip_extra
             say("clips", f"Clip {i}/{n}: {shot['title']}" + (f" — says «{shot['dialogue'][:60]}»" if shot["dialogue"] else ""),
                 progress=int((i - 1) / n * 100))
             prompt = (f"{shot['scene']} Camera: {shot['camera']}. "
@@ -1069,7 +1079,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                                      (st.get("voices") or {}).get(cast[0]["name"], "")
                                      + (" It must sound like the SAME speaker as in the earlier clips of this chat." if spoke else ""))
                          if shot["dialogue"] else SILENT_BLOCK)
-                      + "\n\n" + scene + "\n\n" + ident)
+                      + "\n\n" + clip_scene + "\n\n" + ident_clip)
             t0 = time.time()
             for attempt in (1, 2):
                 try:
