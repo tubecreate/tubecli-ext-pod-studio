@@ -359,6 +359,25 @@ _im = _ImW.open(fr).convert("L"); _w, _h = _im.size
 _tr = max(_im.crop((int(_w * 0.55), 0, _w, int(_h * 0.12))).getdata())
 _tl = max(_im.crop((0, 0, int(_w * 0.4), int(_h * 0.12))).getdata())
 ok(_tr > 120 and _tl < 40, "nhãn nằm góc trên phải (đo điểm ảnh khung giây 15)", (_tr, _tl))
+# «lưu mẫu từ task»: kiểu/thể loại/số clip/khung theo payload lúc xếp task, người mẫu CHÉP riêng vào thư mục mẫu
+P._data_dir = lambda: str(TMP / "pod_studio")
+P.save_state("task-ft-1", {"intake": True, "final": {"path": "x.mp4"},
+                           "models": [{"name": "Model", "image": model_img, "images": [model_img], "style": "anime"}]})
+
+
+class _CM2:
+    def get_events(self, tid, limit=0):
+        return [{"kind": "log", "data": {"kind": P.KIND, "format": "short", "clips": 3, "aspect": "9:16", "style": "3d",
+                                          "style_custom": "", "subtitles": False}}] if tid == "task-ft-1" else []
+cm_mod.codex_manager = _CM2()
+r = c.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"task_id": "latest", "name": "Từ task 161"})
+tf = CT.get_template("Từ task 161")
+rv = CT.section_view(tf, "ref_video") if tf else {}
+ok(r.status_code == 200 and r.json()["task_id"] == "task-ft-1" and rv.get("style") == "3d" and rv.get("format") == "short"
+   and rv.get("clips") == 3 and len(rv.get("model_images") or []) == 1 and os.path.isfile(rv["model_images"][0])
+   and rv["model_images"][0] != model_img and "templates" in rv["model_images"][0], "from-task (latest): kiểu 3d theo payload, người mẫu chép riêng", (r.status_code, rv))
+ok(c.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"task_id": "khong-co", "name": "x"}).status_code == 404, "task không có → 404")
+ok(cg.post("/api/v1/pod_studio/ref-video/templates/from-task", json={"name": "x"}).status_code == 403, "khách: from-task → 403")
 # câu tả kiểu riêng (từ mẫu) đi vào prompt
 ok(P.style_name("painting", "Japanese Edo Watercolor") == "Japanese Edo Watercolor" and "RENDERING STYLE: Japanese Edo Watercolor (painted illustration" in P.style_block("painting", "Japanese Edo Watercolor"),
    "style_custom vào RENDERING STYLE + khung đầu")

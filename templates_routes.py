@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -126,6 +126,91 @@ async def template_options():
             opts.append({"value": t["name"], "label": t["name"], "origin": t.get("origin") or "",
                          "fills": fills_of(T.section_view(t, "ref_video"))})
     return {"options": opts}
+
+
+class FromTask(BaseModel):
+    task_id: str = "latest"
+    name: str
+    include_model: bool = True
+
+
+def _latest_task(P) -> str:
+    """Task «Video từ ảnh tham chiếu» gần nhất ĐÃ ra video (thư mục dự án có state.json với final)."""
+    root = os.path.join(P._data_dir(), "ref_video")
+    best, best_t = "", 0.0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return ""
+    for n in names:
+        p = os.path.join(root, n, "state.json")
+        try:
+            t = os.path.getmtime(p)
+            with open(p, encoding="utf-8") as f:
+                if t > best_t and (json.load(f) or {}).get("final"):
+                    best, best_t = n, t
+        except (OSError, ValueError):
+            continue
+    return best
+
+
+def _task_payload(P, task_id: str) -> Dict[str, Any]:
+    """Payload lúc xếp task (event `log` mang kind pod_studio.video trên Bảng việc) — kiểu hình/thể loại người gọi chọn."""
+    try:
+        from tubecli.extensions.codex.manager import codex_manager
+        for ev in reversed(codex_manager.get_events(task_id, limit=0) or []):
+            d = ev.get("data") if isinstance(ev, dict) else None
+            if isinstance(d, dict) and d.get("kind") == P.KIND:
+                return d
+    except Exception as e:      # noqa: BLE001
+        logger.warning("from-task: events of %s: %s", task_id, e)
+    return {}
+
+
+@router.post("/ref-video/templates/from-task")
+async def template_from_task(body: FromTask, request: Request):
+    """Lưu MẪU từ một task đã chạy (mặc định: task gần nhất ra video) — kiểu hình, thể loại, số clip, khung hình và
+    NGƯỜI MẪU của task (ảnh chép riêng vào thư mục mẫu: dọn kho ảnh không làm mẫu mất người mẫu). Dùng cho việc thuê
+    trên Town (khách chỉ gửi ảnh sản phẩm) và cho Codex ChatGPT trên VPS (user 3/10/2026)."""
+    _deny_guest(request)
+    T = _store()
+    if T is None:
+        raise HTTPException(501, "This TubeCLI core has no shared template store — update TubeCLI.")
+    P = _pipe()
+    name = _name(body.name)
+    tid = (body.task_id or "").strip()
+    if tid in ("", "latest"):
+        tid = _latest_task(P)
+        if not tid:
+            raise HTTPException(404, "No finished «Video from reference images» task yet.")
+    st = P.load_state(tid)
+    if not st.get("intake"):
+        raise HTTPException(404, f"Task {tid} has no reference-video project on this machine.")
+    pay = _task_payload(P, tid)
+    model = (st.get("models") or [{}])[0]
+    style = pay.get("style") if pay.get("style") in P.STYLE_PRESETS else (model.get("style") if model.get("style") in P.STYLE_PRESETS else "auto")
+    data: Dict[str, Any] = {
+        "format": pay.get("format") if pay.get("format") in P.FORMATS else "ad",
+        "clips": max(1, min(P.MAX_CLIPS, int(pay.get("clips") or len(st.get("clips") or {}) or 3))),
+        "aspect": pay.get("aspect") if pay.get("aspect") in P.ASPECTS else "9:16",
+        "style": style, "style_custom": str(pay.get("style_custom") or "")[:300],
+        "subtitles": bool(pay.get("subtitles")),
+    }
+    copied: List[str] = []
+    if body.include_model:
+        import re
+        import shutil
+        slug = re.sub(r"[^\w-]+", "_", name, flags=re.UNICODE).strip("_")[:40] or "template"
+        dst_dir = os.path.join(P._data_dir(), "templates", slug)
+        os.makedirs(dst_dir, exist_ok=True)
+        for i, src in enumerate([p for p in (model.get("images") or [model.get("image")]) if p and os.path.isfile(p)][:P.MAX_MODELS], 1):
+            dst = os.path.join(dst_dir, f"model_{i}{os.path.splitext(src)[1].lower() or '.jpg'}")
+            shutil.copyfile(src, dst)
+            copied.append(dst)
+        data["model_images"] = copied
+    t = T.save_section(name, "ref_video", data, origin=ORIGIN)
+    return {"success": True, "task_id": tid, "template": {"id": t["id"], "name": t["name"], "model_images": len(copied),
+                                                          "fills": fills_of(T.section_view(t, "ref_video"))}}
 
 
 class SaveTemplate(BaseModel):
