@@ -130,6 +130,15 @@ ok(len(plan["shots"]) == 3 and plan["shots"][0]["dialogue"] == "Xin chào" and p
    "LLM trả 2/3 → bù đủ 3, giữ thoại", plan["shots"])
 ok(plan["shots"][1]["start"] == "she stops by the window, camera close" and plan["shots"][2]["start"] == "she smiles at the window",
    "END cảnh k = START cảnh k+1 (LLM bỏ trống start → chép end cảnh trước; cảnh bù đứng yên ở end)", [(s["start"], s["end"]) for s in plan["shots"]])
+_seen_user = []
+P._llm = lambda messages, max_tokens=1800: (_seen_user.append(messages[1]["content"]), json.dumps({"title": "T", "environment": "e", "shots": [
+    {"title": "A", "scene": "s", "camera": "wide", "action": "a", "start": "x", "end": "y", "speaker": "Character 2", "dialogue": "Xin chào"}]}))[1]
+P.plan_shots(fmt="drama", request="cô gái nói «Xin chào»", n=1, products=[], say=lambda m: None,
+             characters=[{"name": "Character 1", "gender": "male", "appearance": "10. OVERALL AESTHETIC: young man, ~20yo"},
+                         {"name": "Character 2", "gender": "female", "appearance": "10. OVERALL AESTHETIC: young woman, ~19yo"}])
+ok("Character 1 (young adult (about 20) man)" in _seen_user[0] and "Character 2 (young adult (about 19) woman)" in _seen_user[0]
+   and "Give each line to the character the request says speaks it" in _seen_user[0],
+   "2 nhân vật: câu lệnh viết cảnh ghi giới tính + tuổi từng người và luật giao câu thoại đúng người", _seen_user[0][:300])
 tpl = P.template_shots("short", "x", "M", "", 3)
 ok(all(s["start"] and s["end"] for s in tpl["shots"]) and tpl["shots"][1]["start"] == tpl["shots"][0]["end"], "khuôn mẫu cũng có start/end nối nhau")
 P._llm = lambda messages, max_tokens=1800: (_ for _ in ()).throw(RuntimeError("down"))

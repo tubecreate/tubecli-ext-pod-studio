@@ -561,8 +561,17 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         "\"speaker\": str (character name or \"\"), \"dialogue\": str}]}"
     )
     sys_prompt = sys_prompt.replace("{camera}", camera_style_desc(camera_style, fmt))
-    user = (f"Format: {fmt}. Number of shots: EXACTLY {n}.\nCharacters: {', '.join(names)}.\nProducts: {prod}.\n"
-            f"Request from the user (may include the lines to say):\n{request.strip()}")
+    # Ai là ai: giới tính + tuổi cạnh TÊN nhân vật. Demo 2 người (3/10/2026) chỉ đưa «Character 1, Character 2» →
+    # câu «cô gái nói…» giao nhầm cho chàng trai, câu đáp của chàng trai giao cho cô gái (nhép môi + giọng sai người).
+    def who(c):
+        g = {"female": "woman", "male": "man"}.get(c.get("gender", ""), "")
+        bits = [b for b in (age_phrase(c.get("appearance", "")) + (" " + g if g else ""),) if b.strip()]
+        return f"{c['name']} ({', '.join(bits)})" if bits else c["name"]
+    cast = ", ".join(who(c) for c in characters) or names[0]
+    user = (f"Format: {fmt}. Number of shots: EXACTLY {n}.\nCharacters: {cast}.\n"
+            + ("Give each line to the character the request says speaks it (match by gender and role, e.g. "
+               "«the girl says» → the woman). \n" if len(characters) > 1 else "")
+            + f"Products: {prod}.\nRequest from the user (may include the lines to say):\n{request.strip()}")
     plan = None
     try:
         text = _llm([{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}])
