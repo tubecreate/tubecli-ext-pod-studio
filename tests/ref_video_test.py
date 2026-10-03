@@ -380,6 +380,16 @@ ok(r.status_code == 200 and r.json()["template"]["fills"]["style"] == "3d", "«L
 tv = CT.get_template("Tóc xanh 3D")
 ok(tv["sections"]["ref_video"]["data"] == {"format": "short", "clips": 3, "aspect": "9:16", "style": "3d", "style_custom": "", "subtitles": False},
    "chỉ lưu các ô mẫu quản (không lưu yêu cầu/ảnh), ép kiểu số", tv["sections"]["ref_video"]["data"])
+# mỗi kiểu hình một mẫu (user 3/10/2026): mẫu mang kiểu quay, kiểu giọng, người mẫu MẶC ĐỊNH (ảnh chép vào thư mục mẫu)
+r = c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "Thuỷ mặc", "values": {
+    "style": "ink_wash", "clips": 1, "camera_style": "cinematic", "voice": "warm", "voice_custom": "giọng Huế nhẹ",
+    "model_images": [model_img, "/khong/co.jpg"]}})
+tm = CT.section_view(CT.get_template("Thuỷ mặc"), "ref_video") if r.status_code == 200 else {}
+ok(r.status_code == 200 and tm.get("style") == "ink_wash" and tm.get("camera_style") == "cinematic" and tm.get("voice") == "warm"
+   and tm.get("voice_custom") == "giọng Huế nhẹ" and len(tm.get("model_images") or []) == 1
+   and os.path.isfile(tm["model_images"][0]) and tm["model_images"][0] != model_img,
+   "lưu mẫu: kiểu quay + kiểu giọng + người mẫu mặc định (ảnh không có thật thì bỏ)", (r.text[:200], tm))
+ok(next(f for f in P.task_kind_spec()["fields"] if f["key"] == "clips")["default"] == 1, "form mặc định MỘT clip 10 s")
 ok(c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "x", "values": {}}).status_code == 400
    and c.post("/api/v1/pod_studio/ref-video/templates", json={"name": " ", "values": {"format": "ad"}}).status_code == 400
    and c.post("/api/v1/pod_studio/ref-video/templates", json={"name": "x", "values": {"clips": "abc"}}).status_code == 400, "lỗi đầu vào → 400")

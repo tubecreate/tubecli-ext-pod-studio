@@ -27,7 +27,7 @@ class RunRequest(BaseModel):
     product_images: List[Any] = []
     request: str = ""
     format: str = "ad"
-    clips: Any = 3
+    clips: Any = 1                  # mặc định MỘT clip 10 s — user 3/10/2026: dài hơn thì người dùng tự tăng
     aspect: str = "9:16"
     style: str = "auto"
     style_custom: str = ""
@@ -111,7 +111,7 @@ async def run(req: RunRequest, request: Request):
         raise HTTPException(400, "The codex extension is required to run pipelines.")
     fmt = req.format if req.format in P.FORMATS else "ad"
     try:
-        clips = max(1, min(P.MAX_CLIPS, int(req.clips or 3)))
+        clips = max(1, min(P.MAX_CLIPS, int(req.clips or 1)))
     except (TypeError, ValueError):
         clips = 3
     title = (req.title or req.request.strip().split("\n")[0][:60]).strip()

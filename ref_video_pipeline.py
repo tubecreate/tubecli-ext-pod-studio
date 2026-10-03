@@ -834,7 +834,7 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
     proj = _project_dir(task_id)
     fmt = str(payload.get("format") or "ad").lower()
     fmt = fmt if fmt in FORMATS else "ad"
-    n = max(1, min(MAX_CLIPS, int(payload.get("clips") or 3)))
+    n = max(1, min(MAX_CLIPS, int(payload.get("clips") or 1)))
     aspect = str(payload.get("aspect") or "9:16")
     aspect = aspect if aspect in ASPECTS else "9:16"
     request = str(payload.get("request") or "").strip()
@@ -1151,7 +1151,7 @@ def task_kind_spec() -> Dict[str, Any]:
             {"key": "format", "type": "select", "default": "ad", "label": L("Format", "Thể loại"),
              "options": [{"value": "ad", "label": L("Ad", "Quảng cáo")}, {"value": "short", "label": L("Short video", "Video ngắn")},
                          {"value": "drama", "label": L("Drama scene", "Drama")}]},
-            {"key": "clips", "type": "number", "default": 3, "min": 1, "max": MAX_CLIPS,
+            {"key": "clips", "type": "number", "default": 1, "min": 1, "max": MAX_CLIPS,
              "label": L("Clips (×10 s)", "Số clip (×10 s)")},
             {"key": "aspect", "type": "select", "default": "9:16", "label": L("Aspect ratio", "Khung hình"),
              "options": [{"value": "9:16", "label": "9:16"}, {"value": "16:9", "label": "16:9"}, {"value": "1:1", "label": "1:1"}]},

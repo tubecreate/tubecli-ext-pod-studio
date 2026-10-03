@@ -242,7 +242,30 @@ async def save_template(body: SaveTemplate, request: Request):
         data["style_custom"] = str(v.get("style_custom") or "").strip()[:300]
     if "subtitles" in v:
         data["subtitles"] = v["subtitles"] in (True, 1, "1", "true", "on")
+    # Pod 1.3.3: kiểu quay + kiểu giọng nằm trong mẫu (TEMPLATE_KEYS); lõi/pipe cũ không có thì bỏ qua.
+    if "camera_style" in v:
+        data["camera_style"] = v["camera_style"] if v["camera_style"] in getattr(P, "CAMERA_STYLES", {}) else "auto"
+    if "voice" in v:
+        data["voice"] = v["voice"] if v["voice"] in getattr(P, "VOICE_PRESETS", {}) else "auto"
+    if "voice_custom" in v:
+        data["voice_custom"] = str(v.get("voice_custom") or "").strip()[:200]
+    name = _name(body.name)
+    # Người mẫu MẶC ĐỊNH của mẫu (user 3/10/2026: «mỗi style là 1 template»): ảnh chép riêng vào thư mục mẫu như
+    # from-task — dọn kho ảnh không làm mẫu mất người mẫu. Nhận đường dẫn / URL gallery / {url, filepath}.
+    if isinstance(v.get("model_images"), list):
+        import re
+        import shutil
+        slug = re.sub(r"[^\w-]+", "_", name, flags=re.UNICODE).strip("_")[:40] or "template"
+        dst_dir = os.path.join(P._data_dir(), "templates", slug)
+        os.makedirs(dst_dir, exist_ok=True)
+        copied: List[str] = []
+        for i, src in enumerate([s for s in (P._resolve_image(x) for x in v["model_images"]) if s][:P.MAX_MODELS], 1):
+            dst = os.path.join(dst_dir, f"model_{i}{os.path.splitext(src)[1].lower() or '.jpg'}")
+            if os.path.abspath(src) != os.path.abspath(dst):
+                shutil.copyfile(src, dst)
+            copied.append(dst)
+        data["model_images"] = copied
     if not data:
         raise HTTPException(400, "Nothing to save — the template needs at least one setting.")
-    t = T.save_section(_name(body.name), "ref_video", data, origin=ORIGIN)
+    t = T.save_section(name, "ref_video", data, origin=ORIGIN)
     return {"success": True, "template": {"id": t["id"], "name": t["name"], "fills": fills_of(T.section_view(t, "ref_video"))}}
