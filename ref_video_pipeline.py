@@ -405,6 +405,30 @@ def _parse_json(text: str):
     return None
 
 
+# Trang phục do bước viết cảnh TỰ CHẾ (việc thuê #164, 3/10/2026: «đi trên đường làng việt nam» → «wearing an elegant
+# flowing áo dài» trong khi ảnh người mẫu mặc đồ khác) → khung vẽ mang HAI bộ đồ, Muse không chịu vẽ. Luật WARDROBE
+# trong câu lệnh là lớp một; đây là lớp hai, chắc ăn: khách KHÔNG nhắc tới trang phục thì lột cụm «wearing …» khỏi
+# kịch bản cảnh — trang phục chỉ còn đến từ ảnh tham chiếu (khoá nhận dạng). Cụm nói tới sản phẩm thì giữ.
+_GARMENT = (r"(?:áo dài|ao dai|dress|gown|outfit|suit|skirt|shirt|blouse|top|jacket|coat|kimono|hanbok|qipao|"
+            r"cheongsam|uniform|clothes|clothing|attire|robe|sari|saree|hoodie|sweater|jeans|pants|trousers|shorts|"
+            r"bikini|swimsuit|costume|tunic|vest|áo|váy|boots?|shoes?|heels|sneakers|sandals|hat|scarf|gloves|"
+            r"stockings|socks|belt|headband|veil|necklace|earrings)")
+# «wearing a red dress and black boots, with a gold necklace» — cả chuỗi món nối bằng and/with/dấu phẩy
+_WEAR_RE = re.compile(r",?\s*\b(?:wearing|dressed in|clad in)\s+(?:[\w'’-]+\s+){0,6}?" + _GARMENT
+                      + r"\b(?:\s*(?:,\s*)?(?:with|and)\s+(?:[\w'’-]+\s+){0,4}?" + _GARMENT + r"\b){0,4}", re.I)
+_ASKS_WARDROBE_RE = re.compile(r"\b(?:wear|wears|wearing|outfit|dress|clothes|costume|áo|váy|quần|mặc|trang phục)\b", re.I)
+
+
+def strip_wardrobe(text: str, request: str = "") -> str:
+    """Lột trang phục tự chế khỏi một câu tả cảnh — trừ khi khách tự nói về trang phục."""
+    if not text or _ASKS_WARDROBE_RE.search(request or ""):
+        return text
+
+    def cut(m):
+        return m.group(0) if re.search(r"\b(?:product|attached)\b", m.group(0), re.I) else ""
+    return re.sub(r"\s{2,}", " ", _WEAR_RE.sub(cut, text)).strip()
+
+
 def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List[Dict], n: int,
                say: Callable[[str], None]) -> Dict[str, Any]:
     """{"title", "environment", "shots": [{title, scene, camera, action, speaker, dialogue}]} — LLM, lùi về khuôn mẫu."""
@@ -417,6 +441,11 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
         "DIALOGUE RULES: the user's request may contain lines the character must say — use those lines VERBATIM (same "
         "language, same words), spread them across the shots, at most ONE speaker and ONE line (≤ 25 words) per shot; "
         "shots without a line have dialogue \"\". Never invent brand claims.\n"
+        # Việc thuê #164 (3/10/2026): khách chỉ gõ «đi trên đường làng việt nam», bước này tự cho người mẫu mặc «áo dài»
+        # trong khi ảnh người mẫu mặc đồ khác → khung vẽ mang HAI bộ đồ, Muse từ chối vẽ cả việc.
+        "WARDROBE RULE: the characters' look (face, hair, outfit, shoes, accessories) comes ONLY from their reference "
+        "photos. Never describe, add or change clothing, hair or accessories in any field — call them by name (e.g. "
+        "\"the model\") — unless the user's request explicitly asks for a different outfit.\n"
         "CONTINUITY RULES: each clip is generated from the LAST FRAME of the previous clip, so for every shot write its START "
         "state (frame 0: where the character is in the set, body pose, facing direction, camera position/angle) and its END "
         f"state (frame {CLIP_SECONDS} s: the same four things). The END of shot k MUST be exactly the START of shot k+1 (same "
@@ -459,6 +488,9 @@ def plan_shots(*, fmt: str, request: str, characters: List[Dict], products: List
             shots[k]["start"] = shots[k - 1]["end"]
         elif not shots[k - 1]["end"] and shots[k]["start"]:
             shots[k - 1]["end"] = shots[k]["start"]
+    for sh in shots:
+        for k in ("scene", "action", "start", "end"):
+            sh[k] = strip_wardrobe(sh[k], request)
     plan["shots"] = shots
     plan["title"] = str(plan.get("title") or request.strip().split("\n")[0][:60] or "Video")[:80]
     # LLM quên bối cảnh → lấy từ chính yêu cầu (câu đầu thường tả địa điểm), đừng rơi về câu chung chung.
@@ -783,10 +815,26 @@ def run(payload: Dict[str, Any], report=None, is_cancelled=None) -> str:
                 if not os.path.isfile(startf):
                     say("clips", "Muse is drawing the first frame from the reference images…", progress=0)
                     refs = [cast[0]["image"]] + ([products[0]["image"]] if products else []) + ([board] if board else [])
-                    data = muse.generate_image_bytes(
-                        f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
-                        "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
-                        + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
+                    try:
+                        data = muse.generate_image_bytes(
+                            f"A single {style_name(style, style_custom)} {aspect} frame: {shot['scene']} The person must be the SAME individual as in the "
+                            "attached reference portrait (same face, hair and outfit)" + (", with the attached product." if products else ".")
+                            + " The portrait wins for identity.\n\n" + scene + "\n\n" + ident, aspect, refs[:3])
+                    except Exception as e:      # noqa: BLE001
+                        if getattr(e, "kind", "") in ("config", "auth", "busy", "browser"):
+                            raise
+                        # Tự sửa (việc #164): Muse trả CHỮ thay ảnh — thường vì câu lệnh mang chi tiết đá nhau (trang phục
+                        # trong cảnh ≠ ảnh người mẫu, bảng panorama vẽ khác). Thử lại MỘT lần: chỉ bối cảnh + tư thế đầu +
+                        # đúng ảnh người mẫu, KHÔNG bảng. Lần hai vẫn hỏng thì lời của Muse đi tới khách (public_hire).
+                        say("clips", f"Muse did not draw the first frame ({' '.join(str(e).split())[:140]}) — retrying once "
+                                     "with a simpler prompt: only the set, the start pose and the person exactly as in the photo")
+                        data = muse.generate_image_bytes(
+                            f"A single {style_name(style, style_custom)} {aspect} frame. Setting: {plan.get('environment', '')} "
+                            f"{shot.get('start') or ''} The person is EXACTLY the individual in the attached reference portrait: "
+                            "same face, hair, outfit and accessories as in the photo — do not change or add clothing."
+                            + (" They hold or show the attached product." if products else "") + "\n\n" + ident,
+                            aspect, ([cast[0]["image"]] + ([products[0]["image"]] if products else []))[:3])
+                        say("clips", "First frame drawn on the second try")
                     with open(startf, "wb") as f:
                         f.write(data)
                 refs = [startf, cast[0]["image"]] + third

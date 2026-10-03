@@ -236,6 +236,47 @@ try:
 except _Refused:
     ok(True, "Muse từ chối → không thử lại, nổi lỗi ngay")
 muse.generate_video_clip = _gen_ok
+
+print("C1c. Việc thuê #164: cảnh tự chế «áo dài» + Muse không vẽ khung đầu → tự sửa")
+ok(P.strip_wardrobe("A young Vietnamese woman wearing an elegant flowing áo dài walks along a village path.", "đi trên đường làng việt nam")
+   == "A young Vietnamese woman walks along a village path.", "lột «wearing … áo dài» khi khách không nhắc trang phục")
+ok(P.strip_wardrobe("The model, dressed in a red silk dress and black boots, smiles.") == "The model, smiles.", "lột cả chuỗi món nối bằng and")
+ok(P.strip_wardrobe("A woman wearing an áo dài walks.", "mặc áo dài đi chợ") == "A woman wearing an áo dài walks.", "khách TỰ nói trang phục → giữ")
+ok(P.strip_wardrobe("The model wearing the attached product jacket waves.") == "The model wearing the attached product jacket waves.", "cụm nói tới sản phẩm → giữ")
+P._data_dir = lambda: str(TMP / "pod_frame")
+_llm_prev, _img_ok, sys_seen = P._llm, muse.generate_image_bytes, []
+def village_llm(messages, max_tokens=1800):
+    sys_seen.append(messages[0]["content"])
+    return json.dumps({"title": "Village", "environment": "a Vietnamese village road at golden hour", "shots": [
+        {"title": "Walk", "scene": "A young woman wearing an elegant flowing áo dài walks along the road.", "camera": "wide", "action": "",
+         "start": "she walks toward the camera, wearing a long áo dài", "end": "she stops by a bamboo fence", "speaker": "", "dialogue": ""}]})
+P._llm = village_llm
+class _NoImg(Exception):
+    kind = "refused"
+_img_n = {"n": 0}
+def picky_img(prompt, aspect, refs, timeout=300):
+    _img_n["n"] += 1
+    if _img_n["n"] == 1:
+        raise _NoImg("Muse did not draw an image: I couldn't generate that image. I can do it in the áo dài — just say go.")
+    return _img_ok(prompt, aspect, refs, timeout)
+muse.generate_image_bytes = picky_img
+said_f = []
+village = {**payload, "task_id": "t-frame", "clips": 1, "request": "đi trên đường làng việt nam", "product_images": []}
+P.run(village, lambda name, status, msg="", label="", progress=None: said_f.append(msg), lambda: False)
+st_f = P.load_state("t-frame")
+ok(any("WARDROBE RULE" in s for s in sys_seen), "câu lệnh viết cảnh có luật trang phục")
+ok(all("áo dài" not in s[k] for s in st_f["plan"]["shots"] for k in ("scene", "start", "end")), "kế hoạch cảnh đã lột trang phục tự chế", st_f["plan"]["shots"])
+ok(_img_n["n"] == 2 and any("retrying once with a simpler prompt" in m for m in said_f) and "1" in st_f["clips"]
+   and "áo dài" not in img_calls[-1][0] and "village road at golden hour" in img_calls[-1][0] and img_calls[-1][2] == [model_img],
+   "khung đầu bị từ chối → thử lại MỘT lần: bối cảnh + tư thế + chân dung, KHÔNG bảng", (said_f[-3:], img_calls[-1][2]))
+ok("áo dài" not in clip_calls[-1]["prompt"], "câu lệnh clip không còn «áo dài»")
+P._data_dir = lambda: str(TMP / "pod_frame2")
+muse.generate_image_bytes = lambda *a, **k: (_ for _ in ()).throw(_NoImg("Muse did not draw an image: still no."))
+try:
+    P.run({**village, "task_id": "t-frame2"}, lambda *a, **k: None, lambda: False); ok(False, "hai lần không vẽ → phải nổi lỗi")
+except _NoImg as e:
+    ok("still no" in str(e), "lần hai vẫn không vẽ → nổi lỗi kèm lời Muse (public_hire chuyển cho khách)")
+P._llm, muse.generate_image_bytes = _llm_prev, _img_ok
 # chọn «3D CG» trong form → thắng kiểu dò được (ảnh giả được tả là ảnh thật)
 P._data_dir = lambda: str(TMP / "pod_style")
 n_img, n_clip = len(img_calls), len(clip_calls)

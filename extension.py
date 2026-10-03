@@ -17,7 +17,7 @@ logger = logging.getLogger("PodStudio")
 
 class PodStudioExtension(Extension):
     name = "pod_studio"
-    version = "1.3.1"
+    version = "1.3.2"
     description = "AI POD Studio — Video Ad script writing with AI"
     author = "TubeCreate"
     extension_type = "external"
